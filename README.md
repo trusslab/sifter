@@ -65,10 +65,13 @@ Get Sifter's modified kernel
 cd private/msm-google
 ```
 ``` bash
-git remote set-url sifter https://github.com/trusslab/sifter_kernel.git
+git remote add sifter https://github.com/trusslab/sifter_kernel.git
 ```
 ``` bash
-git fetch sifter
+git fetch sifter master
+```
+``` bash
+git checkout sifter/master
 ```
 ``` bash
 cd ../../
@@ -83,13 +86,6 @@ function update_nocfi_config() {
     -e CONFIG_KCOV_ENABLE_COMPARISONS \
     -e CONFIG_SLUB \
     -e CONFIG_SECCOMP_FILTER_EXTENDED \
-    -e CONFIG_FAULT_INJECTION \
-    -e CONFIG_FAULT_INJECTION_DEBUG_FS \
-    -e CONFIG_FAILSLAB \
-    -e CONFIG_FAIL_PAGE_ALLOC \
-    -e CONFIG_FAIL_MAKE_REQUEST \
-    -e CONFIG_FAIL_IO_TIMEOUT \
-    -e CONFIG_FAIL_FUTEX \
     -d CONFIG_KASAN_OUTLINE \
     -d CONFIG_RANDOMIZE_BASE \
     -d CONFIG_CC_WERROR \
@@ -107,15 +103,14 @@ function update_nocfi_config() {
 ``` bash
 ./build/build.sh
 ```
-After the compilation, push the new kernel modules to the device first in case the device becomes unauthenticated and the touch screen does not repond with the old kernel modules.
+After the compilation, push the new kernel modules to the device first in case the device becomes unauthenticated in adb and the touch screen does not work with the old kernel modules.
 ``` bash
 adb push out/android-msm-pixel-4.9/dist/*.ko /vendor/lib/modules/
 ```
-Generate and flash the new boot.img
+In blueline-aosp directory. Generate and flash the new boot.img
 ``` bash
-cp out/android-msm-pixel-4.9/dist/Image.lz4 ../blueline-aosp/device/google/crosshatch-kernel/Image.lz4
+cp blueline-kernel/out/android-msm-pixel-4.9/dist/Image.lz4 ./device/google/crosshatch-kernel/Image.lz4
 ```
-Switch to blueline-aosp
 ``` bash
 m bootimage
 ```
@@ -123,11 +118,11 @@ Enter recovery mode again by either pushing the power and volume down buttons or
 ``` bash
 adb reboot bootloader
 ```
-Before actually flashing the new boot.img, you can try to boot with the new boot.img first to see if the new one is working correctly
+Before actually flashing the new boot.img, you can try to boot the device with the new boot.img first to see if the new one works correctly
 ``` bash
 fastboot boot out/target/product/blueline/boot.img
 ```
-Then you can flash the boot.img with
+Then, you can flash the boot.img
 ``` bash
 fastboot flash boot out/target/product/blueline/boot.img
 ```
