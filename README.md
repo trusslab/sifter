@@ -38,7 +38,7 @@ cd bionic && git apply <sifter>/patches/bionic.patch && cd ../
 ``` bash
 cd system/bpf && git apply <sifter>/patches/system_bpf.patch && cd ../../
 ```
-Compile the kernel
+Compile AOSP
 ``` bash
 source build/envsetup.sh
 ```

@@ -1,8 +1,18 @@
 diff --git a/libc/kernel/uapi/linux/bpf.h b/libc/kernel/uapi/linux/bpf.h
-index 894b9f7a6..fe5bcca64 100644
+index 894b9f7a6..3c622de4e 100644
 --- a/libc/kernel/uapi/linux/bpf.h
 +++ b/libc/kernel/uapi/linux/bpf.h
-@@ -310,7 +310,10 @@ union bpf_attr {
+@@ -175,6 +175,9 @@ enum bpf_attach_type {
+ #define BPF_ANY 0
+ #define BPF_NOEXIST 1
+ #define BPF_EXIST 2
++//Hsin-Wei start
++#define BPF_F_LOCK 4
++//Hsin-Wei end
+ #define BPF_F_NO_PREALLOC (1U << 0)
+ #define BPF_F_NO_COMMON_LRU (1U << 1)
+ #define BPF_F_NUMA_NODE (1U << 2)
+@@ -310,7 +313,10 @@ union bpf_attr {
      __u64 probe_addr;
    } task_fd_query;
  } __attribute__((aligned(8)));
