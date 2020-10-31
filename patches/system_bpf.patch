@@ -1,3 +1,30 @@
+diff --git a/libbpf_android/Loader.cpp b/libbpf_android/Loader.cpp
+index d02ed87..23c142e 100644
+--- a/libbpf_android/Loader.cpp
++++ b/libbpf_android/Loader.cpp
+@@ -66,6 +66,9 @@ typedef struct {
+  */
+ sectionType sectionNameTypes[] = {
+     {"kprobe", BPF_PROG_TYPE_KPROBE},
++//Hsin-Wei start
++    {"kretprobe", BPF_PROG_TYPE_KPROBE},
++//Hsin-Wei end
+     {"tracepoint", BPF_PROG_TYPE_TRACEPOINT},
+     {"skfilter", BPF_PROG_TYPE_SOCKET_FILTER},
+     {"cgroupskb", BPF_PROG_TYPE_CGROUP_SKB},
+@@ -272,8 +275,10 @@ static bool isRelSection(codeSection& cs, string& name) {
+ 
+         if (StartsWith(name, std::string(".rel") + st.name + "/"))
+             return true;
+-        else
+-            return false;
++//Hsin-Wei start
++//        else
++//            return false;
++//Hsin-Wei end
+     }
+     return false;
+ }
 diff --git a/progs/include/bpf_helpers.h b/progs/include/bpf_helpers.h
 index 408a981..85258aa 100644
 --- a/progs/include/bpf_helpers.h

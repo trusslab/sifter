@@ -1,5 +1,5 @@
 diff --git a/libc/kernel/uapi/linux/bpf.h b/libc/kernel/uapi/linux/bpf.h
-index 894b9f7a6..3c622de4e 100644
+index 894b9f7a6..4d75412df 100644
 --- a/libc/kernel/uapi/linux/bpf.h
 +++ b/libc/kernel/uapi/linux/bpf.h
 @@ -175,6 +175,9 @@ enum bpf_attach_type {
@@ -24,6 +24,18 @@ index 894b9f7a6..3c622de4e 100644
  #define __BPF_ENUM_FN(x) BPF_FUNC_ ##x
  enum bpf_func_id {
    __BPF_FUNC_MAPPER(__BPF_ENUM_FN) __BPF_FUNC_MAX_ID,
+@@ -706,6 +712,11 @@ struct bpf_func_info {
+   __u32 insn_off;
+   __u32 type_id;
+ };
++//Hsin-Wei start
++struct bpf_spin_lock {
++  __u32 val;
++};
++//Hsin-Wei end
+ #define BPF_LINE_INFO_LINE_NUM(line_col) ((line_col) >> 10)
+ #define BPF_LINE_INFO_LINE_COL(line_col) ((line_col) & 0x3ff)
+ struct bpf_line_info {
 diff --git a/libc/kernel/uapi/linux/bpf_common.h b/libc/kernel/uapi/linux/bpf_common.h
 index a368db788..8fd258462 100644
 --- a/libc/kernel/uapi/linux/bpf_common.h
