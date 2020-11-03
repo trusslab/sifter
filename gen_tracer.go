@@ -116,6 +116,28 @@ func (tracer *Tracer) WriteTracerFile() {
 	}
 }
 
+func (tracer *Tracer) WriteAgentConfigFile() {
+	file := filepath.Join(tracer.outDir, tracer.outName+"_agent.cfg")
+	outf, err := os.Create(file)
+	if err != nil {
+		failf("failed to create output file: %v", err)
+	}
+	defer outf.Close()
+
+	s := new(bytes.Buffer)
+	fmt.Fprintf(s, "%v\n", (*tracer).outName)
+	fmt.Fprintf(s, "p 1 %v %v\n", (*tracer).syscallEntry, (*tracer).syscallEntry)
+
+	for _, bpfMap := range (*tracer).minMaxMaps {
+		fmt.Fprintf(s, "m 0 %v\n", bpfMap.name)
+	}
+	for _, bpfMap := range (*tracer).flagsMaps {
+		fmt.Fprintf(s, "m 0 %v\n", bpfMap.name)
+	}
+
+	outf.Write(s.Bytes())
+}
+
 func (tracer *Tracer) WriteAgentFile() {
 	file := filepath.Join(tracer.outDir, tracer.outName+"_agent.cpp")
 	outf, err := os.Create(file)
@@ -379,7 +401,7 @@ func generateIoctlTracer(target *prog.Target, tracer *Tracer, name string, sysca
 	fmt.Fprintf(s, "}\n\n")
 }
 
-func generateStruct(tracer *Tracer) {
+func (tracer *Tracer) generateStructSection() {
 	s := tracer.NewSection()
     for _, structure := range tracer.structs {
         fmt.Fprintf(s, "struct %v {\n", structure.Name())
@@ -453,6 +475,68 @@ func generateStruct(tracer *Tracer) {
     }
 }
 
+func (tracer *Tracer) generateInitSection() {
+	initSec := tracer.NewSection()
+	fmt.Fprintf(initSec, "void __always_inline init() {\n")
+	fmt.Fprintf(initSec, "    int32_t i = 0;\n")
+	fmt.Fprintf(initSec, "    int *init = bpf_init_map_lookup_elem(&i);\n")
+	fmt.Fprintf(initSec, "    if (init && *init == 0) {\n")
+	fmt.Fprintf(initSec, "        *init = 1;\n")
+	for _, bpfMap := range (*tracer).minMaxMaps {
+		fmt.Fprintf(initSec, "        i = 0;\n")
+		fmt.Fprintf(initSec, "        %v *%v_min = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
+		fmt.Fprintf(initSec, "        if (%v_min) {\n", bpfMap.name)
+		fmt.Fprintf(initSec, "            *%v_min = -1;\n", bpfMap.name)
+		fmt.Fprintf(initSec, "        }\n")
+		fmt.Fprintf(initSec, "        i = 1;\n")
+		fmt.Fprintf(initSec, "        %v *%v_max = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
+		fmt.Fprintf(initSec, "        if (%v_max) {\n", bpfMap.name)
+		fmt.Fprintf(initSec, "            *%v_max = 0;\n", bpfMap.name)
+		fmt.Fprintf(initSec, "        }\n")
+	}
+	for _, bpfMap := range (*tracer).flagsMaps {
+		fmt.Fprintf(initSec, "        i = 0;\n")
+		fmt.Fprintf(initSec, "        %v *%v_zeros = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
+		fmt.Fprintf(initSec, "        if (%v_zeros) {\n", bpfMap.name)
+		fmt.Fprintf(initSec, "            *%v_zeros = 0;\n", bpfMap.name)
+		fmt.Fprintf(initSec, "        }\n")
+		fmt.Fprintf(initSec, "        i = 1;\n")
+		fmt.Fprintf(initSec, "        %v *%v_ones = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
+		fmt.Fprintf(initSec, "        if (%v_ones) {\n", bpfMap.name)
+		fmt.Fprintf(initSec, "            *%v_ones = 0;\n", bpfMap.name)
+		fmt.Fprintf(initSec, "        }\n")
+	}
+	fmt.Fprintf(initSec, "    }\n")
+	fmt.Fprintf(initSec, "}\n\n")
+}
+
+func (tracer *Tracer) generateMapSection() {
+	mapSec := tracer.NewSection()
+	fmt.Fprintf(mapSec, "DEFINE_BPF_MAP(init_map, ARRAY, int, int, 2)\n")
+	for _, bpfMap := range (*tracer).minMaxMaps {
+		fmt.Fprintf(mapSec, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, 2)\n", bpfMap.name, bpfMap.datatype)
+	}
+	for _, bpfMap := range (*tracer).flagsMaps {
+		fmt.Fprintf(mapSec, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, 2)\n", bpfMap.name, bpfMap.datatype)
+	}
+	fmt.Fprintf(mapSec, "\n")
+}
+
+func (tracer *Tracer) generateHeaderSection() {
+	headerSec := tracer.NewSection()
+	fmt.Fprintf(headerSec, "#include <linux/seccomp.h>\n")
+	fmt.Fprintf(headerSec, "#include <linux/bpf.h>\n")
+	fmt.Fprintf(headerSec, "#include <linux/unistd.h>\n")
+	fmt.Fprintf(headerSec, "#include <linux/ptrace.h>\n")
+	fmt.Fprintf(headerSec, "#include <bpf_helpers.h>\n")
+	fmt.Fprintf(headerSec, "#include <linux/errno.h>\n")
+	fmt.Fprintf(headerSec, "#include <sys/types.h>\n")
+	for _, header := range tracer.headers {
+		fmt.Fprintf(headerSec, "#include <%v>\n", header)
+	}
+	fmt.Fprintf(headerSec, "\n")
+}
+
 func generateTracer(target *prog.Target, tracer *Tracer) { //, sections *[]*bytes.Buffer) {
 	tracedSyscalls := map[string][]string{}
 
@@ -499,68 +583,10 @@ func generateTracer(target *prog.Target, tracer *Tracer) { //, sections *[]*byte
 		}
 	}
 
-	initSec := tracer.NewSection()
-	fmt.Fprintf(initSec, "void __always_inline init() {\n")
-	fmt.Fprintf(initSec, "    int32_t i = 0;\n")
-	fmt.Fprintf(initSec, "    int *init = bpf_init_map_lookup_elem(&i);\n")
-	fmt.Fprintf(initSec, "    if (init && *init == 0) {\n")
-	fmt.Fprintf(initSec, "        *init = 1;\n")
-	for _, bpfMap := range (*tracer).minMaxMaps {
-		fmt.Fprintf(initSec, "        i = 0;\n")
-		fmt.Fprintf(initSec, "        %v *%v_min = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
-		fmt.Fprintf(initSec, "        if (%v_min) {\n", bpfMap.name)
-		fmt.Fprintf(initSec, "            *%v_min = -1;\n", bpfMap.name)
-		fmt.Fprintf(initSec, "        }\n")
-		fmt.Fprintf(initSec, "        i = 1;\n")
-		fmt.Fprintf(initSec, "        %v *%v_max = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
-		fmt.Fprintf(initSec, "        if (%v_max) {\n", bpfMap.name)
-		fmt.Fprintf(initSec, "            *%v_max = 0;\n", bpfMap.name)
-		fmt.Fprintf(initSec, "        }\n")
-	}
-	for _, bpfMap := range (*tracer).flagsMaps {
-		fmt.Fprintf(initSec, "        i = 0;\n")
-		fmt.Fprintf(initSec, "        %v *%v_zeros = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
-		fmt.Fprintf(initSec, "        if (%v_zeros) {\n", bpfMap.name)
-		fmt.Fprintf(initSec, "            *%v_zeros = 0;\n", bpfMap.name)
-		fmt.Fprintf(initSec, "        }\n")
-		fmt.Fprintf(initSec, "        i = 1;\n")
-		fmt.Fprintf(initSec, "        %v *%v_ones = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
-		fmt.Fprintf(initSec, "        if (%v_ones) {\n", bpfMap.name)
-		fmt.Fprintf(initSec, "            *%v_ones = 0;\n", bpfMap.name)
-		fmt.Fprintf(initSec, "        }\n")
-	}
-	fmt.Fprintf(initSec, "    }\n")
-	fmt.Fprintf(initSec, "}\n\n")
-
-	mapSec := tracer.NewSection()
-	fmt.Fprintf(mapSec, "DEFINE_BPF_MAP(init_map, ARRAY, int, int, 2)\n")
-	for _, bpfMap := range (*tracer).minMaxMaps {
-		fmt.Fprintf(mapSec, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, 2)\n", bpfMap.name, bpfMap.datatype)
-	}
-	for _, bpfMap := range (*tracer).flagsMaps {
-		fmt.Fprintf(mapSec, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, 2)\n", bpfMap.name, bpfMap.datatype)
-	}
-	fmt.Fprintf(mapSec, "\n")
-    //fmt.Println("arg stack size ", len((*tracer).minMaxMaps)+4)
-
-	helperSec := tracer.NewSection()
-	fmt.Fprintf(helperSec, "\n")
-
-	generateStruct(tracer)
-
-	headerSec := tracer.NewSection()
-	fmt.Fprintf(headerSec, "#include <linux/seccomp.h>\n")
-	fmt.Fprintf(headerSec, "#include <linux/bpf.h>\n")
-	fmt.Fprintf(headerSec, "#include <linux/unistd.h>\n")
-	fmt.Fprintf(headerSec, "#include <linux/ptrace.h>\n")
-	fmt.Fprintf(headerSec, "#include <bpf_helpers.h>\n")
-	fmt.Fprintf(headerSec, "#include <linux/errno.h>\n")
-	fmt.Fprintf(headerSec, "#include <sys/types.h>\n")
-	for _, header := range tracer.headers {
-		fmt.Fprintf(headerSec, "#include <%v>\n", header)
-	}
-	fmt.Fprintf(headerSec, "\n")
-
+    tracer.generateInitSection()
+    tracer.generateMapSection()
+    tracer.generateStructSection()
+    tracer.generateHeaderSection()
 }
 
 func failf(msg string, args ...interface{}) {
@@ -598,5 +624,5 @@ func main() {
 	generateTracer(target, tracer)
 
 	tracer.WriteTracerFile()
-	tracer.WriteAgentFile()
+	tracer.WriteAgentConfigFile()
 }

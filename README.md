@@ -153,11 +153,12 @@ In Sifter's directory, execute gen\_tracer.go and specify the configuration, res
 ``` bash
 go run gen_tracer.go -config ../syzkalls/src/github.com/google/syzkaller/configs/adb_binder.cfg -fd fd_kgsl -entry kgsl_ioctl -out kgsl
 ```
+In the output directory, gen, you will find the generated source code for the eBPF tracer (e.g., linux\_arm64\_kgsl.c) and a configuration for the agent for the respective tracer (e.g., linux\_arm64\_kgsl\_agent.cfg)
 
 ## Compile tracers and the agent
 In Sifter a tracer is responsible for tracing syscalls and generating the policy. It updates the eBPF map associated with the argument according to the datatype. An agent program associated to the tracer will be used to mount the tracer and read out the values stored in the maps.
 
-In blueline-asop/externel, create sifter-kern for the eBPF tracers
+In blueline-asop, create sifter-kern for the eBPF tracers
 ``` bash
 mkdir externel/sifter-kern && cd externel/sifter-kern
 ```
@@ -176,26 +177,9 @@ Compile the tracer
 ``` bash
 mm
 ```
-In blueline-aosp/externel, create sifter-user for the agents
+In blueline-aosp, copy and compile the user-space agent
 ``` bash
-mkdir externel/sifter-kern && cd externel/sifter-kern
-```
-Copy the generated eBPF agent, linux\_arm64\_xxx\_agent.c, to the current directory and create the makefile, Android.bp
-```
-cc_binary {
-    name: "linux_arm64_xxx_agent",
-    srcs: [
-        "linux_arm64_xxx_agent.cpp"
-        ],
-    defaults: ["bpf_defaults"],
-    shared_libs: [
-        "libbpf_android",
-        "libbpf",
-        "libbase",
-        "libnetdutils",
-    ],
-}
-
+cp -r <sifter>/agent external/ && cd external/agent
 ```
 Compile the agent
 ``` bash
@@ -208,16 +192,28 @@ Push the tracer and agent to the device
 adb push blueline-aosp/out/target/product/blueline/system/etc/bpf/linux_arm64_xxx.o /etc/bpf/
 ```
 ``` bash
-adb shell mkdir /data/local/sifter-agent
+adb shell mkdir /data/sifter
 ```
 ``` bash
-adb push blueline-aosp/out/target/product/blueline/system/bin/linux_arm64_xxx_agent /data/local/sifter-agent
+adb push blueline-aosp/out/target/product/blueline/system/bin/agent /data/sifter/
+```
+``` bash
+adb push <sifter>/gen/linux_arm64_xxx_agent.cfg /data/sifter/
 ```
 Reboot the device so that the tracer will be loaded automatically during boot. You can check if the tracer is being loaded successfully by
 ``` bash
 adb logcat -s bpfloader
 ```
-To start testing, execute the agent. It will mount the eBPF tracer to the kprobes hook, and the tracer will start tracing the syscall. Now you can execute any program in another terminal that will invoke the syscall. To stop, press any key and the result will be printed.
+To start testing, execute the agent. It will mount the eBPF tracer to the kprobes hook, and the tracer will start tracing the syscall. Now you can execute any program in another terminal that will invoke the syscall. The agent will store the results to the output file periodically. Note that if the output file already exist, the agent will restore the result from it at the beginning.
 ``` bash
-adb shell /data/local/linux_arm64_xxx_agent
+adb shell /data/sifter/agent -c <agent configuration file> -o <output file> -i <logging interval in sec>
 ```
+For example
+``` bash
+adb shell /data/sifter/agent -c /data/sifter/linux_arm64_xxx_agent.cfg -o /data/sifter/linux_arm64_xxx.log -i 10
+```
+You can also choose to read the eBPF maps directly without logging by using manual mode. To stop, press any key and the values of maps will be printed.
+``` bash
+adb shell /data/sifter/agent -c /data/sifter/linux_arm64_xxx_agent.cfg -m
+```
+
