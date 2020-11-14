@@ -65,6 +65,17 @@ struct sifter_rb {
     };
 };
 
+struct sifter_lut {
+    int type;
+    std::string name;
+    unique_fd fd;
+    std::vector<uint64_t> val;
+    sifter_lut(int t, std::string nm, int size, int f):
+        type(t), name(nm), fd(android::base::unique_fd(f)) {
+        val.resize(size);
+    };
+};
+
 struct sifter_map {
     int type;
     std::string name;
@@ -92,6 +103,7 @@ private:
     std::string m_name;
     std::vector<sifter_prog> m_progs;
     std::vector<sifter_map> m_maps;
+    std::vector<sifter_lut> m_luts;
     std::vector<sifter_rb> m_rbs;
     std::vector<std::thread *> m_rbs_update_threads;
     std::set<int> m_ignored_pids;
@@ -156,6 +168,17 @@ public:
         int fd = bpf_obj_get(path.c_str());
         if (fd != -1)
             m_maps.push_back(sifter_map(type, map, 2, fd));
+        return fd;
+    }
+
+    int add_lut(int type, std::string map, std::vector<uint64_t> &val) {
+        std::string path = "/sys/fs/bpf/map_" + m_name + "_" + map;
+        int fd = bpf_obj_get(path.c_str());
+        if (fd != -1)
+            m_luts.push_back(sifter_lut(type, map, val.size(), fd));
+        for (int i = 0; i < val.size(); i++) {
+            android::bpf::writeToMapEntry(m_luts.back().fd, &i, &val[i], BPF_ANY);
+        }
         return fd;
     }
 
@@ -298,7 +321,7 @@ public:
         std::ifstream ifs(file);
 
         if (!ifs) {
-            std::cerr << "Failed to create tracer. " << file
+            std::cerr << "Failed to parse configuration. " << file
                 << " does not exist\n";
             return;
         }
@@ -312,33 +335,76 @@ public:
                     std::string event, entry;
                     ifs >> type >> event >> entry;
                     if (add_prog(type, event, entry) == -1) {
+                        std::cerr << "Failed to add prog (type:"
+                            << type << ", " << event << ", " << entry << ")\n";
                         return;
                     }
+
+                    if (m_verbose > 0)
+                        std::cout << "Added prog (type:"
+                            << type << ", " << event << ", " << entry << ")\n";
                     break;
                 }
                 case 'm': {
                     int type;
                     std::string name;
                     ifs >> type >> name;
-                    if (add_map(type, name) == -1)
+                    if (add_map(type, name) == -1) {
+                        std::cerr << "Failed to add map (type:"
+                            << type << ", name:" << name << ")\n";
                         return;
+                    }
+
+                    if (m_verbose > 0)
+                        std::cout << "Added map (type:"
+                            << type << ", name:" << name << ")\n";
+                    break;
+                }
+                case 'l': {
+                    int type, size;
+                    int i = 0;
+                    std::string name;
+                    ifs >> type >> name >> size;
+                    std::vector<uint64_t> vals;
+                    vals.resize(size);
+                    while (i < size && ifs >> vals[i++]) {}
+                    if (i != size) {
+                        std::cerr << "Failed to add lookup table (type:"
+                            << type << ", name:" << name << ", size:" << size
+                            << "). Too few entries (" << i-1 << ")\n";
+                        return;
+                    }
+
+                    if (add_lut(type, name, vals) == -1) {
+                        std::cerr << "Failed to add lookup table (type:"
+                            << type << ", name:" << name << ", size:" << size
+                            << "). errno(" << errno << ")\n";
+                        return;
+                    }
+
+                    if (m_verbose > 0)
+                        std::cout << "Added lookup table (type:"
+                            << type << ", name:" << name << ", size:" << size << ")\n";
                     break;
                 }
                 case 'r': {
                     int length;
                     std::string name;
                     ifs >> length >> name;
-                    if (add_rb(length, name) == -1)
+                    if (add_rb(length, name) == -1) {
+                        std::cerr << "Failed to add ringbuffer (name:" << name << ")\n";
                         return;
+                    }
+                    if (m_verbose > 0)
+                        std::cout << "Added ringbuffer (name:" << name << ")\n";
                     break;
                 }
                 default:
-                    std::cerr << "Failed to create tracer: invalid cfg_type "
-                        << cfg_type << "\n";
+                    std::cerr << "Failed to parse configuration. Invalid cfg entry \'"
+                        << cfg_type << "\'\n";
                     return;
             }
         }
-
         m_init = 1;
     }
 
@@ -361,7 +427,7 @@ int main(int argc, char *argv[]) {
                 std::cout << "-m          : read maps\n";
                 std::cout << "-i interval : maps logging interval in seconds [default=10]\n";
                 std::cout << "-o output   : maps logging output file\n";
-                std::cout << "-v verbose  : \n";
+                std::cout << "-v verbose  : verbosity\n";
                 std::cout << "-h          : helps\n";
                 return 0;
             case 'm': manual_mode = true; break;
