@@ -15,6 +15,7 @@ import (
 var (
 	flagConfig = flag.String("config", "", "configuration file")
 	flagFd     = flag.String("fd", "", "file descriptor name")
+	flagDev    = flag.String("dev", "", "driver file name")
 	flagEntry  = flag.String("entry", "", "syscall entry function")
 	flagOutDir = flag.String("outdir", "gen", "output file directory")
 	flagOut    = flag.String("out", "", "output file base name")
@@ -36,27 +37,31 @@ type BpfFlagsMap struct {
 }
 
 type Tracer struct {
-	////    handlers        map[string]string
-	////    resources
-	////    syscalls
-	//    sections    map[string]*Section
-	v           int
+    target      *prog.Target
+    v           int
 	sections    []*bytes.Buffer
 	filterSecs  []*bytes.Buffer
 	minMaxMaps  []*BpfMinMaxMap
 	flagsMaps   []*BpfFlagsMap
-	//minMaxMaps []*BpfMinMaxMap
 	structs     []*prog.StructType
 	outDir      string
 	outName     string
 	syscallEntry string
 	fdName      string
+	devName     string
 	headers     []string
 }
 
-func NewTracer(fd string, entry string, out string, outdir string) (*Tracer, error) {
+func failf(msg string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, msg+"\n", args...)
+	os.Exit(1)
+}
+
+func NewTracer(target *prog.Target, dev string, fd string, entry string, out string, outdir string) (*Tracer, error) {
 	tracer := new(Tracer)
+    tracer.target = target
 	tracer.fdName = fd
+	tracer.devName = dev
 	tracer.syscallEntry = entry
 	tracer.outName = out
 	tracer.outDir = outdir
@@ -65,9 +70,6 @@ func NewTracer(fd string, entry string, out string, outdir string) (*Tracer, err
 }
 
 func (tracer *Tracer) lazyInit() {
-	//    target.sections["license"] = &Section{t: 0, buf: new(bytes.Buffer)})
-	//    target.sections["header"] = &Section{t: 0, buf: new(bytes.Buffer)})
-	//    target.sections["map"] = &Section{t: 0, buf: new(bytes.Buffer)})
 	tracer.minMaxMaps = []*BpfMinMaxMap{}
 	tracer.flagsMaps = []*BpfFlagsMap{}
 	tracer.sections = []*bytes.Buffer{}
@@ -104,122 +106,6 @@ func (tracer *Tracer) NewFlagsMap(name string, datatype string) {
 	tracer.flagsMaps = append(tracer.flagsMaps, newMap)
 }
 
-func (tracer *Tracer) WriteTracerFile() {
-    file := filepath.Join(tracer.outDir, tracer.outName+".c")
-	outf, err := os.Create(file)
-	if err != nil {
-		failf("failed to create output file: %v", err)
-	}
-	defer outf.Close()
-	for _, section := range tracer.sections {
-		outf.Write(section.Bytes())
-	}
-}
-
-func (tracer *Tracer) WriteAgentConfigFile() {
-	file := filepath.Join(tracer.outDir, tracer.outName+"_agent.cfg")
-	outf, err := os.Create(file)
-	if err != nil {
-		failf("failed to create output file: %v", err)
-	}
-	defer outf.Close()
-
-	s := new(bytes.Buffer)
-	fmt.Fprintf(s, "%v\n", (*tracer).outName)
-	fmt.Fprintf(s, "p 1 %v %v\n", (*tracer).syscallEntry, (*tracer).syscallEntry)
-
-	for _, bpfMap := range (*tracer).minMaxMaps {
-		fmt.Fprintf(s, "m 0 %v\n", bpfMap.name)
-	}
-	for _, bpfMap := range (*tracer).flagsMaps {
-		fmt.Fprintf(s, "m 0 %v\n", bpfMap.name)
-	}
-
-	outf.Write(s.Bytes())
-}
-
-func (tracer *Tracer) WriteAgentFile() {
-	file := filepath.Join(tracer.outDir, tracer.outName+"_agent.cpp")
-	outf, err := os.Create(file)
-	if err != nil {
-		failf("failed to create output file: %v", err)
-	}
-	defer outf.Close()
-
-	s := new(bytes.Buffer)
-	fmt.Fprintf(s, "#include <bpf/BpfMap.h>\n")
-	fmt.Fprintf(s, "#include <bpf/BpfUtils.h>\n")
-	fmt.Fprintf(s, "#include <libbpf_android.h>\n")
-	fmt.Fprintf(s, "#include <iostream>\n")
-	fmt.Fprintf(s, "#include <sstream>\n")
-	for _, header := range (*tracer).headers {
-		fmt.Fprintf(s, "#include <%v>\n", header)
-	}
-	fmt.Fprintf(s, "\n")
-
-	fmt.Fprintf(s, "using android::base::unique_fd;\n")
-	fmt.Fprintf(s, "\n")
-
-	fmt.Fprintf(s, "android::base::unique_fd get_bpf_obj_fd(const char *path) {\n")
-	fmt.Fprintf(s, "    int fd = bpf_obj_get(path);\n")
-	fmt.Fprintf(s, "    std::cout << \"fd(\" << fd << \"): \" << path << \"\\n\";\n")
-	fmt.Fprintf(s, "    return android::base::unique_fd(fd);\n")
-	fmt.Fprintf(s, "}\n\n")
-
-	fmt.Fprintf(s, "int main() {\n")
-	fmt.Fprintf(s, "    char const *prog_path = \"/sys/fs/bpf/prog_%v_kprobe_%v\";\n", (*tracer).outName, (*tracer).syscallEntry)
-	fmt.Fprintf(s, "    int prog_fd = bpf_obj_get(prog_path);\n")
-	fmt.Fprintf(s, "    std::cout << \"fd(\" << prog_fd << \"): \" << prog_path << \"\\n\";\n")
-	fmt.Fprintf(s, "    int result = bpf_attach_kprobe(prog_fd, BPF_PROBE_ENTRY, \"%v\", \"%v\", 0);\n", (*tracer).syscallEntry, (*tracer).syscallEntry)
-	fmt.Fprintf(s, "    if (result < 0) {\n")
-	fmt.Fprintf(s, "        std::cout << \"bpf_attach_kprobe return \" << result << \" \" << errno << \"\\n\";\n")
-	fmt.Fprintf(s, "        return 1;\n")
-	fmt.Fprintf(s, "    }\n")
-
-	for i, bpfMap := range (*tracer).minMaxMaps {
-		fmt.Fprintf(s, "    unique_fd map_fd_%v = get_bpf_obj_fd(\"/sys/fs/bpf/map_%v_%v\");\n", i, (*tracer).outName, bpfMap.name)
-	}
-    minMaxSize := len((*tracer).minMaxMaps)
-	for i, bpfMap := range (*tracer).flagsMaps {
-		fmt.Fprintf(s, "    unique_fd map_fd_%v = get_bpf_obj_fd(\"/sys/fs/bpf/map_%v_%v\");\n", i + minMaxSize, (*tracer).outName, bpfMap.name)
-	}
-	fmt.Fprintf(s, "\n")
-	fmt.Fprintf(s, "    std::cout << \"\\nPress enter to read map values...\\n\";\n")
-	fmt.Fprintf(s, "    std::cin.get();\n")
-
-	fmt.Fprintf(s, "    int key;\n")
-	for i, bpfMap := range (*tracer).minMaxMaps {
-		fmt.Fprintf(s, "    {\n")
-		fmt.Fprintf(s, "    %v min, max;\n", bpfMap.datatype)
-		fmt.Fprintf(s, "    int ret_min, ret_max;\n")
-		fmt.Fprintf(s, "    key = 0;\n")
-		fmt.Fprintf(s, "    ret_min = android::bpf::findMapEntry(map_fd_%v, &key, &min);\n", i)
-		fmt.Fprintf(s, "    key = 1;\n")
-		fmt.Fprintf(s, "    ret_max = android::bpf::findMapEntry(map_fd_%v, &key, &max);\n", i)
-		fmt.Fprintf(s, "    if (ret_min == 0 && ret_max == 0) {\n")
-		fmt.Fprintf(s, "        std::cout << \"%v\" << \"[\"<< min << \", \" << max << \"]\\n\";\n", bpfMap.name)
-		fmt.Fprintf(s, "    }\n")
-		fmt.Fprintf(s, "    }\n")
-	}
-	for i, bpfMap := range (*tracer).flagsMaps {
-		fmt.Fprintf(s, "    {\n")
-		fmt.Fprintf(s, "    %v zeros, ones;\n", bpfMap.datatype)
-		fmt.Fprintf(s, "    int ret_zeros, ret_ones;\n")
-		fmt.Fprintf(s, "    key = 0;\n")
-		fmt.Fprintf(s, "    ret_zeros = android::bpf::findMapEntry(map_fd_%v, &key, &zeros);\n", i + minMaxSize)
-		fmt.Fprintf(s, "    key = 1;\n")
-		fmt.Fprintf(s, "    ret_ones = android::bpf::findMapEntry(map_fd_%v, &key, &ones);\n", i + minMaxSize)
-		fmt.Fprintf(s, "    if (ret_zeros == 0 && ret_ones == 0) {\n")
-		fmt.Fprintf(s, "        std::cout << \"%v\" << \"[\"<< zeros << \", \" << ones << \"]\\n\";\n", bpfMap.name)
-		fmt.Fprintf(s, "    }\n")
-		fmt.Fprintf(s, "    }\n")
-	}
-
-	fmt.Fprintf(s, "}\n")
-
-	outf.Write(s.Bytes())
-}
-
 func (tracer *Tracer) AddStruct(s *prog.StructType) {
     // Return if the struct is already added
     for _, _s := range tracer.structs {
@@ -251,7 +137,7 @@ func fixName(name string) string {
 	return name
 }
 
-func generateUpdateMinMax(s *bytes.Buffer, argType string, argName string, argMap string) {
+func GenerateUpdateMinMax(s *bytes.Buffer, argType string, argName string, argMap string) {
 	fmt.Fprintf(s, "    {\n")
 	fmt.Fprintf(s, "    int i = 0;\n")
 	fmt.Fprintf(s, "    %v *%v_min = bpf_%v_lookup_elem(&i);\n", argType, argMap, argMap)
@@ -284,7 +170,7 @@ func generateUpdateMinMax(s *bytes.Buffer, argType string, argName string, argMa
 //	fmt.Fprintf(s, "    }\n")
 }
 
-func generateUpdateFlags(s *bytes.Buffer, argType string, argName string, argMap string) {
+func GenerateUpdateFlags(s *bytes.Buffer, argType string, argName string, argMap string) {
 	fmt.Fprintf(s, "    {\n")
 	fmt.Fprintf(s, "    int i = 0;\n")
 	fmt.Fprintf(s, "    %v *%v_zeros = bpf_%v_lookup_elem(&i);\n", argType, argMap, argMap)
@@ -299,14 +185,14 @@ func generateUpdateFlags(s *bytes.Buffer, argType string, argName string, argMap
 	fmt.Fprintf(s, "    }\n")
 }
 
-func generateCopyFromUser(tracer *Tracer, s *bytes.Buffer, path string, argType string, argName string) {
+func GenerateCopyFromUser(tracer *Tracer, s *bytes.Buffer, path string, argType string, argName string) {
     argName = fmt.Sprintf("v%v", tracer.v)
     fmt.Fprintf(s, "    %v %v;\n", argType, argName)
     fmt.Fprintf(s, "    bpf_probe_read_sleepable(&%v, sizeof(%v), (void *)%v);\n", argName, argName, path)
     tracer.v += 1
 }
 
-func generateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, path string, fromPointer bool, offset *int) {
+func GenerateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, path string, fromPointer bool, offset *int) {
 	argType := ""
 	switch tt := arg.(type) {
 	case *prog.BufferType:
@@ -335,23 +221,23 @@ func generateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, pat
 	switch t := arg.(type) {
 	case *prog.PtrType:
         if *offset == 0 {
-		    generateRecursiveTracer(tracer, arg.(*prog.PtrType).Type, s, path, true, offset)
+		    GenerateRecursiveTracer(tracer, arg.(*prog.PtrType).Type, s, path, true, offset)
         } else {
             srcPath := path + "." + arg.FieldName()
-            generateRecursiveTracer(tracer, arg.(*prog.PtrType).Type, s, srcPath, true, offset)
+            GenerateRecursiveTracer(tracer, arg.(*prog.PtrType).Type, s, srcPath, true, offset)
         }
 	case *prog.StructType:
 		structPath := ""
 		if fromPointer {
 			structPath = fmt.Sprintf("v%v", tracer.v)
-            generateCopyFromUser(tracer, s, path, argType, structPath)
+            GenerateCopyFromUser(tracer, s, path, argType, structPath)
 		} else {
 			structPath = path + "." + arg.FieldName()
 		}
 
         tracer.AddStruct(arg.(*prog.StructType))
 		for _, field := range arg.(*prog.StructType).StructDesc.Fields {
-			generateRecursiveTracer(tracer, field, s, structPath, false, offset)
+			GenerateRecursiveTracer(tracer, field, s, structPath, false, offset)
 		}
 	case *prog.LenType, *prog.IntType, *prog.ConstType:
         if c, ok := t.(*prog.ConstType); ok && c.IsPad {
@@ -361,24 +247,24 @@ func generateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, pat
 		argName := ""
 		if fromPointer {
 			argName = fmt.Sprintf("v%v", tracer.v)
-            generateCopyFromUser(tracer, s, path, argType, argName)
+            GenerateCopyFromUser(tracer, s, path, argType, argName)
 		} else {
 			argName = path + "." + arg.FieldName()
 		}
 
 		tracer.NewMinMaxMap(argName, argType)
-		generateUpdateMinMax(s, argType, argName, fixName(argName))
+		GenerateUpdateMinMax(s, argType, argName, fixName(argName))
 	case *prog.FlagsType:
 		argName := ""
 		if fromPointer {
 			argName = fmt.Sprintf("v%v", tracer.v)
-            generateCopyFromUser(tracer, s, path, argType, argName)
+            GenerateCopyFromUser(tracer, s, path, argType, argName)
 		} else {
 			argName = path + "." + arg.FieldName()
 		}
 
 		tracer.NewFlagsMap(argName, argType)
-		generateUpdateFlags(s, argType, argName, fixName(argName))
+		GenerateUpdateFlags(s, argType, argName, fixName(argName))
 	case *prog.UnionType:
 	case *prog.ArrayType:
 	case *prog.BufferType:
@@ -390,18 +276,167 @@ func generateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, pat
 
 }
 
-func generateIoctlTracer(target *prog.Target, tracer *Tracer, name string, syscall *prog.Syscall) {
+func GenerateIoctlTracer(target *prog.Target, tracer *Tracer, name string, syscall *prog.Syscall) {
 	s := tracer.NewSection()
 	fmt.Fprintf(s, "void __always_inline %v(struct user_pt_regs *ctx) {\n", name)
 	//fmt.Fprintf(s, "    int i = 0;\n")
 	//fmt.Fprintf(s, "    uint32_t *min, *max;\n")
 	path := "ctx->regs[2]"
     offset := 0
-	generateRecursiveTracer(tracer, syscall.Args[2], s, path, true, &offset)
+	GenerateRecursiveTracer(tracer, syscall.Args[2], s, path, true, &offset)
 	fmt.Fprintf(s, "}\n\n")
 }
 
-func (tracer *Tracer) generateStructSection() {
+func (tracer *Tracer) GenerateProgSection() {
+	// Find out device associated syscalls to be traced
+	tracedSyscalls := map[string][]string{}
+	for _, syscall := range tracer.target.Syscalls {
+		for _, args := range syscall.Args {
+			if args.Name() == tracer.fdName {
+				tracedSyscalls[syscall.CallName] = append(tracedSyscalls[syscall.CallName], syscall.Name)
+			}
+		}
+	}
+
+	// Generate tracing code
+	for key, syscall := range tracedSyscalls {
+		if key == "ioctl" {
+			s := tracer.NewSection()
+			fmt.Fprintf(s, "SEC(\"kprobe/%v\")\n", tracer.syscallEntry)
+			fmt.Fprintf(s, "int kprobe_%v(struct user_pt_regs *ctx) {\n", tracer.syscallEntry)
+			fmt.Fprintf(s, "    uint64_t ioctl_cmd = ctx->regs[1];\n")
+			//fmt.Fprintf(s, "    uint64_t ioctl_arg = ctx->regs[2];\n")
+			fmt.Fprintf(s, "    switch (ioctl_cmd) {\n")
+			for _, commands := range syscall {
+				cmd, ok := tracer.target.SyscallMap[commands].Args[1].(*prog.ConstType)
+				if !ok {
+					failf("failed to get const command value for %v", commands)
+				}
+                if !strings.Contains(commands, "_compact_") {
+                    traceFuncName := fmt.Sprintf("trace_ioctl_0x%x", cmd.Val)
+                    GenerateIoctlTracer(tracer.target, tracer, traceFuncName, tracer.target.SyscallMap[commands])
+                    fmt.Fprintf(s, "    case 0x%x: //%v\n", cmd.Val, commands)
+                    fmt.Fprintf(s, "        %v(ctx);\n", traceFuncName)
+                    fmt.Fprintf(s, "        break;\n")
+                }
+			}
+			fmt.Fprintf(s, "    }\n")
+			fmt.Fprintf(s, "    return 0;\n")
+			fmt.Fprintf(s, "}\n\n")
+
+		} else {
+
+		}
+	}
+
+    // generate sequence tracer
+    s := tracer.NewSection()
+    fmt.Fprintf(s, "uint16_t __always_inline arg_to_id(sys_enter_args *arg) {\n")
+    fmt.Fprintf(s, "    int id = arg->id;\n")
+    fmt.Fprintf(s, "    char dev [] = \"%v\";\n", tracer.devName)
+    fmt.Fprintf(s, "    uint8_t *fd_mask = bpf_syscall_fd_mask_lookup_elem(&id);\n")
+    fmt.Fprintf(s, "    if (fd_mask) {\n")
+    fmt.Fprintf(s, "        for (int i = 0; i < 5; i++) {\n")
+    fmt.Fprintf(s, "            if ((*fd_mask >> i) & 0x01 &&\n")
+    fmt.Fprintf(s, "                (bpf_check_fd(dev, arg->regs[i]))) { \n")
+    fmt.Fprintf(s, "                return arg->id;\n")
+    fmt.Fprintf(s, "            }\n")
+    fmt.Fprintf(s, "        }\n")
+    fmt.Fprintf(s, "    }\n")
+    fmt.Fprintf(s, "    return 0;\n")
+    fmt.Fprintf(s, "}\n")
+    fmt.Fprintf(s, "\n")
+    fmt.Fprintf(s, "void __always_inline update_syscall_seq(int pid, uint16_t id) {\n")
+    fmt.Fprintf(s, "    seq_rb_elem *rb = bpf_syscall_seq_rb_lookup_elem(&pid);\n")
+    fmt.Fprintf(s, "    if (rb) {\n")
+    fmt.Fprintf(s, "        uint8_t next;\n");
+    fmt.Fprintf(s, "        bpf_spin_lock(&rb->lock);\n")
+    fmt.Fprintf(s, "        next = rb->next;\n")
+    fmt.Fprintf(s, "        next += 1;\n")
+    fmt.Fprintf(s, "        rb->next = next;\n")
+    fmt.Fprintf(s, "        bpf_spin_unlock(&rb->lock);\n")
+    fmt.Fprintf(s, "\n")
+    fmt.Fprintf(s, "        if (next-1 < 128)\n")
+    fmt.Fprintf(s, "            rb->id0[next-1] = id;\n")
+    fmt.Fprintf(s, "        else\n")
+    fmt.Fprintf(s, "            rb->id1[next-129] = id;\n")
+    fmt.Fprintf(s, "\n")
+    fmt.Fprintf(s, "        uint8_t *ctr = bpf_syscall_seq_rb_ctr_lookup_elem(&pid);\n")
+    fmt.Fprintf(s, "        if (ctr && (next == 0 || next == 128)) {\n")
+    fmt.Fprintf(s, "            *ctr += 1;\n")
+    fmt.Fprintf(s, "        }\n")
+    fmt.Fprintf(s, "    }\n")
+    fmt.Fprintf(s, "}\n")
+    fmt.Fprintf(s, "\n")
+    fmt.Fprintf(s, "int __always_inline get_current_pid() {\n")
+    fmt.Fprintf(s, "    uint64_t current_pid_tgid = bpf_get_current_pid_tgid();\n")
+    fmt.Fprintf(s, "    int pid = current_pid_tgid >> 32;\n")
+    fmt.Fprintf(s, "    return pid;\n")
+    fmt.Fprintf(s, "}\n")
+    fmt.Fprintf(s, "\n")
+    fmt.Fprintf(s, "SEC(\"tracepoint/raw_syscalls/sys_enter\")\n")
+    fmt.Fprintf(s, "int sys_enter_prog(sys_enter_args *arg) {\n")
+    fmt.Fprintf(s, "    uint16_t id = arg_to_id(arg);\n")
+    fmt.Fprintf(s, "    if (id != 0) {\n")
+    fmt.Fprintf(s, "        uint32_t pid = get_current_pid();\n")
+    fmt.Fprintf(s, "        update_syscall_seq(pid, id);\n")
+    fmt.Fprintf(s, "    }\n")
+    fmt.Fprintf(s, "    return 0;\n")
+    fmt.Fprintf(s, "}\n")
+
+}
+
+func (tracer *Tracer) GenerateInitSection() {
+	s := tracer.NewSection()
+	fmt.Fprintf(s, "void __always_inline init() {\n")
+	fmt.Fprintf(s, "    int32_t i = 0;\n")
+	fmt.Fprintf(s, "    int *init = bpf_init_map_lookup_elem(&i);\n")
+	fmt.Fprintf(s, "    if (init && *init == 0) {\n")
+	fmt.Fprintf(s, "        *init = 1;\n")
+	for _, bpfMap := range (*tracer).minMaxMaps {
+		fmt.Fprintf(s, "        i = 0;\n")
+		fmt.Fprintf(s, "        %v *%v_min = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
+		fmt.Fprintf(s, "        if (%v_min) {\n", bpfMap.name)
+		fmt.Fprintf(s, "            *%v_min = -1;\n", bpfMap.name)
+		fmt.Fprintf(s, "        }\n")
+		fmt.Fprintf(s, "        i = 1;\n")
+		fmt.Fprintf(s, "        %v *%v_max = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
+		fmt.Fprintf(s, "        if (%v_max) {\n", bpfMap.name)
+		fmt.Fprintf(s, "            *%v_max = 0;\n", bpfMap.name)
+		fmt.Fprintf(s, "        }\n")
+	}
+	for _, bpfMap := range (*tracer).flagsMaps {
+		fmt.Fprintf(s, "        i = 0;\n")
+		fmt.Fprintf(s, "        %v *%v_zeros = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
+		fmt.Fprintf(s, "        if (%v_zeros) {\n", bpfMap.name)
+		fmt.Fprintf(s, "            *%v_zeros = 0;\n", bpfMap.name)
+		fmt.Fprintf(s, "        }\n")
+		fmt.Fprintf(s, "        i = 1;\n")
+		fmt.Fprintf(s, "        %v *%v_ones = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
+		fmt.Fprintf(s, "        if (%v_ones) {\n", bpfMap.name)
+		fmt.Fprintf(s, "            *%v_ones = 0;\n", bpfMap.name)
+		fmt.Fprintf(s, "        }\n")
+	}
+	fmt.Fprintf(s, "    }\n")
+	fmt.Fprintf(s, "}\n\n")
+}
+
+func (tracer *Tracer) GenerateMapSection() {
+	s := tracer.NewSection()
+	fmt.Fprintf(s, "DEFINE_BPF_MAP(init_map, ARRAY, int, int, 2)\n")
+	for _, bpfMap := range (*tracer).minMaxMaps {
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, 2)\n", bpfMap.name, bpfMap.datatype)
+	}
+	for _, bpfMap := range (*tracer).flagsMaps {
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, 2)\n", bpfMap.name, bpfMap.datatype)
+	}
+    fmt.Fprintf(s, "DEFINE_BPF_MAP_F(syscall_seq_rb, ARRAY, int, seq_rb_elem, 32768, BPF_F_LOCK);\n")
+    fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_seq_rb_ctr, ARRAY, int, uint8_t, 32768);\n")
+    fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_fd_mask, ARRAY, int, uint8_t, 292);\n")
+	fmt.Fprintf(s, "\n")
+}
+
+func (tracer *Tracer) GenerateStructSection() {
 	s := tracer.NewSection()
     for _, structure := range tracer.structs {
         fmt.Fprintf(s, "struct %v {\n", structure.Name())
@@ -473,125 +508,97 @@ func (tracer *Tracer) generateStructSection() {
 		}
         fmt.Fprintf(s, "};\n\n")
     }
+    fmt.Fprintf(s, "typedef struct {\n")
+    fmt.Fprintf(s, "    uint64_t ignore;\n")
+    fmt.Fprintf(s, "    int64_t id;\n")
+    fmt.Fprintf(s, "    uint64_t regs[6];\n")
+    fmt.Fprintf(s, "} sys_enter_args;\n")
+    fmt.Fprintf(s, "\n")
+    fmt.Fprintf(s, "typedef struct {\n")
+    fmt.Fprintf(s, "    struct bpf_spin_lock lock;\n")
+    fmt.Fprintf(s, "    uint8_t next;\n")
+    fmt.Fprintf(s, "    uint16_t id0[128];\n")
+    fmt.Fprintf(s, "    uint16_t id1[128];\n")
+    fmt.Fprintf(s, "} seq_rb_elem;\n")
+    fmt.Fprintf(s, "\n")
 }
 
-func (tracer *Tracer) generateInitSection() {
-	initSec := tracer.NewSection()
-	fmt.Fprintf(initSec, "void __always_inline init() {\n")
-	fmt.Fprintf(initSec, "    int32_t i = 0;\n")
-	fmt.Fprintf(initSec, "    int *init = bpf_init_map_lookup_elem(&i);\n")
-	fmt.Fprintf(initSec, "    if (init && *init == 0) {\n")
-	fmt.Fprintf(initSec, "        *init = 1;\n")
-	for _, bpfMap := range (*tracer).minMaxMaps {
-		fmt.Fprintf(initSec, "        i = 0;\n")
-		fmt.Fprintf(initSec, "        %v *%v_min = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
-		fmt.Fprintf(initSec, "        if (%v_min) {\n", bpfMap.name)
-		fmt.Fprintf(initSec, "            *%v_min = -1;\n", bpfMap.name)
-		fmt.Fprintf(initSec, "        }\n")
-		fmt.Fprintf(initSec, "        i = 1;\n")
-		fmt.Fprintf(initSec, "        %v *%v_max = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
-		fmt.Fprintf(initSec, "        if (%v_max) {\n", bpfMap.name)
-		fmt.Fprintf(initSec, "            *%v_max = 0;\n", bpfMap.name)
-		fmt.Fprintf(initSec, "        }\n")
-	}
-	for _, bpfMap := range (*tracer).flagsMaps {
-		fmt.Fprintf(initSec, "        i = 0;\n")
-		fmt.Fprintf(initSec, "        %v *%v_zeros = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
-		fmt.Fprintf(initSec, "        if (%v_zeros) {\n", bpfMap.name)
-		fmt.Fprintf(initSec, "            *%v_zeros = 0;\n", bpfMap.name)
-		fmt.Fprintf(initSec, "        }\n")
-		fmt.Fprintf(initSec, "        i = 1;\n")
-		fmt.Fprintf(initSec, "        %v *%v_ones = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
-		fmt.Fprintf(initSec, "        if (%v_ones) {\n", bpfMap.name)
-		fmt.Fprintf(initSec, "            *%v_ones = 0;\n", bpfMap.name)
-		fmt.Fprintf(initSec, "        }\n")
-	}
-	fmt.Fprintf(initSec, "    }\n")
-	fmt.Fprintf(initSec, "}\n\n")
-}
-
-func (tracer *Tracer) generateMapSection() {
-	mapSec := tracer.NewSection()
-	fmt.Fprintf(mapSec, "DEFINE_BPF_MAP(init_map, ARRAY, int, int, 2)\n")
-	for _, bpfMap := range (*tracer).minMaxMaps {
-		fmt.Fprintf(mapSec, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, 2)\n", bpfMap.name, bpfMap.datatype)
-	}
-	for _, bpfMap := range (*tracer).flagsMaps {
-		fmt.Fprintf(mapSec, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, 2)\n", bpfMap.name, bpfMap.datatype)
-	}
-	fmt.Fprintf(mapSec, "\n")
-}
-
-func (tracer *Tracer) generateHeaderSection() {
-	headerSec := tracer.NewSection()
-	fmt.Fprintf(headerSec, "#include <linux/seccomp.h>\n")
-	fmt.Fprintf(headerSec, "#include <linux/bpf.h>\n")
-	fmt.Fprintf(headerSec, "#include <linux/unistd.h>\n")
-	fmt.Fprintf(headerSec, "#include <linux/ptrace.h>\n")
-	fmt.Fprintf(headerSec, "#include <bpf_helpers.h>\n")
-	fmt.Fprintf(headerSec, "#include <linux/errno.h>\n")
-	fmt.Fprintf(headerSec, "#include <sys/types.h>\n")
+func (tracer *Tracer) GenerateHeaderSection() {
+	s := tracer.NewSection()
+	fmt.Fprintf(s, "#include <linux/seccomp.h>\n")
+	fmt.Fprintf(s, "#include <linux/bpf.h>\n")
+	fmt.Fprintf(s, "#include <linux/unistd.h>\n")
+	fmt.Fprintf(s, "#include <linux/ptrace.h>\n")
+	fmt.Fprintf(s, "#include <bpf_helpers.h>\n")
+	fmt.Fprintf(s, "#include <linux/errno.h>\n")
+	fmt.Fprintf(s, "#include <sys/types.h>\n")
 	for _, header := range tracer.headers {
-		fmt.Fprintf(headerSec, "#include <%v>\n", header)
+		fmt.Fprintf(s, "#include <%v>\n", header)
 	}
-	fmt.Fprintf(headerSec, "\n")
+	fmt.Fprintf(s, "\n")
 }
 
-func generateTracer(target *prog.Target, tracer *Tracer) { //, sections *[]*bytes.Buffer) {
-	tracedSyscalls := map[string][]string{}
-
-	// Find out device associated syscalls to be traced
-	for _, syscall := range target.Syscalls {
-		for _, args := range syscall.Args {
-			if args.Name() == tracer.fdName {
-				tracedSyscalls[syscall.CallName] = append(tracedSyscalls[syscall.CallName], syscall.Name)
-			}
-		}
-	}
-
+func (tracer *Tracer) GenerateTracer() {
 	licenseSec := tracer.NewSection()
 	fmt.Fprintf(licenseSec, "char _license[] SEC(\"license\") = \"GPL\";\n")
 
-	// Generate tracing code
-	for key, syscall := range tracedSyscalls {
-		if key == "ioctl" {
-			s := tracer.NewSection()
-			fmt.Fprintf(s, "SEC(\"kprobe/%v\")\n", tracer.syscallEntry)
-			fmt.Fprintf(s, "int kprobe_%v(struct user_pt_regs *ctx) {\n", tracer.syscallEntry)
-			fmt.Fprintf(s, "    uint64_t ioctl_cmd = ctx->regs[1];\n")
-			//fmt.Fprintf(s, "    uint64_t ioctl_arg = ctx->regs[2];\n")
-			fmt.Fprintf(s, "    switch (ioctl_cmd) {\n")
-			for _, commands := range syscall {
-				cmd, ok := target.SyscallMap[commands].Args[1].(*prog.ConstType)
-				if !ok {
-					failf("failed to get const command value for %v", commands)
-				}
-                if !strings.Contains(commands, "_compact_") {
-                    traceFuncName := fmt.Sprintf("trace_ioctl_0x%x", cmd.Val)
-                    generateIoctlTracer(target, tracer, traceFuncName, target.SyscallMap[commands])
-                    fmt.Fprintf(s, "    case 0x%x: //%v\n", cmd.Val, commands)
-                    fmt.Fprintf(s, "        %v(ctx);\n", traceFuncName)
-                    fmt.Fprintf(s, "        break;\n")
-                }
-			}
-			fmt.Fprintf(s, "    }\n")
-			fmt.Fprintf(s, "    return 0;\n")
-			fmt.Fprintf(s, "}\n\n")
-
-		} else {
-
-		}
-	}
-
-    tracer.generateInitSection()
-    tracer.generateMapSection()
-    tracer.generateStructSection()
-    tracer.generateHeaderSection()
+    tracer.GenerateProgSection()
+    tracer.GenerateInitSection()
+    tracer.GenerateMapSection()
+    tracer.GenerateStructSection()
+    tracer.GenerateHeaderSection()
 }
 
-func failf(msg string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, msg+"\n", args...)
-	os.Exit(1)
+func (tracer *Tracer) WriteTracerFile() {
+    file := filepath.Join(tracer.outDir, tracer.outName+".c")
+	outf, err := os.Create(file)
+	if err != nil {
+		failf("failed to create output file: %v", err)
+	}
+	defer outf.Close()
+	for _, section := range tracer.sections {
+		outf.Write(section.Bytes())
+	}
+}
+
+func (tracer *Tracer) WriteAgentConfigFile() {
+	file := filepath.Join(tracer.outDir, tracer.outName+"_agent.cfg")
+	outf, err := os.Create(file)
+	if err != nil {
+		failf("failed to create output file: %v", err)
+	}
+	defer outf.Close()
+
+	s := new(bytes.Buffer)
+	fmt.Fprintf(s, "%v\n", (*tracer).outName)
+	fmt.Fprintf(s, "p 1 %v %v\n", (*tracer).syscallEntry, (*tracer).syscallEntry)
+
+	for _, bpfMap := range (*tracer).minMaxMaps {
+		fmt.Fprintf(s, "m 0 %v\n", bpfMap.name)
+	}
+	for _, bpfMap := range (*tracer).flagsMaps {
+		fmt.Fprintf(s, "m 0 %v\n", bpfMap.name)
+	}
+    fmt.Fprintf(s, "p 2 raw_syscalls sys_enter\n")
+    fmt.Fprintf(s, "l 0 syscall_fd_mask 292\n")
+    fmt.Fprintf(s, "        0 0 0 0 0 0 0 1 0 0 1 0 0 1 0 0 1 0 0 0\n")
+    fmt.Fprintf(s, "        0 4 0 0 1 1 0 1 1 1 0 0 1 1 1 1 0 1 1 0\n")
+    fmt.Fprintf(s, "        0 0 0 0 1 0 1 1 1 0 1 0 1 1 1 1 1 1 0 0\n")
+    fmt.Fprintf(s, "        0 1 1 1 1 1 1 1 1 1 1 3 0 0 1 1 5 3 1 1\n")
+    fmt.Fprintf(s, "        1 0 1 1 1 0 1 1 1 0 0 0 0 0 0 0 0 0 0 0\n")
+    fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+    fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+    fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+    fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+    fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+    fmt.Fprintf(s, "        1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0 0 0 0\n")
+    fmt.Fprintf(s, "        0 0 16 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+    fmt.Fprintf(s, "        0 8 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+    fmt.Fprintf(s, "        0 0 0 8 0 1 0 1 1 1 0 0 0 1 0 0 1 0 0 0\n")
+    fmt.Fprintf(s, "        0 1 0 0 0 5 1 1 0 0 0 1\n")
+    fmt.Fprintf(s, "r 3 syscall_seq_rb\n")
+
+	outf.Write(s.Bytes())
 }
 
 func main() {
@@ -608,7 +615,7 @@ func main() {
 	}
 
     out := cfg.TargetOS + "_" + cfg.TargetArch + "_" + *flagOut
-	tracer, err := NewTracer(*flagFd, *flagEntry, out, *flagOutDir)
+	tracer, err := NewTracer(target, *flagDev, *flagFd, *flagEntry, out, *flagOutDir)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -621,8 +628,7 @@ func main() {
         }
     }
 
-	generateTracer(target, tracer)
-
+	tracer.GenerateTracer()
 	tracer.WriteTracerFile()
 	tracer.WriteAgentConfigFile()
 }

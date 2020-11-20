@@ -36,7 +36,7 @@ struct sifter_rb {
     unique_fd ctr_fd;
     std::vector<u_rb_elem> saved;
 //    std::vector<std::map<std::deque<uint16_t>, std::bitset<65536> > > tbl;
-    std::map<std::deque<uint16_t>, std::bitset<65536> > tbl;
+    std::map<std::deque<uint16_t>, std::bitset<65536> > tbl; // [syscall seq][next syscall]
     sifter_rb(int l, std::string nm, int f, int ctr):
         len(l), name(nm), fd(android::base::unique_fd(f)),
         ctr_fd(android::base::unique_fd(ctr)) {
@@ -229,6 +229,48 @@ public:
         }
     }
 
+    void dump_rbs(std::string file) {
+        std::ofstream ofs(file, std::ofstream::app);
+        for (auto &rb : m_rbs) {
+            ofs << "r " << rb.tbl.size() << "\n";
+            for (auto &entry : rb.tbl) {
+                ofs << std::setw(3) << entry.first.size()
+                        << std::setw(6) << entry.second.count() << " ";
+                for (auto it : entry.first)
+                    ofs << std::setw(4) << it << " ";
+                for (int i = 0; i < 65536; i++)
+                    if (entry.second[i])
+                        ofs << std::setw(4) << i << " ";
+                ofs << "\n";
+            }
+        }
+    }
+
+    void recover_rbs(std::string file) {
+        std::ifstream ifs(file);
+
+        if (ifs) {
+            char c;
+            while (ifs >> c && c != 'r') {}
+
+            uint64_t seqs_size, seq_size, next_size, v;
+            ifs >> seqs_size;
+            for (int j = 0; j < seqs_size; j++) {
+                std::deque<uint16_t> seq;
+                std::bitset<65536> next;
+                ifs >> seq_size >> next_size;
+                seq.resize(seq_size);
+                for (int i = 0; i < seq_size; i++) {
+                    ifs >> seq[i];
+                }
+                for (int i = 0; i < next_size; i++) {
+                    ifs >> v;
+                    next.set(v);
+                }
+            }
+        }
+    }
+
     void print_maps() {
         for (auto &m : m_maps) {
             int size = m.val.size();
@@ -244,7 +286,11 @@ public:
     }
 
     void dump_maps(std::string file) {
-        std::ofstream ofs(file.c_str());
+        if (m_maps.empty())
+            return;
+
+        std::ofstream ofs(file, std::ofstream::app);
+        ofs << "m\n";
         for (auto &m : m_maps) {
             for (auto v : m.val)
                 ofs << v << " ";
@@ -253,7 +299,7 @@ public:
     }
 
     void recover_maps(std::string file) {
-        std::ifstream ifs(file.c_str());
+        std::ifstream ifs(file);
 
         if (!ifs) {
             for (auto &m: m_maps) {
@@ -269,6 +315,9 @@ public:
                 }
             }
         } else {
+            char c;
+            while (ifs >> c && c != 'm') {}
+
             for (auto &m : m_maps) {
                 for (auto &v : m.val)
                     ifs >> v;
@@ -411,6 +460,7 @@ public:
 };
 
 int main(int argc, char *argv[]) {
+    bool recover = true;
     bool manual_mode = false;
     int log_interval = 10;
     int verbose = 0;
@@ -418,22 +468,24 @@ int main(int argc, char *argv[]) {
     char *log_file = nullptr;
 
     int opt;
-    while ((opt = getopt (argc, argv, "hmi:v:c:o:")) != -1) {
+    while ((opt = getopt (argc, argv, "hmi:v:c:r:o:")) != -1) {
         switch (opt) {
             case 'h':
                 std::cout << "Sifter agent\n";
                 std::cout << "Options\n";
                 std::cout << "-c config   : agent configuration file [required]\n";
-                std::cout << "-m          : read maps\n";
+                std::cout << "-o output   : maps logging output file [required except manual mode]\n";
+                std::cout << "-m          : use manual mode\n";
                 std::cout << "-i interval : maps logging interval in seconds [default=10]\n";
-                std::cout << "-o output   : maps logging output file\n";
-                std::cout << "-v verbose  : verbosity\n";
+                std::cout << "-r recover  : recover from log when start [default=1 (enabled)]\n";
+                std::cout << "-v verbose  : verbosity [default=0]\n";
                 std::cout << "-h          : helps\n";
                 return 0;
             case 'm': manual_mode = true; break;
             case 'i': log_interval = atoi(optarg); break;
             case 'v': verbose = atoi(optarg); break;
             case 'c': config_file = optarg; break;
+            case 'r': recover = atoi(optarg) > 0; break;
             case 'o': log_file = optarg; break;
             case '?':
                 if (optopt == 'c')
@@ -456,31 +508,33 @@ int main(int argc, char *argv[]) {
 
     tracer.attach_prog();
 
-    if (manual_mode) {
-        std::cout << "\nPress enter to read map values...\n";
-        std::cin.get();
-        tracer.print_maps();
-        return 0;
+    if (recover) {
+        if (tracer.rb_num() > 0)
+            tracer.recover_rbs(log_file);
+        if (tracer.map_num() > 0)
+            tracer.recover_maps(log_file);
     }
 
     if (tracer.rb_num() > 0) {
         tracer.start_update_rbs();
-        std::cout << "\nPress enter to read seq values...\n";
+    }
+
+    if (manual_mode) {
+        std::cout << "\nPress enter to stop...\n";
         std::cin.get();
+        tracer.print_maps();
         tracer.print_rbs();
         tracer.stop_update_rbs();
         return 0;
     }
 
-    if (tracer.map_num() > 0) {
-        tracer.recover_maps(log_file);
-        std::string tmp_file = std::string(log_file) + ".tmp";
-        while (1) {
-            tracer.update_maps();
-            tracer.dump_maps(tmp_file);
-            std::rename(tmp_file.c_str(), log_file);
-            sleep(log_interval);
-        }
+    std::string tmp_file = std::string(log_file) + ".tmp";
+    while (1) {
+        tracer.update_maps();
+        tracer.dump_maps(tmp_file);
+        tracer.dump_rbs(tmp_file);
+        std::rename(tmp_file.c_str(), log_file);
+        std::remove(tmp_file.c_str());
+        sleep(log_interval);
     }
-
 }
