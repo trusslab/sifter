@@ -19,6 +19,7 @@ var (
 	flagEntry  = flag.String("entry", "", "syscall entry function")
 	flagOutDir = flag.String("outdir", "gen", "output file directory")
 	flagOut    = flag.String("out", "", "output file base name")
+	flagSeqLen = flag.Int("seqlen", 4, "syscall sequence length")
 )
 
 type Section struct {
@@ -50,6 +51,7 @@ type Tracer struct {
 	fdName      string
 	devName     string
 	headers     []string
+	seqLen      int
 }
 
 func failf(msg string, args ...interface{}) {
@@ -57,7 +59,7 @@ func failf(msg string, args ...interface{}) {
 	os.Exit(1)
 }
 
-func NewTracer(target *prog.Target, dev string, fd string, entry string, out string, outdir string) (*Tracer, error) {
+func NewTracer(target *prog.Target, dev string, fd string, entry string, out string, outdir string, l int) (*Tracer, error) {
 	tracer := new(Tracer)
     tracer.target = target
 	tracer.fdName = fd
@@ -65,6 +67,7 @@ func NewTracer(target *prog.Target, dev string, fd string, entry string, out str
 	tracer.syscallEntry = entry
 	tracer.outName = out
 	tracer.outDir = outdir
+	tracer.seqLen = l
 	tracer.lazyInit()
 	return tracer, nil
 }
@@ -114,7 +117,7 @@ func (tracer *Tracer) AddStruct(s *prog.StructType) {
         }
     }
 
-    fmt.Println("Add new struct ", (*s).Name())
+    fmt.Printf("add new struct: %v\n", s.Name())
     // Scan for dependencies and insert
     for i, _s := range tracer.structs {
 		for _, field := range _s.StructDesc.Fields {
@@ -287,16 +290,53 @@ func GenerateIoctlTracer(target *prog.Target, tracer *Tracer, name string, sysca
 	fmt.Fprintf(s, "}\n\n")
 }
 
+//from "github.com/google/syzkaller/pkg/host/syscalls_linux.go"
+func extractStringConst(typ prog.Type) (string, bool) {
+    ptr, ok := typ.(*prog.PtrType)
+    if !ok {
+        panic("first open arg is not a pointer to string const")
+    }
+    str, ok := ptr.Type.(*prog.BufferType)
+    if !ok || str.Kind != prog.BufferString || len(str.Values) == 0 {
+        return "", false
+    }
+    v := str.Values[0]
+    for len(v) != 0 && v[len(v)-1] == 0 {
+        v = v[:len(v)-1] // string terminating \x00
+    }
+    return v, true
+}
+
 func (tracer *Tracer) GenerateProgSection() {
+	var ioctlNR uint64 = 0
+
 	// Find out device associated syscalls to be traced
 	tracedSyscalls := map[string][]string{}
 	for _, syscall := range tracer.target.Syscalls {
+		if syscall.Name == "ioctl" {
+			ioctlNR = syscall.NR
+		}
+		if len(tracer.devName) == 0  && syscall.CallName == "syz_open_dev" {
+            if ret, ok := syscall.Ret.(*prog.ResourceType); ok {
+                if ret.String() == tracer.fdName {
+                    if devName, ok := extractStringConst(syscall.Args[0]); ok {
+                        tracer.devName = filepath.Base(strings.Replace(devName, "#", "0", 1))
+                    }
+                }
+            }
+		}
 		for _, args := range syscall.Args {
 			if args.Name() == tracer.fdName {
 				tracedSyscalls[syscall.CallName] = append(tracedSyscalls[syscall.CallName], syscall.Name)
 			}
 		}
 	}
+
+    if len(tracer.devName) == 0 {
+        failf("cannot find dev for %v", tracer.fdName)
+    } else {
+        fmt.Printf("trace syscall using dev: %v\n", tracer.devName)
+    }
 
 	// Generate tracing code
 	for key, syscall := range tracedSyscalls {
@@ -331,6 +371,7 @@ func (tracer *Tracer) GenerateProgSection() {
 
     // generate sequence tracer
     s := tracer.NewSection()
+    fmt.Fprintf(s, "#define IOC_NR(cmd) cmd & ((1 << 8)-1)\n")
     fmt.Fprintf(s, "uint16_t __always_inline arg_to_id(sys_enter_args *arg) {\n")
     fmt.Fprintf(s, "    int id = arg->id;\n")
     fmt.Fprintf(s, "    char dev [] = \"%v\";\n", tracer.devName)
@@ -338,8 +379,11 @@ func (tracer *Tracer) GenerateProgSection() {
     fmt.Fprintf(s, "    if (fd_mask) {\n")
     fmt.Fprintf(s, "        for (int i = 0; i < 5; i++) {\n")
     fmt.Fprintf(s, "            if ((*fd_mask >> i) & 0x01 &&\n")
-    fmt.Fprintf(s, "                (bpf_check_fd(dev, arg->regs[i]))) { \n")
-    fmt.Fprintf(s, "                return arg->id;\n")
+    fmt.Fprintf(s, "                (bpf_check_fd(dev, arg->regs[i]))) {\n")
+    fmt.Fprintf(s, "                if (arg->id == %v)\n", ioctlNR)
+    fmt.Fprintf(s, "                    return arg->id && (IOC_NR(arg->regs[1]) << 9);\n")
+    fmt.Fprintf(s, "                else\n")
+    fmt.Fprintf(s, "                    return arg->id;\n")
     fmt.Fprintf(s, "            }\n")
     fmt.Fprintf(s, "        }\n")
     fmt.Fprintf(s, "    }\n")
@@ -393,7 +437,7 @@ func (tracer *Tracer) GenerateInitSection() {
 	fmt.Fprintf(s, "    int *init = bpf_init_map_lookup_elem(&i);\n")
 	fmt.Fprintf(s, "    if (init && *init == 0) {\n")
 	fmt.Fprintf(s, "        *init = 1;\n")
-	for _, bpfMap := range (*tracer).minMaxMaps {
+	for _, bpfMap := range tracer.minMaxMaps {
 		fmt.Fprintf(s, "        i = 0;\n")
 		fmt.Fprintf(s, "        %v *%v_min = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
 		fmt.Fprintf(s, "        if (%v_min) {\n", bpfMap.name)
@@ -405,7 +449,7 @@ func (tracer *Tracer) GenerateInitSection() {
 		fmt.Fprintf(s, "            *%v_max = 0;\n", bpfMap.name)
 		fmt.Fprintf(s, "        }\n")
 	}
-	for _, bpfMap := range (*tracer).flagsMaps {
+	for _, bpfMap := range tracer.flagsMaps {
 		fmt.Fprintf(s, "        i = 0;\n")
 		fmt.Fprintf(s, "        %v *%v_zeros = bpf_%v_lookup_elem(&i);\n", bpfMap.datatype, bpfMap.name, bpfMap.name)
 		fmt.Fprintf(s, "        if (%v_zeros) {\n", bpfMap.name)
@@ -424,10 +468,10 @@ func (tracer *Tracer) GenerateInitSection() {
 func (tracer *Tracer) GenerateMapSection() {
 	s := tracer.NewSection()
 	fmt.Fprintf(s, "DEFINE_BPF_MAP(init_map, ARRAY, int, int, 2)\n")
-	for _, bpfMap := range (*tracer).minMaxMaps {
+	for _, bpfMap := range tracer.minMaxMaps {
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, 2)\n", bpfMap.name, bpfMap.datatype)
 	}
-	for _, bpfMap := range (*tracer).flagsMaps {
+	for _, bpfMap := range tracer.flagsMaps {
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, 2)\n", bpfMap.name, bpfMap.datatype)
 	}
     fmt.Fprintf(s, "DEFINE_BPF_MAP_F(syscall_seq_rb, ARRAY, int, seq_rb_elem, 32768, BPF_F_LOCK);\n")
@@ -542,15 +586,15 @@ func (tracer *Tracer) GenerateTracer() {
 	licenseSec := tracer.NewSection()
 	fmt.Fprintf(licenseSec, "char _license[] SEC(\"license\") = \"GPL\";\n")
 
-    tracer.GenerateProgSection()
-    tracer.GenerateInitSection()
-    tracer.GenerateMapSection()
-    tracer.GenerateStructSection()
-    tracer.GenerateHeaderSection()
+	tracer.GenerateProgSection()
+	tracer.GenerateInitSection()
+	tracer.GenerateMapSection()
+	tracer.GenerateStructSection()
+	tracer.GenerateHeaderSection()
 }
 
 func (tracer *Tracer) WriteTracerFile() {
-    file := filepath.Join(tracer.outDir, tracer.outName+".c")
+	file := filepath.Join(tracer.outDir, tracer.outName+".c")
 	outf, err := os.Create(file)
 	if err != nil {
 		failf("failed to create output file: %v", err)
@@ -570,33 +614,60 @@ func (tracer *Tracer) WriteAgentConfigFile() {
 	defer outf.Close()
 
 	s := new(bytes.Buffer)
-	fmt.Fprintf(s, "%v\n", (*tracer).outName)
-	fmt.Fprintf(s, "p 1 %v %v\n", (*tracer).syscallEntry, (*tracer).syscallEntry)
+	fmt.Fprintf(s, "%v\n", tracer.outName)
+	fmt.Fprintf(s, "p 1 %v %v\n", tracer.syscallEntry, tracer.syscallEntry)
 
-	for _, bpfMap := range (*tracer).minMaxMaps {
+	for _, bpfMap := range tracer.minMaxMaps {
 		fmt.Fprintf(s, "m 0 %v\n", bpfMap.name)
 	}
-	for _, bpfMap := range (*tracer).flagsMaps {
+	for _, bpfMap := range tracer.flagsMaps {
 		fmt.Fprintf(s, "m 0 %v\n", bpfMap.name)
 	}
-    fmt.Fprintf(s, "p 2 raw_syscalls sys_enter\n")
-    fmt.Fprintf(s, "l 0 syscall_fd_mask 292\n")
-    fmt.Fprintf(s, "        0 0 0 0 0 0 0 1 0 0 1 0 0 1 0 0 1 0 0 0\n")
-    fmt.Fprintf(s, "        0 4 0 0 1 1 0 1 1 1 0 0 1 1 1 1 0 1 1 0\n")
-    fmt.Fprintf(s, "        0 0 0 0 1 0 1 1 1 0 1 0 1 1 1 1 1 1 0 0\n")
-    fmt.Fprintf(s, "        0 1 1 1 1 1 1 1 1 1 1 3 0 0 1 1 5 3 1 1\n")
-    fmt.Fprintf(s, "        1 0 1 1 1 0 1 1 1 0 0 0 0 0 0 0 0 0 0 0\n")
-    fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
-    fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
-    fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
-    fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
-    fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
-    fmt.Fprintf(s, "        1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0 0 0 0\n")
-    fmt.Fprintf(s, "        0 0 16 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
-    fmt.Fprintf(s, "        0 8 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
-    fmt.Fprintf(s, "        0 0 0 8 0 1 0 1 1 1 0 0 0 1 0 0 1 0 0 0\n")
-    fmt.Fprintf(s, "        0 1 0 0 0 5 1 1 0 0 0 1\n")
-    fmt.Fprintf(s, "r 3 syscall_seq_rb\n")
+	fmt.Fprintf(s, "p 2 raw_syscalls sys_enter\n")
+	if tracer.target.Arch == "arm" {
+		fmt.Fprintf(s, "l 0 syscall_fd_mask 398\n")
+		//                      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9
+		fmt.Fprintf(s, "        0 0 0 1 1 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 1 0 0 0 0\n")
+		fmt.Fprintf(s, "        1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 1 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 1 0 1 0 1 1 0 1 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        1 1 0 0 0 0 0 3 0 0 0 0 0 0 1 0 0 1 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0\n")
+		fmt.Fprintf(s, "        1 0 0 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 1\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 5 1 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 0\n")
+		fmt.Fprintf(s, "        0 0 1 1 1 1 1 1 1 5 5 2 1 1 1 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        5 1 3 0 0 0 1 0 1 1 0 0 1 1 1 1 0 3 0 0\n")
+		fmt.Fprintf(s, "        1 1 0 0 0 1 0 0 9 0 1 1 0 1 1 1 0 0 0 1\n")
+		fmt.Fprintf(s, "        0 0 5 0 0 0 0 1 0 0 0 5 1 1 0 0 0 1\n")
+	}
+	if tracer.target.Arch == "arm64" {
+		fmt.Fprintf(s, "l 0 syscall_fd_mask 292\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 1 0 0 1 0 0 1 0 0 1 0 0 0\n")
+		fmt.Fprintf(s, "        0 4 0 0 1 1 0 1 1 1 0 0 1 1 1 1 0 1 1 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 1 0 1 1 1 0 1 0 1 1 1 1 1 1 0 0\n")
+		fmt.Fprintf(s, "        0 1 1 1 1 1 1 1 1 1 1 3 0 0 1 1 5 3 1 1\n")
+		fmt.Fprintf(s, "        1 0 1 1 1 0 1 1 1 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 16 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 8 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+		fmt.Fprintf(s, "        0 0 0 8 0 1 0 1 1 1 0 0 0 1 0 0 1 0 0 0\n")
+		fmt.Fprintf(s, "        0 1 0 0 0 5 1 1 0 0 0 1\n")
+	}
+
+	fmt.Fprintf(s, "r %v syscall_seq_rb\n", tracer.seqLen)
 
 	outf.Write(s.Bytes())
 }
@@ -606,27 +677,27 @@ func main() {
 
 	cfg, err := mgrconfig.LoadFile(*flagConfig)
 	if err != nil {
-		fmt.Println(err)
+		failf("failed to load config file. err: %v", err)
 	}
 
 	target, err := prog.GetTarget(cfg.TargetOS, cfg.TargetArch)
 	if err != nil {
-		fmt.Println(err)
+		failf("failed to get target %v/%v. err: %v", cfg.TargetOS, cfg.TargetArch, err)
 	}
 
-    out := cfg.TargetOS + "_" + cfg.TargetArch + "_" + *flagOut
-	tracer, err := NewTracer(target, *flagDev, *flagFd, *flagEntry, out, *flagOutDir)
+	out := cfg.TargetOS + "_" + cfg.TargetArch + "_" + *flagOut
+	tracer, err := NewTracer(target, *flagDev, *flagFd, *flagEntry, out, *flagOutDir, *flagSeqLen)
 	if err != nil {
-		fmt.Println(err)
+		failf("failed to create tracer. err: %v", err)
 	}
 
-    _, err = os.Stat(tracer.outDir)
-    if os.IsNotExist(err) {
-        err = os.MkdirAll(tracer.outDir, 0755)
-        if err != nil {
-		    fmt.Println(err)
-        }
-    }
+	_, err = os.Stat(tracer.outDir)
+	if os.IsNotExist(err) {
+		err = os.MkdirAll(tracer.outDir, 0755)
+		if err != nil {
+			failf("failed to create output dir %v", tracer.outDir)
+		}
+	}
 
 	tracer.GenerateTracer()
 	tracer.WriteTracerFile()
