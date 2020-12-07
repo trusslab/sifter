@@ -3,6 +3,7 @@
 #include <libbpf_android.h>
 #include <linux/android/binder.h>
 #include <iostream>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <vector>
@@ -13,6 +14,7 @@
 #include <sstream>
 #include <thread>
 #include <unistd.h>
+#include <filesystem>
 
 using android::base::unique_fd;
 
@@ -96,10 +98,53 @@ struct sifter_prog {
         type(t), event(ev), entry(en), fd(android::base::unique_fd(f)) {};
 };
 
+int proc_bitness(int pid) {
+    std::ifstream ifs;
+    int len = 0;
+    char target[256];
+    std::string file = "/proc/" + std::to_string(pid) + "/exe";
+    len = readlink(file.c_str(), target, sizeof(target)-1);
+
+    target[len] = '\0';
+    //std::cout << "check " << target << "\n";
+
+    if (len > 2) {
+        if (target[len-2] == '3' && target[len-1] == '2')
+            return 32;
+        if (target[len-2] == '6' && target[len-1] == '4')
+            return 64;
+    }
+
+    bool bitness = -1;
+    char magic[5] = {};
+    ifs.open(target, std::ios::binary);
+    if (!ifs) {
+        std::cout << "Error checking bitness via ELF magic: cannot open " << file << "\n";
+    } else {
+        ifs.read(magic, 5);
+        if (*(uint32_t *)(magic) == 0x464c457f) {
+            if (magic[4] == 1) {
+                bitness = 32;
+            } else if (magic[4] == 2) {
+                bitness = 64;
+            } else {
+                std::cout << "Error checking bitness via ELF header: " << target
+                        << " invalid EI_CLASS " << std::hex << (uint32_t)magic[4] << std::dec << "\n";
+            }
+        } else {
+            std::cout << "Error checking bitness via ELF header: " << target
+                << " invalid ELF magic number\n";
+        }
+    }
+    ifs.close();
+    return bitness;
+}
+
 class sifter_tracer {
 private:
     int m_init;
     int m_verbose;
+    int m_bitness;
     std::string m_name;
     std::vector<sifter_prog> m_progs;
     std::vector<sifter_map> m_maps;
@@ -113,6 +158,7 @@ private:
         m_ignored_pids.insert(gettid());
         while (m_rbs_update_start) {
             for (auto &rb : m_rbs) {
+                auto begin = std::chrono::steady_clock::now();
                 for (int p = 0; p < 32768; p++) {
                     if (m_ignored_pids.find(p) != m_ignored_pids.end())
                         continue;
@@ -120,7 +166,7 @@ private:
                     uint8_t ctr;
                     android::bpf::findMapEntry(rb.ctr_fd, &p, &ctr);
                     uint8_t last_ctr = rb.saved[p].ctr;
-                    if (ctr != last_ctr) {
+                    if (ctr != last_ctr && proc_bitness(p) == m_bitness) {
                         bool missing_events = (ctr != last_ctr+1);
                         if (m_verbose > 0) {
                             if (missing_events)
@@ -136,6 +182,10 @@ private:
                         rb.update_tbl(p, ctr, rbp, missing_events);
                     }
                 }
+                auto end = std::chrono::steady_clock::now();
+                std::chrono::duration<float> scan_time = end - begin;
+                if (m_verbose > 1)
+                    std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(scan_time).count() << " ms\n";
             }
         }
     }
@@ -375,7 +425,7 @@ public:
             return;
         }
 
-        ifs >> m_name;
+        ifs >> m_name >> m_bitness;
         char cfg_type;
         while (ifs >> cfg_type) {
             switch (cfg_type) {

@@ -371,7 +371,7 @@ func (tracer *Tracer) GenerateProgSection() {
 
     // generate sequence tracer
     s := tracer.NewSection()
-    fmt.Fprintf(s, "#define IOC_NR(cmd) cmd & ((1 << 8)-1)\n")
+    fmt.Fprintf(s, "#define IOC_NR(cmd) (cmd & ((1 << 8)-1))\n")
     fmt.Fprintf(s, "uint16_t __always_inline arg_to_id(sys_enter_args *arg) {\n")
     fmt.Fprintf(s, "    int id = arg->id;\n")
     fmt.Fprintf(s, "    char dev [] = \"%v\";\n", tracer.devName)
@@ -381,7 +381,7 @@ func (tracer *Tracer) GenerateProgSection() {
     fmt.Fprintf(s, "            if ((*fd_mask >> i) & 0x01 &&\n")
     fmt.Fprintf(s, "                (bpf_check_fd(dev, arg->regs[i]))) {\n")
     fmt.Fprintf(s, "                if (arg->id == %v)\n", ioctlNR)
-    fmt.Fprintf(s, "                    return arg->id && (IOC_NR(arg->regs[1]) << 9);\n")
+    fmt.Fprintf(s, "                    return 0x8000 | IOC_NR(arg->regs[1]);\n")
     fmt.Fprintf(s, "                else\n")
     fmt.Fprintf(s, "                    return arg->id;\n")
     fmt.Fprintf(s, "            }\n")
@@ -614,7 +614,15 @@ func (tracer *Tracer) WriteAgentConfigFile() {
 	defer outf.Close()
 
 	s := new(bytes.Buffer)
-	fmt.Fprintf(s, "%v\n", tracer.outName)
+	bitness := 0
+	if tracer.target.Arch == "arm" {
+		bitness = 32
+	}
+	if tracer.target.Arch == "arm64" {
+		bitness = 64
+	}
+	fmt.Fprintf(s, "%v %v\n", tracer.outName, bitness)
+
 	fmt.Fprintf(s, "p 1 %v %v\n", tracer.syscallEntry, tracer.syscallEntry)
 
 	for _, bpfMap := range tracer.minMaxMaps {
@@ -623,6 +631,7 @@ func (tracer *Tracer) WriteAgentConfigFile() {
 	for _, bpfMap := range tracer.flagsMaps {
 		fmt.Fprintf(s, "m 0 %v\n", bpfMap.name)
 	}
+
 	fmt.Fprintf(s, "p 2 raw_syscalls sys_enter\n")
 	if tracer.target.Arch == "arm" {
 		fmt.Fprintf(s, "l 0 syscall_fd_mask 398\n")
