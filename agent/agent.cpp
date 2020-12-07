@@ -14,7 +14,6 @@
 #include <sstream>
 #include <thread>
 #include <unistd.h>
-#include <filesystem>
 
 using android::base::unique_fd;
 
@@ -31,6 +30,38 @@ struct u_rb_elem {
     uint16_t id[256];
 };
 
+#define ID_NR_BITS     9
+#define ID_UNUSED_BITS 3
+#define ID_HDR_BITS    4
+
+#define ID_NR_SIZE     (1 << ID_NR_BITS)
+#define ID_HDR_SIZE    (1 << ID_HDR_BITS)
+
+#define ID_NR_MASK     (ID_NR_SIZE-1)
+#define ID_HDR_MASK    (ID_HDR_SIZE-1)
+
+#define ID_NR_SHIFT    0
+#define ID_HDR_SHIFT   (ID_NR_BITS + ID_UNUSED_BITS)
+
+#define ID_NR(id)      ((id >> ID_NR_SHIFT) & ID_NR_MASK)
+#define ID_HDR(id)     ((id >> ID_HDR_SHIFT) & ID_HDR_MASK)
+
+#define ID_HDR_SYSCALL 0x0
+#define ID_HDR_IOCTL   0x8
+
+#define BITSET_NR_ENTRY 2 // 1 ioctl + 1 syscall
+#define BITSET_SIZE     (BITSET_NR_ENTRY * ID_NR_SIZE)
+
+int id_to_bitset_off(uint16_t id) {
+    uint8_t hdr = ID_HDR(id);
+    int ret = 0;
+    switch (hdr) {
+    case ID_HDR_SYSCALL: ret = ID_NR(id); break;
+    case ID_HDR_IOCTL: ret = ID_NR(id) + ID_NR_SIZE; break;
+    }
+    return ret;
+}
+
 struct sifter_rb {
     int len;
     std::string name;
@@ -38,7 +69,7 @@ struct sifter_rb {
     unique_fd ctr_fd;
     std::vector<u_rb_elem> saved;
 //    std::vector<std::map<std::deque<uint16_t>, std::bitset<65536> > > tbl;
-    std::map<std::deque<uint16_t>, std::bitset<65536> > tbl; // [syscall seq][next syscall]
+    std::map<std::deque<uint16_t>, std::bitset<BITSET_SIZE> > tbl; // [syscall seq][next syscall]
     sifter_rb(int l, std::string nm, int f, int ctr):
         len(l), name(nm), fd(android::base::unique_fd(f)),
         ctr_fd(android::base::unique_fd(ctr)) {
@@ -57,10 +88,12 @@ struct sifter_rb {
             seq.push_back(saved[pid].id[i]);
         for (int i = start+len; i < start+127; i++) {
             uint16_t next = saved[pid].id[i];
-            if (tbl.find(seq) != tbl.end())
-                tbl[seq].set(next);
-            else
-                tbl[seq] = std::bitset<65536>(next);
+            if (tbl.find(seq) != tbl.end()) {
+                tbl[seq].set(id_to_bitset_off(next));
+            } else {
+                tbl[seq] = std::bitset<BITSET_SIZE>(0);
+                tbl[seq].set(id_to_bitset_off(next));
+            }
             seq.pop_front();
             seq.push_back(next);
         }
@@ -270,9 +303,14 @@ public:
                 for (auto it : entry.first)
                     std::cout << std::setw(4) << it << " ";
                 std::cout << "| ";
-                for (int i = 0; i < 65536; i++)
+                for (int i = 0; i < ID_NR_SIZE; i++) {
                     if (entry.second[i])
                         std::cout << std::setw(4) << i << " ";
+                }
+                for (int i = 0; i < ID_NR_SIZE; i++) {
+                    if (entry.second[ID_NR_SIZE+i])
+                        std::cout << std::setw(4) << ((ID_HDR_IOCTL << ID_HDR_SHIFT) | i) << " ";
+                }
                 std::cout << "\n";
             }
             std::cout << "Total: " << rb.tbl.size() << " sequences" << "\n";
@@ -288,9 +326,14 @@ public:
                         << std::setw(6) << entry.second.count() << " ";
                 for (auto it : entry.first)
                     ofs << std::setw(4) << it << " ";
-                for (int i = 0; i < 65536; i++)
+                for (int i = 0; i < ID_NR_SIZE; i++) {
                     if (entry.second[i])
                         ofs << std::setw(4) << i << " ";
+                }
+                for (int i = 0; i < ID_NR_SIZE; i++) {
+                    if (entry.second[ID_NR_SIZE+i])
+                        ofs << std::setw(4) << ((ID_HDR_IOCTL << ID_HDR_SHIFT) | i) << " ";
+                }
                 ofs << "\n";
             }
         }
@@ -307,7 +350,7 @@ public:
             ifs >> seqs_size;
             for (int j = 0; j < seqs_size; j++) {
                 std::deque<uint16_t> seq;
-                std::bitset<65536> next;
+                std::bitset<BITSET_SIZE> next;
                 ifs >> seq_size >> next_size;
                 seq.resize(seq_size);
                 for (int i = 0; i < seq_size; i++) {
@@ -315,7 +358,7 @@ public:
                 }
                 for (int i = 0; i < next_size; i++) {
                     ifs >> v;
-                    next.set(v);
+                    next.set(id_to_bitset_off(v));
                 }
             }
         }
