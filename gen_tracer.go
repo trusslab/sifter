@@ -406,7 +406,7 @@ func (tracer *Tracer) GenerateProgSection() {
     fmt.Fprintf(s, "            rb->id1[next-129] = id;\n")
     fmt.Fprintf(s, "\n")
     fmt.Fprintf(s, "        uint8_t *ctr = bpf_syscall_seq_rb_ctr_lookup_elem(&pid);\n")
-    fmt.Fprintf(s, "        if (ctr && (next == 0 || next == 128)) {\n")
+    fmt.Fprintf(s, "        if (ctr && (next == 0 || next == 128 || id == (uint16_t)-1)) {\n")
     fmt.Fprintf(s, "            *ctr += 1;\n")
     fmt.Fprintf(s, "        }\n")
     fmt.Fprintf(s, "    }\n")
@@ -425,6 +425,13 @@ func (tracer *Tracer) GenerateProgSection() {
     fmt.Fprintf(s, "        uint32_t pid = get_current_pid();\n")
     fmt.Fprintf(s, "        update_syscall_seq(pid, id);\n")
     fmt.Fprintf(s, "    }\n")
+    fmt.Fprintf(s, "    return 0;\n")
+    fmt.Fprintf(s, "}\n")
+    fmt.Fprintf(s, "\n")
+    fmt.Fprintf(s, "SEC(\"kprobe/do_exit\")\n")
+    fmt.Fprintf(s, "int kprobe_do_exit(struct user_pt_regs *ctx) {\n")
+    fmt.Fprintf(s, "    uint32_t pid = get_current_pid();\n")
+    fmt.Fprintf(s, "    update_syscall_seq(pid, (uint16_t)-1);\n")
     fmt.Fprintf(s, "    return 0;\n")
     fmt.Fprintf(s, "}\n")
 
@@ -476,7 +483,12 @@ func (tracer *Tracer) GenerateMapSection() {
 	}
     fmt.Fprintf(s, "DEFINE_BPF_MAP_F(syscall_seq_rb, ARRAY, int, seq_rb_elem, 32768, BPF_F_LOCK);\n")
     fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_seq_rb_ctr, ARRAY, int, uint8_t, 32768);\n")
-    fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_fd_mask, ARRAY, int, uint8_t, 292);\n")
+	if tracer.target.Arch == "arm" {
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_fd_mask, ARRAY, int, uint8_t, 398);\n")
+	}
+	if tracer.target.Arch == "arm64" {
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_fd_mask, ARRAY, int, uint8_t, 292);\n")
+	}
 	fmt.Fprintf(s, "\n")
 }
 

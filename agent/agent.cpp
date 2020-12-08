@@ -48,8 +48,11 @@ struct u_rb_elem {
 
 #define ID_HDR_SYSCALL 0x0
 #define ID_HDR_IOCTL   0x8
+#define ID_HDR_EVENT   0xf
 
-#define BITSET_NR_ENTRY 2 // 1 ioctl + 1 syscall
+#define ID_EVENT_END   ((ID_HDR_EVENT << ID_HDR_SHIFT) | 0xfff)
+
+#define BITSET_NR_ENTRY 3 // 1 event + 1 ioctl + 1 syscall
 #define BITSET_SIZE     (BITSET_NR_ENTRY * ID_NR_SIZE)
 
 int id_to_bitset_off(uint16_t id) {
@@ -58,6 +61,7 @@ int id_to_bitset_off(uint16_t id) {
     switch (hdr) {
     case ID_HDR_SYSCALL: ret = ID_NR(id); break;
     case ID_HDR_IOCTL: ret = ID_NR(id) + ID_NR_SIZE; break;
+    case ID_HDR_EVENT: ret = ID_NR(id) + ID_NR_SIZE*2; break;
     }
     return ret;
 }
@@ -68,12 +72,10 @@ struct sifter_rb {
     unique_fd fd;
     unique_fd ctr_fd;
     std::vector<u_rb_elem> saved;
-//    std::vector<std::map<std::deque<uint16_t>, std::bitset<65536> > > tbl;
     std::map<std::deque<uint16_t>, std::bitset<BITSET_SIZE> > tbl; // [syscall seq][next syscall]
     sifter_rb(int l, std::string nm, int f, int ctr):
         len(l), name(nm), fd(android::base::unique_fd(f)),
         ctr_fd(android::base::unique_fd(ctr)) {
-//        tbl.resize(32768);
         saved.resize(32768);
     };
     void update_tbl(int pid, uint8_t ctr, rb_elem rb, bool missing_events) {
@@ -94,6 +96,8 @@ struct sifter_rb {
                 tbl[seq] = std::bitset<BITSET_SIZE>(0);
                 tbl[seq].set(id_to_bitset_off(next));
             }
+            if (next == ID_EVENT_END)
+                break;
             seq.pop_front();
             seq.push_back(next);
         }
@@ -131,7 +135,11 @@ struct sifter_prog {
         type(t), event(ev), entry(en), fd(android::base::unique_fd(f)) {};
 };
 
-int proc_bitness(int pid) {
+int proc_bitness(std::vector<int> &proc_bitness, int pid, int verbose) {
+    int bitness = proc_bitness[pid];
+    if (bitness != -1)
+        return bitness;
+
     std::ifstream ifs;
     int len = 0;
     char target[256];
@@ -141,18 +149,25 @@ int proc_bitness(int pid) {
     target[len] = '\0';
     //std::cout << "check " << target << "\n";
 
+    //Determine Zygote processes bitness by name: app_process32/64
     if (len > 2) {
         if (target[len-2] == '3' && target[len-1] == '2')
-            return 32;
+            bitness = 32;
         if (target[len-2] == '6' && target[len-1] == '4')
-            return 64;
+            bitness = 64;
+        if (bitness != -1) {
+            proc_bitness[pid] = bitness;
+            return bitness;
+        }
     }
 
-    bool bitness = -1;
+    //Determine processes bitness by ELF header magic number
     char magic[5] = {};
     ifs.open(target, std::ios::binary);
     if (!ifs) {
-        std::cout << "Error checking bitness via ELF magic: cannot open " << file << "\n";
+        if (verbose > 3)
+            std::cout << "Error checking bitness via ELF magic: cannot open "
+                    << target << " (" << pid << ")\n";
     } else {
         ifs.read(magic, 5);
         if (*(uint32_t *)(magic) == 0x464c457f) {
@@ -160,16 +175,18 @@ int proc_bitness(int pid) {
                 bitness = 32;
             } else if (magic[4] == 2) {
                 bitness = 64;
-            } else {
-                std::cout << "Error checking bitness via ELF header: " << target
-                        << " invalid EI_CLASS " << std::hex << (uint32_t)magic[4] << std::dec << "\n";
+            } else if (verbose > 3){
+                std::cout << "Error checking bitness via ELF header: "
+                        << target << " (" << pid << ") invalid EI_CLASS "
+                        << std::hex << (uint32_t)magic[4] << std::dec << "\n";
             }
-        } else {
-            std::cout << "Error checking bitness via ELF header: " << target
-                << " invalid ELF magic number\n";
+        } else if (verbose > 3) {
+            std::cout << "Error checking bitness via ELF header: "
+                        << target << " (" << pid << ") invalid ELF magic number\n";
         }
     }
     ifs.close();
+    proc_bitness[pid] = bitness;
     return bitness;
 }
 
@@ -184,6 +201,7 @@ private:
     std::vector<sifter_lut> m_luts;
     std::vector<sifter_rb> m_rbs;
     std::vector<std::thread *> m_rbs_update_threads;
+    std::vector<int> m_proc_bitness;
     std::set<int> m_ignored_pids;
     bool m_rbs_update_start;
 
@@ -199,7 +217,8 @@ private:
                     uint8_t ctr;
                     android::bpf::findMapEntry(rb.ctr_fd, &p, &ctr);
                     uint8_t last_ctr = rb.saved[p].ctr;
-                    if (ctr != last_ctr && proc_bitness(p) == m_bitness) {
+                    if (ctr != last_ctr
+                        && proc_bitness(m_proc_bitness, p, m_verbose) == m_bitness) {
                         bool missing_events = (ctr != last_ctr+1);
                         if (m_verbose > 0) {
                             if (missing_events)
@@ -233,7 +252,7 @@ public:
     }
 
     int add_prog(int type, std::string event, std::string entry) {
-        std::string probe_name;// = is_entry? "_kprobe_" : "_kretporbe_";
+        std::string probe_name;
         switch (type) {
             case 0: probe_name = std::string("_kretprobe_") + entry; break;
             case 1: probe_name = std::string("_kprobe_") + entry; break;
@@ -301,15 +320,19 @@ public:
         for (auto &rb : m_rbs) {
             for (auto &entry : rb.tbl) {
                 for (auto it : entry.first)
-                    std::cout << std::setw(4) << it << " ";
+                    std::cout << std::setw(5) << it << " ";
                 std::cout << "| ";
                 for (int i = 0; i < ID_NR_SIZE; i++) {
                     if (entry.second[i])
-                        std::cout << std::setw(4) << i << " ";
+                        std::cout << std::setw(5) << i << " ";
                 }
                 for (int i = 0; i < ID_NR_SIZE; i++) {
                     if (entry.second[ID_NR_SIZE+i])
-                        std::cout << std::setw(4) << ((ID_HDR_IOCTL << ID_HDR_SHIFT) | i) << " ";
+                        std::cout << std::setw(5) << ((ID_HDR_IOCTL << ID_HDR_SHIFT) | i) << " ";
+                }
+                for (int i = 0; i < ID_NR_SIZE; i++) {
+                    if (entry.second[2*ID_NR_SIZE+i])
+                        std::cout << std::setw(5) << ((ID_HDR_EVENT << ID_HDR_SHIFT) | i) << " ";
                 }
                 std::cout << "\n";
             }
@@ -323,16 +346,20 @@ public:
             ofs << "r " << rb.tbl.size() << "\n";
             for (auto &entry : rb.tbl) {
                 ofs << std::setw(3) << entry.first.size()
-                        << std::setw(6) << entry.second.count() << " ";
+                        << std::setw(4) << entry.second.count() << " ";
                 for (auto it : entry.first)
-                    ofs << std::setw(4) << it << " ";
+                    ofs << std::setw(5) << it << " ";
                 for (int i = 0; i < ID_NR_SIZE; i++) {
                     if (entry.second[i])
-                        ofs << std::setw(4) << i << " ";
+                        ofs << std::setw(5) << i << " ";
                 }
                 for (int i = 0; i < ID_NR_SIZE; i++) {
                     if (entry.second[ID_NR_SIZE+i])
-                        ofs << std::setw(4) << ((ID_HDR_IOCTL << ID_HDR_SHIFT) | i) << " ";
+                        ofs << std::setw(5) << ((ID_HDR_IOCTL << ID_HDR_SHIFT) | i) << " ";
+                }
+                for (int i = 0; i < ID_NR_SIZE; i++) {
+                    if (entry.second[2*ID_NR_SIZE+i])
+                        ofs << std::setw(5) << ((ID_HDR_EVENT << ID_HDR_SHIFT) | i) << " ";
                 }
                 ofs << "\n";
             }
@@ -547,6 +574,7 @@ public:
                     return;
             }
         }
+        m_proc_bitness.resize(32768, -1);
         m_init = 1;
     }
 
