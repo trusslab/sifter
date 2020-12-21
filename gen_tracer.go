@@ -91,20 +91,22 @@ func (tracer *Tracer) NewFilterSection() *bytes.Buffer {
 	return s
 }
 
-func (tracer *Tracer) NewMinMaxMap(name string, datatype string) {
-	fixChar := []string{".", "$"}
+func fixName(name string) string {
+	fixChar := []string{".", "$", "-", ">", "[", "]"}
 	for _, char := range fixChar {
 		name = strings.Replace(name, char, "_", -1)
 	}
+	return name
+}
+
+func (tracer *Tracer) NewMinMaxMap(name string, datatype string) {
+	name = fixName(name)
 	newMap := &BpfMinMaxMap{name: name, datatype: datatype}
 	tracer.minMaxMaps = append(tracer.minMaxMaps, newMap)
 }
 
 func (tracer *Tracer) NewFlagsMap(name string, datatype string) {
-	fixChar := []string{".", "$"}
-	for _, char := range fixChar {
-		name = strings.Replace(name, char, "_", -1)
-	}
+	name = fixName(name)
 	newMap := &BpfFlagsMap{name: name, datatype: datatype}
 	tracer.flagsMaps = append(tracer.flagsMaps, newMap)
 }
@@ -132,14 +134,6 @@ func (tracer *Tracer) AddStruct(s *prog.StructType) {
     tracer.structs = append(tracer.structs, s)
 }
 
-func fixName(name string) string {
-	fixChar := []string{".", "$"}
-	for _, char := range fixChar {
-		name = strings.Replace(name, char, "_", -1)
-	}
-	return name
-}
-
 func GenerateUpdateMinMax(s *bytes.Buffer, argType string, argName string, argMap string) {
 	fmt.Fprintf(s, "    {\n")
 	fmt.Fprintf(s, "    int i = 0;\n")
@@ -151,26 +145,10 @@ func GenerateUpdateMinMax(s *bytes.Buffer, argType string, argName string, argMa
 	fmt.Fprintf(s, "    i = 1;\n")
 	fmt.Fprintf(s, "    %v *%v_max = bpf_%v_lookup_elem(&i);\n", argType, argMap, argMap)
 	fmt.Fprintf(s, "    if (%v_max) {\n", argMap)
-	fmt.Fprintf(s, "        if (%v > *%v_max) {\n", argName, argMap)
+	fmt.Fprintf(s, "        if (%v > *%v_max)\n", argName, argMap)
 	fmt.Fprintf(s, "            *%v_max = %v;\n", argMap, argName)
-	fmt.Fprintf(s, "        }\n")
 	fmt.Fprintf(s, "    }\n")
 	fmt.Fprintf(s, "    }\n")
-
-//	fmt.Fprintf(s, "    {\n")
-//	fmt.Fprintf(s, "    i = 0;\n")
-//	fmt.Fprintf(s, "    min = bpf_%v_lookup_elem(&i);\n", argMap)
-//	fmt.Fprintf(s, "    if (min) {\n")
-//	fmt.Fprintf(s, "        if (%v < *min)\n", argName)
-//	fmt.Fprintf(s, "            *min = %v;\n", argName)
-//	fmt.Fprintf(s, "    }\n")
-//	fmt.Fprintf(s, "    i = 1;\n")
-//	fmt.Fprintf(s, "    max = bpf_%v_lookup_elem(&i);\n", argMap)
-//	fmt.Fprintf(s, "    if (max) {\n")
-//	fmt.Fprintf(s, "        if (%v > *max)\n", argName)
-//	fmt.Fprintf(s, "            *max = %v;\n", argName)
-//	fmt.Fprintf(s, "    }\n")
-//	fmt.Fprintf(s, "    }\n")
 }
 
 func GenerateUpdateFlags(s *bytes.Buffer, argType string, argName string, argMap string) {
@@ -195,12 +173,11 @@ func GenerateCopyFromUser(tracer *Tracer, s *bytes.Buffer, path string, argType 
     tracer.v += 1
 }
 
-func GenerateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, path string, fromPointer bool, offset *int) {
+func GenerateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, path string, fromPointer bool, depth *int) {
 	argType := ""
 	switch tt := arg.(type) {
 	case *prog.BufferType:
 		fmt.Fprintf(s, "    //arg %v %v %v\n", arg, arg.Name(), arg.FieldName())
-        //*offset += 8*tt.Size();
 	case *prog.ArrayType:
         if arg.(*prog.ArrayType).IsVarlen {
 		    fmt.Fprintf(s, "    //arg %v %v %v varlen\n", arg, arg.Name(), arg.FieldName())
@@ -223,12 +200,12 @@ func GenerateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, pat
 
 	switch t := arg.(type) {
 	case *prog.PtrType:
-        if *offset == 0 {
-		    GenerateRecursiveTracer(tracer, arg.(*prog.PtrType).Type, s, path, true, offset)
-        } else {
-            srcPath := path + "." + arg.FieldName()
-            GenerateRecursiveTracer(tracer, arg.(*prog.PtrType).Type, s, srcPath, true, offset)
-        }
+        if *depth != 0 {
+            path = path + "." + arg.FieldName()
+		}
+		*depth += 1
+		GenerateRecursiveTracer(tracer, arg.(*prog.PtrType).Type, s, path, true, depth)
+		*depth -= 1
 	case *prog.StructType:
 		structPath := ""
 		if fromPointer {
@@ -240,7 +217,7 @@ func GenerateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, pat
 
         tracer.AddStruct(arg.(*prog.StructType))
 		for _, field := range arg.(*prog.StructType).StructDesc.Fields {
-			GenerateRecursiveTracer(tracer, field, s, structPath, false, offset)
+			GenerateRecursiveTracer(tracer, field, s, structPath, false, depth)
 		}
 	case *prog.LenType, *prog.IntType, *prog.ConstType:
         if c, ok := t.(*prog.ConstType); ok && c.IsPad {
@@ -251,6 +228,8 @@ func GenerateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, pat
 		if fromPointer {
 			argName = fmt.Sprintf("v%v", tracer.v)
             GenerateCopyFromUser(tracer, s, path, argType, argName)
+		} else if *depth == 0 {
+			argName = path
 		} else {
 			argName = path + "." + arg.FieldName()
 		}
@@ -262,6 +241,8 @@ func GenerateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, pat
 		if fromPointer {
 			argName = fmt.Sprintf("v%v", tracer.v)
             GenerateCopyFromUser(tracer, s, path, argType, argName)
+		} else if *depth == 0 {
+			argName = path
 		} else {
 			argName = path + "." + arg.FieldName()
 		}
@@ -275,15 +256,23 @@ func GenerateRecursiveTracer(tracer *Tracer, arg prog.Type, s *bytes.Buffer, pat
 	default:
 		fmt.Println("Unhandled type", t)
 	}
-    *offset += 4
 
+}
+
+func GenerateSyscallTracer(target *prog.Target, tracer *Tracer, name string, syscall *prog.Syscall) {
+	s := tracer.NewSection()
+	fmt.Fprintf(s, "void __always_inline %v(sys_enter_args *arg) {\n", name)
+	for i, arg := range syscall.Args {
+		path := fmt.Sprintf("arg->regs[%v]", i)
+		offset := 0
+		GenerateRecursiveTracer(tracer, arg, s, path, false, &offset)
+	}
+	fmt.Fprintf(s, "}\n\n")
 }
 
 func GenerateIoctlTracer(target *prog.Target, tracer *Tracer, name string, syscall *prog.Syscall) {
 	s := tracer.NewSection()
 	fmt.Fprintf(s, "void __always_inline %v(struct user_pt_regs *ctx) {\n", name)
-	//fmt.Fprintf(s, "    int i = 0;\n")
-	//fmt.Fprintf(s, "    uint32_t *min, *max;\n")
 	path := "ctx->regs[2]"
     offset := 0
 	GenerateRecursiveTracer(tracer, syscall.Args[2], s, path, true, &offset)
@@ -307,15 +296,21 @@ func extractStringConst(typ prog.Type) (string, bool) {
     return v, true
 }
 
-func (tracer *Tracer) GenerateProgSection() {
-	var ioctlNR uint64 = 0
+func (tracer *Tracer) SyscallNumber(name string) (uint64){
+	for _, constant := range tracer.target.Consts {
+		if constant.Name == "__NR_" + name {
+			return constant.Value
+		}
+	}
+	failf("cannot find syscall number for %v", name)
+	return 0xffffffffffffffff
+}
 
+func (tracer *Tracer) GenerateProgSection() {
 	// Find out device associated syscalls to be traced
 	tracedSyscalls := map[string][]string{}
 	for _, syscall := range tracer.target.Syscalls {
-		if syscall.Name == "ioctl" {
-			ioctlNR = syscall.NR
-		}
+		// Find out path of driver
 		if len(tracer.devName) == 0  && syscall.CallName == "syz_open_dev" {
             if ret, ok := syscall.Ret.(*prog.ResourceType); ok {
                 if ret.String() == tracer.fdName {
@@ -325,6 +320,7 @@ func (tracer *Tracer) GenerateProgSection() {
                 }
             }
 		}
+		// Scan for syscalls using the driver
 		for _, args := range syscall.Args {
 			if args.Name() == tracer.fdName {
 				tracedSyscalls[syscall.CallName] = append(tracedSyscalls[syscall.CallName], syscall.Name)
@@ -338,56 +334,40 @@ func (tracer *Tracer) GenerateProgSection() {
         fmt.Printf("trace syscall using dev: %v\n", tracer.devName)
     }
 
-	// Generate tracing code
-	for key, syscall := range tracedSyscalls {
-		if key == "ioctl" {
-			s := tracer.NewSection()
-			fmt.Fprintf(s, "SEC(\"kprobe/%v\")\n", tracer.syscallEntry)
-			fmt.Fprintf(s, "int kprobe_%v(struct user_pt_regs *ctx) {\n", tracer.syscallEntry)
-			fmt.Fprintf(s, "    uint64_t ioctl_cmd = ctx->regs[1];\n")
-			//fmt.Fprintf(s, "    uint64_t ioctl_arg = ctx->regs[2];\n")
-			fmt.Fprintf(s, "    switch (ioctl_cmd) {\n")
-			for _, commands := range syscall {
-				cmd, ok := tracer.target.SyscallMap[commands].Args[1].(*prog.ConstType)
-				if !ok {
-					failf("failed to get const command value for %v", commands)
-				}
-                if !strings.Contains(commands, "_compact_") {
-                    traceFuncName := fmt.Sprintf("trace_ioctl_0x%x", cmd.Val)
-                    GenerateIoctlTracer(tracer.target, tracer, traceFuncName, tracer.target.SyscallMap[commands])
-                    fmt.Fprintf(s, "    case 0x%x: //%v\n", cmd.Val, commands)
-                    fmt.Fprintf(s, "        %v(ctx);\n", traceFuncName)
-                    fmt.Fprintf(s, "        break;\n")
-                }
-			}
-			fmt.Fprintf(s, "    }\n")
-			fmt.Fprintf(s, "    return 0;\n")
-			fmt.Fprintf(s, "}\n\n")
-
-		} else {
-
-		}
-	}
-
+	//TODO move ioctl tracers under tracepoint
     // generate sequence tracer
     s := tracer.NewSection()
     fmt.Fprintf(s, "#define IOC_NR(cmd) (cmd & ((1 << 8)-1))\n")
     fmt.Fprintf(s, "uint16_t __always_inline arg_to_id(sys_enter_args *arg) {\n")
-    fmt.Fprintf(s, "    int id = arg->id;\n")
+    fmt.Fprintf(s, "    int nr = arg->id;\n")
+    fmt.Fprintf(s, "    int fd_is_dev = 0;\n")
+    fmt.Fprintf(s, "    uint16_t id = 0xffff;\n")
     fmt.Fprintf(s, "    char dev [] = \"%v\";\n", tracer.devName)
-    fmt.Fprintf(s, "    uint8_t *fd_mask = bpf_syscall_fd_mask_lookup_elem(&id);\n")
+    fmt.Fprintf(s, "    uint8_t *fd_mask = bpf_syscall_fd_mask_lookup_elem(&nr);\n")
     fmt.Fprintf(s, "    if (fd_mask) {\n")
     fmt.Fprintf(s, "        for (int i = 0; i < 5; i++) {\n")
     fmt.Fprintf(s, "            if ((*fd_mask >> i) & 0x01 &&\n")
     fmt.Fprintf(s, "                (bpf_check_fd(dev, arg->regs[i]))) {\n")
-    fmt.Fprintf(s, "                if (arg->id == %v)\n", ioctlNR)
-    fmt.Fprintf(s, "                    return 0x8000 | IOC_NR(arg->regs[1]);\n")
-    fmt.Fprintf(s, "                else\n")
-    fmt.Fprintf(s, "                    return arg->id;\n")
+    fmt.Fprintf(s, "                fd_is_dev = 1;\n")
+    fmt.Fprintf(s, "                break;\n")
     fmt.Fprintf(s, "            }\n")
     fmt.Fprintf(s, "        }\n")
     fmt.Fprintf(s, "    }\n")
-    fmt.Fprintf(s, "    return 0;\n")
+    fmt.Fprintf(s, "    if (fd_is_dev) {\n")
+    fmt.Fprintf(s, "        if (nr == %v) {\n", tracer.SyscallNumber("ioctl"))
+    fmt.Fprintf(s, "            id = 0x8000 | IOC_NR(arg->regs[1]);\n")
+	for key, _ := range tracedSyscalls {
+		if key != "ioctl" {
+			fmt.Fprintf(s, "        } else if (nr == %v) {\n", tracer.SyscallNumber(key))
+			fmt.Fprintf(s, "            id = nr;\n")
+			fmt.Fprintf(s, "            trace_%v(arg);\n", key)
+		}
+	}
+    fmt.Fprintf(s, "        } else {\n")
+    fmt.Fprintf(s, "            id = nr;\n")
+    fmt.Fprintf(s, "        }\n")
+    fmt.Fprintf(s, "    }\n")
+    fmt.Fprintf(s, "    return id;\n")
     fmt.Fprintf(s, "}\n")
     fmt.Fprintf(s, "\n")
     fmt.Fprintf(s, "void __always_inline update_syscall_seq(int pid, uint16_t id) {\n")
@@ -421,7 +401,7 @@ func (tracer *Tracer) GenerateProgSection() {
     fmt.Fprintf(s, "SEC(\"tracepoint/raw_syscalls/sys_enter\")\n")
     fmt.Fprintf(s, "int sys_enter_prog(sys_enter_args *arg) {\n")
     fmt.Fprintf(s, "    uint16_t id = arg_to_id(arg);\n")
-    fmt.Fprintf(s, "    if (id != 0) {\n")
+    fmt.Fprintf(s, "    if (id != 0xffff) {\n")
     fmt.Fprintf(s, "        uint32_t pid = get_current_pid();\n")
     fmt.Fprintf(s, "        update_syscall_seq(pid, id);\n")
     fmt.Fprintf(s, "    }\n")
@@ -434,6 +414,37 @@ func (tracer *Tracer) GenerateProgSection() {
     fmt.Fprintf(s, "    update_syscall_seq(pid, (uint16_t)-1);\n")
     fmt.Fprintf(s, "    return 0;\n")
     fmt.Fprintf(s, "}\n")
+
+	// Generate tracing code
+	for key, syscall := range tracedSyscalls {
+		if key == "ioctl" {
+			s := tracer.NewSection()
+			fmt.Fprintf(s, "SEC(\"kprobe/%v\")\n", tracer.syscallEntry)
+			fmt.Fprintf(s, "int kprobe_%v(struct user_pt_regs *ctx) {\n", tracer.syscallEntry)
+			fmt.Fprintf(s, "    uint64_t ioctl_cmd = ctx->regs[1];\n")
+			//fmt.Fprintf(s, "    uint64_t ioctl_arg = ctx->regs[2];\n")
+			fmt.Fprintf(s, "    switch (ioctl_cmd) {\n")
+			for _, commands := range syscall {
+				cmd, ok := tracer.target.SyscallMap[commands].Args[1].(*prog.ConstType)
+				if !ok {
+					failf("failed to get const command value for %v", commands)
+				}
+                if !strings.Contains(commands, "_compact_") {
+                    traceFuncName := fmt.Sprintf("trace_ioctl_0x%x", cmd.Val)
+                    GenerateIoctlTracer(tracer.target, tracer, traceFuncName, tracer.target.SyscallMap[commands])
+                    fmt.Fprintf(s, "    case 0x%x: //%v\n", cmd.Val, commands)
+                    fmt.Fprintf(s, "        %v(ctx);\n", traceFuncName)
+                    fmt.Fprintf(s, "        break;\n")
+                }
+			}
+			fmt.Fprintf(s, "    }\n")
+			fmt.Fprintf(s, "    return 0;\n")
+			fmt.Fprintf(s, "}\n\n")
+		} else {
+			traceFuncName := "trace_" + key
+			GenerateSyscallTracer(tracer.target, tracer, traceFuncName, tracer.target.SyscallMap[key])
+		}
+	}
 
 }
 
