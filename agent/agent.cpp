@@ -490,8 +490,8 @@ public:
         std::ifstream ifs(file);
 
         if (!ifs) {
-            std::cerr << "Failed to parse configuration. " << file
-                << " does not exist\n";
+            std::cerr << "Failed to parse configuration. File \"" << file
+                << "\" does not exist\n";
             return;
         }
 
@@ -585,8 +585,9 @@ int main(int argc, char *argv[]) {
     bool manual_mode = false;
     int log_interval = 10;
     int verbose = 0;
-    char *config_file = nullptr;
-    char *log_file = nullptr;
+    char empty_string[] = "";
+    char *config_file = empty_string;
+    char *log_file = empty_string;
 
     int opt;
     while ((opt = getopt (argc, argv, "hmi:v:c:r:o:")) != -1) {
