@@ -2,6 +2,7 @@
 #include <bpf/BpfUtils.h>
 #include <libbpf_android.h>
 #include <linux/android/binder.h>
+#include <atomic>
 #include <iostream>
 #include <chrono>
 #include <cstdio>
@@ -14,9 +15,13 @@
 #include <sstream>
 #include <thread>
 #include <unistd.h>
+#include "tracer_id.h"
 
 using android::base::unique_fd;
 
+std::ofstream g_log_stream;
+std::atomic<uint64_t> g_update_ctr;
+uint64_t g_update_ts;
 
 struct rb_elem {
     struct bpf_spin_lock lock;
@@ -28,29 +33,10 @@ struct rb_elem {
 struct u_rb_elem {
     uint8_t ctr;
     uint16_t id[256];
+    u_rb_elem(): ctr(0) {
+        memset(&id, 0, 256);
+    }
 };
-
-#define ID_NR_BITS     9
-#define ID_UNUSED_BITS 3
-#define ID_HDR_BITS    4
-
-#define ID_NR_SIZE     (1 << ID_NR_BITS)
-#define ID_HDR_SIZE    (1 << ID_HDR_BITS)
-
-#define ID_NR_MASK     (ID_NR_SIZE-1)
-#define ID_HDR_MASK    (ID_HDR_SIZE-1)
-
-#define ID_NR_SHIFT    0
-#define ID_HDR_SHIFT   (ID_NR_BITS + ID_UNUSED_BITS)
-
-#define ID_NR(id)      ((id >> ID_NR_SHIFT) & ID_NR_MASK)
-#define ID_HDR(id)     ((id >> ID_HDR_SHIFT) & ID_HDR_MASK)
-
-#define ID_HDR_SYSCALL 0x0
-#define ID_HDR_IOCTL   0x8
-#define ID_HDR_EVENT   0xf
-
-#define ID_EVENT_END   ((ID_HDR_EVENT << ID_HDR_SHIFT) | 0xfff)
 
 #define BITSET_NR_ENTRY 3 // 1 event + 1 ioctl + 1 syscall
 #define BITSET_SIZE     (BITSET_NR_ENTRY * ID_NR_SIZE)
@@ -73,26 +59,37 @@ struct sifter_rb {
     unique_fd ctr_fd;
     std::vector<u_rb_elem> saved;
     std::map<std::deque<uint16_t>, std::bitset<BITSET_SIZE> > tbl; // [syscall seq][next syscall]
+
     sifter_rb(int l, std::string nm, int f, int ctr):
         len(l), name(nm), fd(android::base::unique_fd(f)),
         ctr_fd(android::base::unique_fd(ctr)) {
         saved.resize(32768);
     };
-    void update_tbl(int pid, uint8_t ctr, rb_elem rb, bool missing_events) {
+
+    void update_tbl(int pid, uint8_t ctr, rb_elem &rb, bool missing_events) {
         bool first_half = (ctr%2 == 0);
         uint8_t dst_start = first_half? 0 : 128;
         uint16_t *src_ptr = first_half? rb.id0 : rb.id1;
-        memcpy(&saved[pid].id[dst_start], src_ptr, 256);
+        memcpy(&saved[pid].id[dst_start], src_ptr, 128);
 
         std::deque<uint16_t> seq;
         uint8_t start = missing_events? dst_start : dst_start-len;
-        for (int i = start; i <= start+len-1; i++)
-            seq.push_back(saved[pid].id[i]);
-        for (int i = start+len; i < start+127; i++) {
-            uint16_t next = saved[pid].id[i];
+        for (int i = 0; i < len; i++) {
+            uint8_t off = start+i;
+            seq.push_back(saved[pid].id[off]);
+        }
+        for (int i = 0; i < 127-len; i++) {
+            uint8_t off = start+len+i;
+            uint16_t next = saved[pid].id[off];
             if (tbl.find(seq) != tbl.end()) {
+                if (!tbl[seq].test(id_to_bitset_off(next))) {
+                    printf("r0\n");
+                    g_update_ctr++;
+                }
                 tbl[seq].set(id_to_bitset_off(next));
             } else {
+                printf("r1\n");
+                g_update_ctr++;
                 tbl[seq] = std::bitset<BITSET_SIZE>(0);
                 tbl[seq].set(id_to_bitset_off(next));
             }
@@ -109,6 +106,7 @@ struct sifter_lut {
     std::string name;
     unique_fd fd;
     std::vector<uint64_t> val;
+
     sifter_lut(int t, std::string nm, int size, int f):
         type(t), name(nm), fd(android::base::unique_fd(f)) {
         val.resize(size);
@@ -120,6 +118,7 @@ struct sifter_map {
     std::string name;
     unique_fd fd;
     std::vector<uint64_t> val;
+
     sifter_map(int t, std::string nm, int size, int f):
         type(t), name(nm), fd(android::base::unique_fd(f)) {
         val.resize(size);
@@ -131,6 +130,7 @@ struct sifter_prog {
     std::string event;
     std::string entry;
     unique_fd fd;
+
     sifter_prog(int t, std::string ev, std::string en, int f):
         type(t), event(ev), entry(en), fd(android::base::unique_fd(f)) {};
 };
@@ -203,14 +203,15 @@ private:
     std::vector<std::thread *> m_rbs_update_threads;
     std::vector<int> m_proc_bitness;
     std::set<int> m_ignored_pids;
+    int m_min_pid;
     bool m_rbs_update_start;
 
     void update_rbs_thread() {
-        m_ignored_pids.insert(gettid());
+        m_min_pid = gettid();
         while (m_rbs_update_start) {
             for (auto &rb : m_rbs) {
                 auto begin = std::chrono::steady_clock::now();
-                for (int p = 0; p < 32768; p++) {
+                for (int p = m_min_pid; p < 32768; p++) {
                     if (m_ignored_pids.find(p) != m_ignored_pids.end())
                         continue;
 
@@ -236,8 +237,14 @@ private:
                 }
                 auto end = std::chrono::steady_clock::now();
                 std::chrono::duration<float> scan_time = end - begin;
-                if (m_verbose > 1)
-                    std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(scan_time).count() << " ms\n";
+                uint32_t dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(scan_time).count();
+                usleep(1000000-dur_ms*1000);
+                g_update_ts++;
+                g_log_stream << g_update_ts << "," << g_update_ctr << "\n";
+                g_log_stream.flush();
+                if (m_verbose > 1) {
+                    std::cout << "finish seq update in " << dur_ms << " ms, #update = " << g_update_ctr << "\n";
+                }
             }
         }
     }
@@ -370,22 +377,25 @@ public:
         std::ifstream ifs(file);
 
         if (ifs) {
-            char c;
-            while (ifs >> c && c != 'r') {}
+            for (auto &m : m_rbs) {
+                char c;
+                while (ifs >> c && c != 'r') {}
 
-            uint64_t seqs_size, seq_size, next_size, v;
-            ifs >> seqs_size;
-            for (int j = 0; j < seqs_size; j++) {
-                std::deque<uint16_t> seq;
-                std::bitset<BITSET_SIZE> next;
-                ifs >> seq_size >> next_size;
-                seq.resize(seq_size);
-                for (int i = 0; i < seq_size; i++) {
-                    ifs >> seq[i];
-                }
-                for (int i = 0; i < next_size; i++) {
-                    ifs >> v;
-                    next.set(id_to_bitset_off(v));
+                uint64_t seqs_size, seq_size, next_size, v;
+                ifs >> seqs_size;
+                for (int j = 0; j < seqs_size; j++) {
+                    std::deque<uint16_t> seq;
+                    std::bitset<BITSET_SIZE> next;
+                    ifs >> seq_size >> next_size;
+                    seq.resize(seq_size);
+                    for (int i = 0; i < seq_size; i++) {
+                        ifs >> seq[i];
+                    }
+                    for (int i = 0; i < next_size; i++) {
+                        ifs >> v;
+                        next.set(id_to_bitset_off(v));
+                    }
+                    m.tbl[seq] = next;
                 }
             }
         }
@@ -455,10 +465,26 @@ public:
 
             switch (m.type) {
                 case 0:
-                    if (val[0] < m.val[0]) m.val[0] = val[0];
-                    if (val[1] > m.val[1]) m.val[1] = val[1];
+                    if (val[0] < m.val[0]) {
+                        printf("m0\n");
+                        g_update_ctr++;
+                        m.val[0] = val[0];
+                    }
+                    if (val[1] > m.val[1]) {
+                        printf("m0\n");
+                        g_update_ctr++;
+                        m.val[1] = val[1];
+                    }
                     break;
                 case 1:
+                    if (~m.val[0] & val[0]) {
+                        printf("m1\n");
+                        g_update_ctr++;
+                    }
+                    if (~m.val[1] & val[1]) {
+                        printf("m1\n");
+                        g_update_ctr++;
+                    }
                     m.val[0] |= val[0];
                     m.val[1] |= val[1];
                     break;
@@ -479,12 +505,12 @@ public:
             th->join();
         }
     }
-
+    
     operator bool() const {
         return m_init == 1;
     }
 
-    sifter_tracer(): m_init(0) {};
+    //sifter_tracer(): m_init(0) {};
 
     sifter_tracer(std::string file, int verbose=0): m_init(0), m_verbose(verbose) {
         std::ifstream ifs(file);
@@ -575,6 +601,18 @@ public:
             }
         }
         m_proc_bitness.resize(32768, -1);
+
+        g_update_ctr = 0;
+        g_update_ts = 0;
+        std::stringstream ss;
+        std::time_t t = std::time(nullptr);
+        ss << "tracing_agent_" << t << ".log";
+        g_log_stream.open(ss.str());
+        if (!g_log_stream) {
+            std::cerr << "Failed to open update log\n";
+            return;
+        }
+
         m_init = 1;
     }
 
@@ -583,7 +621,7 @@ public:
 int main(int argc, char *argv[]) {
     bool recover = true;
     bool manual_mode = false;
-    int log_interval = 10;
+    int log_interval = 1;
     int verbose = 0;
     char empty_string[] = "";
     char *config_file = empty_string;
