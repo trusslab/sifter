@@ -303,6 +303,8 @@ func (sifter *Sifter) GenerateCheckArg(s *strings.Builder, arg *ArgMap) {
 		if max > math.MaxInt32 {
 			fmt.Printf("%v %v max %v exceeds max of int32_t. Is it a pointer?\n", argType, argName, max)
 			fmt.Fprintf(s, "//check_arg_range(%v, %v, %v);", argName, min, max)
+		} else if min == max {
+			fmt.Fprintf(s, "check_arg_value(%v, %v);\n", argName, min)
 		} else {
 			fmt.Fprintf(s, "check_arg_range(%v, %v, %v);\n", argName, min, max)
 		}
@@ -1387,6 +1389,9 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 	for _, m := range sifter.argMaps {
 		fmt.Fprintf(s, "m %v %v\n", m.mapType, m.name)
 	}
+	for _, seq := range sifter.seqArgs {
+		fmt.Fprintf(s, "r %v %v_seq_rb\n", sifter.seqLen, seq.name)
+	}
 
 	fmt.Fprintf(s, "p 2 raw_syscalls sys_enter\n")
 
@@ -1402,23 +1407,20 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 	}
 	fmt.Fprintf(s, "\n")
 
-	for _, seq := range sifter.seqArgs {
-		fmt.Fprintf(s, "r %v %v_seq_rb\n", sifter.seqLen, seq.name)
-	}
 	outf.Write(s.Bytes())
 }
 
 func main() {
 	var flags Flags
-	flag.StringVar(&flags.mode,   "mode", "", "mode")
-	flag.StringVar(&flags.trace,  "trace", "", "trace file")
-	flag.StringVar(&flags.config, "config", "", "configuration file")
-	flag.StringVar(&flags.fd,     "fd", "", "file descriptor name")
-	flag.StringVar(&flags.dev,    "dev", "", "driver file name")
-	flag.StringVar(&flags.entry,  "entry", "", "syscall entry function")
+	flag.StringVar(&flags.mode,   "mode", "", "mode (tracer/filter)")
+	flag.StringVar(&flags.trace,  "trace", "", "tracing result file")
+	flag.StringVar(&flags.config, "config", "", "Syzkaller configuration file")
+	flag.StringVar(&flags.fd,     "fd", "", "file descriptor name of the kernel module in Syzkaller")
+	flag.StringVar(&flags.dev,    "dev", "", "device file of the kernel module")
+//	flag.StringVar(&flags.entry,  "entry", "", "syscall entry function")
 	flag.StringVar(&flags.outdir, "outdir", "gen", "output file directory")
 	flag.StringVar(&flags.out,    "out", "", "output file base name")
-	flag.IntVar(&flags.seqlen,    "seqlen", 4, "syscall sequence length")
+	flag.IntVar(&flags.seqlen,    "seqlen", 4, "syscall sequence length for tracing")
 	flag.IntVar(&flags.unroll,    "unroll", 5, "loop unroll times")
 	flag.Parse()
 
