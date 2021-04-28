@@ -106,6 +106,10 @@ func failf(msg string, args ...interface{}) {
 	os.Exit(1)
 }
 
+func isVariant(syscall string) bool {
+	return strings.Contains(syscall, "$") || strings.Contains(syscall, "syz_")
+}
+
 func NewSifter(target *prog.Target, f Flags) (*Sifter, error) {
 	sifter := new(Sifter)
 	sifter.target = target
@@ -176,7 +180,8 @@ func NewSifter(target *prog.Target, f Flags) (*Sifter, error) {
 
 	for _, syscall := range sifter.target.Syscalls {
 		// Build original syscall list
-		if !strings.Contains(syscall.Name, "$") && !strings.Contains(syscall.Name, "syz_") {
+		//if !strings.Contains(syscall.Name, "$") && !strings.Contains(syscall.Name, "syz_") {
+		if !isVariant(syscall.Name) {
 			sifter.syscalls[syscall.NR] = syscall
 		}
 		// Find out path of driver
@@ -190,8 +195,8 @@ func NewSifter(target *prog.Target, f Flags) (*Sifter, error) {
 			}
 		}
 		// Scan for syscalls using the driver
-		for _, args := range syscall.Args {
-			if args.Name() == sifter.fdName {
+		for _, arg := range syscall.Args {
+			if arg.Name() == sifter.fdName {
 				callName := syscall.CallName
 				if callName == "ioctl" {
 					fmt.Printf("trace syscall %v\n", syscall.Name)
@@ -201,6 +206,16 @@ func NewSifter(target *prog.Target, f Flags) (*Sifter, error) {
 					sifter.moduleSyscalls[callName] = append(sifter.moduleSyscalls[callName], sifter.target.SyscallMap[callName])
 				}
 			}
+//			if vma, ok := arg.(*prog.VmaType); ok {
+//					fmt.Printf("vma %v %v\n", syscall.Name, vma.FldName)
+//			}
+//			if vma, ok := arg.(*prog.VmaType); ok && vma.FldName == "addr" {
+//				callName := syscall.CallName
+//				if !isVariant(syscall.Name) {
+//					//fmt.Printf("vma %v\n", syscall.Name)
+//					sifter.moduleSyscalls[callName] = append(sifter.moduleSyscalls[callName], sifter.target.SyscallMap[callName])
+//				}
+//			}
 		}
 	}
 
@@ -240,10 +255,10 @@ func fixName(name string) string {
 	return name
 }
 
-func (sifter *Sifter) NewArgMap(name string, dataType string, mapType int) (*ArgMap) {
+func (sifter *Sifter) NewArgMap(path string, name string, dataType string, mapType int) (*ArgMap) {
 	newArgMap := &ArgMap{
 		name: fixName(name),
-		path: name,
+		path: path,
 		datatype: dataType,
 		mapType: mapType,
 	}
@@ -323,22 +338,22 @@ func (sifter *Sifter) GenerateCheckArg(s *strings.Builder, arg *ArgMap) {
 
 func (sifter *Sifter) GenerateUpdateArg(s *strings.Builder, arg *ArgMap) {
 	argType := arg.datatype
-	argName := arg.path
+	argPath := arg.path
 	argMap := arg.name
 	if arg.mapType == 0 {
 		fmt.Fprintf(s, "{\n")
 		fmt.Fprintf(s, "int i = 0;\n")
 		fmt.Fprintf(s, "%v *%v_min = bpf_%v_lookup_elem(&i);\n", argType, argMap, argMap)
 		fmt.Fprintf(s, "if (%v_min) {\n", argMap)
-		fmt.Fprintf(s, "    if (%v < *%v_min) {\n", argName, argMap)
-		fmt.Fprintf(s, "        *%v_min = %v;\n", argMap, argName)
+		fmt.Fprintf(s, "    if (%v < *%v_min) {\n", argPath, argMap)
+		fmt.Fprintf(s, "        *%v_min = %v;\n", argMap, argPath)
 		fmt.Fprintf(s, "    }\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "i = 1;\n")
 		fmt.Fprintf(s, "%v *%v_max = bpf_%v_lookup_elem(&i);\n", argType, argMap, argMap)
 		fmt.Fprintf(s, "if (%v_max) {\n", argMap)
-		fmt.Fprintf(s, "    if (%v > *%v_max) {\n", argName, argMap)
-		fmt.Fprintf(s, "        *%v_max = %v;\n", argMap, argName)
+		fmt.Fprintf(s, "    if (%v > *%v_max) {\n", argPath, argMap)
+		fmt.Fprintf(s, "        *%v_max = %v;\n", argMap, argPath)
 		fmt.Fprintf(s, "    }\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "}\n")
@@ -348,12 +363,12 @@ func (sifter *Sifter) GenerateUpdateArg(s *strings.Builder, arg *ArgMap) {
 		fmt.Fprintf(s, "int i = 0;\n")
 		fmt.Fprintf(s, "%v *%v_zeros = bpf_%v_lookup_elem(&i);\n", argType, argMap, argMap)
 		fmt.Fprintf(s, "if (%v_zeros) {\n", argMap)
-		fmt.Fprintf(s, "    *%v_zeros |= ~%v;\n", argMap, argName)
+		fmt.Fprintf(s, "    *%v_zeros |= ~%v;\n", argMap, argPath)
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "i = 1;\n")
 		fmt.Fprintf(s, "%v *%v_ones = bpf_%v_lookup_elem(&i);\n", argType, argMap, argMap)
 		fmt.Fprintf(s, "if (%v_ones) {\n", argMap)
-		fmt.Fprintf(s, "    *%v_ones |= %v;\n", argMap, argName)
+		fmt.Fprintf(s, "    *%v_ones |= %v;\n", argMap, argPath)
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "}\n")
 	}
@@ -413,16 +428,16 @@ isNotVLR:
 }
 
 func (sifter *Sifter) GenerateTraceVLR(s *bytes.Buffer, arg *prog.UnionType, headerSize int, headers []uint64) {
-	vlrName := arg.Name()
-	sifter.NewSeqArg(vlrName)
+//	vlrName := arg.Name()
+//	sifter.NewSeqArg(vlrName)
 	fmt.Fprintf(s, "    uint%v_t header;\n", headerSize*8)
 	fmt.Fprintf(s, "    bpf_probe_read_sleepable(&header, %v, ptr);\n", headerSize)
 	fmt.Fprintf(s, "    ptr = (void *)(uintptr_t)(ptr + %v);\n", headerSize)
-	if sifter.mode == TracerMode {
-		fmt.Fprintf(s, "    update_%v_seq(pid, IOC_NR(header));\n", vlrName)
-	} else if sifter.mode == FilterMode {
-		fmt.Fprintf(s, "    %v", indent(sifter.GenerateSeqCheck(vlrName, "IOC_NR(header)"), 1))
-	}
+//	if sifter.mode == TracerMode {
+//		fmt.Fprintf(s, "    update_%v_seq(pid, IOC_NR(header));\n", vlrName)
+//	} else if sifter.mode == FilterMode {
+//		fmt.Fprintf(s, "    %v", indent(sifter.GenerateSeqCheck(vlrName, "IOC_NR(header)"), 1))
+//	}
 	fmt.Fprintf(s, "    switch (header) {\n")
 	for i, record := range arg.Fields {
 		rName := record.(*prog.StructType).FldName
@@ -438,40 +453,20 @@ func (sifter *Sifter) GenerateTraceVLR(s *bytes.Buffer, arg *prog.UnionType, hea
 				fmt.Fprintf(s, "        %v", indent(sifter.GenerateCopyFromUser("ptr", &rfArgName, "struct "+rft.Name()), 2))
 				for _, sf := range rft.Fields {
 //					depth := 0
-//					sifter.GenerateRecursiveTracer(sf, s, rfArgName, false, &depth, 1)
-
-//					switch sf.(type) {
-//					case *prog.LenType, *prog.IntType, *prog.ConstType:
-//						argType := fmt.Sprintf("uint%v_t", sf.TypeBitSize())
-//						argName := fmt.Sprintf("vlr_%v_%v_%v", rName, rf.FieldName(), sf.FieldName())
-//						m := sifter.NewArgMap(argName, argType, 0)
-//						fmt.Fprintf(s, "        %v %v;\n", argType, argName)
-//						fmt.Fprintf(s, "        bpf_probe_read_sleepable(&%v, %v, ptr);\n", argName, sf.Size())
-//						fmt.Fprintf(s, "        %v", sifter.GenerateTraceArg(m, 2))
-//						fmt.Fprintf(s, "        ptr = (void *)(uintptr_t)(ptr + %v);\n", sf.Size())
-//					case *prog.FlagsType:
-//						argType := fmt.Sprintf("uint%v_t", sf.TypeBitSize())
-//						argName := fmt.Sprintf("vlr_%v_%v_%v", rName, rf.FieldName(), sf.FieldName())
-//						m := sifter.NewArgMap(argName, argType, 1)
-//						fmt.Fprintf(s, "        %v %v;\n", argType, argName)
-//						fmt.Fprintf(s, "        bpf_probe_read_sleepable(&%v, %v, ptr);\n", argName, sf.Size())
-//						fmt.Fprintf(s, "        %v", sifter.GenerateTraceArg(m, 2))
-//						fmt.Fprintf(s, "        ptr = (void *)(uintptr_t)(ptr + %v);\n", sf.Size())
-//					default:
-//						fmt.Fprintf(s, "        //Skip %v\n", sf.Name())
-//						fmt.Fprintf(s, "        ptr = (void *)(uintptr_t)(ptr + %v);\n", sf.Size())
-//					}
+//					sifter.GenerateRecursiveTracer(s, sf, rfArgName, false, &depth, 1)
 
 					switch sf.(type) {
 					case *prog.LenType, *prog.IntType, *prog.ConstType:
 						argType := fmt.Sprintf("uint%v_t", sf.TypeBitSize())
-						argName := fmt.Sprintf("%v.%v", rfArgName, sf.FieldName())
-						m := sifter.NewArgMap(argName, argType, 0)
+						argPath := fmt.Sprintf("%v.%v", rfArgName, sf.FieldName())
+						argName := fmt.Sprintf("%v_%v_%v", rName, rf.FieldName(), sf.FieldName())
+						m := sifter.NewArgMap(argPath, argName, argType, 0)
 						fmt.Fprintf(s, "        %v", indent(sifter.GenerateTraceArg(m), 2))
 					case *prog.FlagsType:
 						argType := fmt.Sprintf("uint%v_t", sf.TypeBitSize())
-						argName := fmt.Sprintf("%v.%v", rfArgName, sf.FieldName())
-						m := sifter.NewArgMap(argName, argType, 1)
+						argPath := fmt.Sprintf("%v.%v", rfArgName, sf.FieldName())
+						argName := fmt.Sprintf("%v_%v_%v", rName, rf.FieldName(), sf.FieldName())
+						m := sifter.NewArgMap(argPath, argName, argType, 1)
 						fmt.Fprintf(s, "        %v", indent(sifter.GenerateTraceArg(m), 2))
 					default:
 						fmt.Fprintf(s, "        //Skip %v\n", sf.Name())
@@ -480,16 +475,18 @@ func (sifter *Sifter) GenerateTraceVLR(s *bytes.Buffer, arg *prog.UnionType, hea
 				fmt.Fprintf(s, "        ptr = (void *)(uintptr_t)(ptr + sizeof(%v));\n", rfArgName)
 			case *prog.LenType, *prog.IntType, *prog.ConstType:
 				argType := fmt.Sprintf("uint%v_t", rf.TypeBitSize())
-				argName := ""
-				fmt.Fprintf(s, "        %v", indent(sifter.GenerateCopyFromUser("ptr", &argName, argType), 2))
-				m := sifter.NewArgMap(argName, argType, 0)
+				argPath := ""
+				argName := rName + "_" + rf.FieldName()
+				fmt.Fprintf(s, "        %v", indent(sifter.GenerateCopyFromUser("ptr", &argPath, argType), 2))
+				m := sifter.NewArgMap(argPath, argName, argType, 0)
 				fmt.Fprintf(s, "        %v", indent(sifter.GenerateTraceArg(m), 2))
 				fmt.Fprintf(s, "        ptr = (void *)(uintptr_t)(ptr + %v);\n", rf.Size())
 			case *prog.FlagsType:
 				argType := fmt.Sprintf("uint%v_t", rf.TypeBitSize())
-				argName := ""
-				fmt.Fprintf(s, "        %v", indent(sifter.GenerateCopyFromUser("ptr", &argName, argType), 2))
-				m := sifter.NewArgMap(argName, argType, 1)
+				argPath := ""
+				argName := rName + "_" + rf.FieldName()
+				fmt.Fprintf(s, "        %v", indent(sifter.GenerateCopyFromUser("ptr", &argPath, argType), 2))
+				m := sifter.NewArgMap(argPath, argName, argType, 1)
 				fmt.Fprintf(s, "        %v", indent(sifter.GenerateTraceArg(m), 2))
 				fmt.Fprintf(s, "        ptr = (void *)(uintptr_t)(ptr + %v);\n", rf.Size())
 			default:
@@ -507,9 +504,9 @@ func (sifter *Sifter) GenerateTraceArray(s *bytes.Buffer, arg prog.Type, argName
 	fmt.Fprintf(s, "    void *buffer = (void *)%v;\n", argName)
 	fmt.Fprintf(s, "    void *ptr = buffer + /*fill*/;\n")
 	fmt.Fprintf(s, "    void *end = buffer + /*fill*/;\n")
-	if sifter.mode == TracerMode {
-		fmt.Fprintf(s, "    uint32_t pid = get_current_pid();\n")
-	}
+//	if sifter.mode == TracerMode {
+//		fmt.Fprintf(s, "    uint32_t pid = get_current_pid();\n")
+//	}
 	ss := new(bytes.Buffer)
 	if iter == -1 {
 		iter = sifter.loopUnroll
@@ -534,83 +531,69 @@ func (sifter *Sifter) GenerateTraceArray(s *bytes.Buffer, arg prog.Type, argName
 	fmt.Fprintf(s, "out:\n")
 }
 
-func (sifter *Sifter) GenerateRecursiveTracer(arg prog.Type, s *bytes.Buffer, path string, fromPointer bool, depth *int, depthLimit int) {
+func isIgnoredArg(arg prog.Type) bool {
+	ret := false
+	if c, ok := arg.(*prog.ConstType); ok && c.IsPad {
+		ret = true
+	}
+	if s, ok := arg.(*prog.StructType); ok && s.IsVarlen {
+		ret = true
+	}
+	return ret
+}
+
+func (sifter *Sifter) GenerateRecursiveTracer(s *bytes.Buffer, arg prog.Type, argPath string, argName string, fromPointer bool, depth *int, depthLimit int) {
+	if arg.Varlen() {
+		fmt.Fprintf(s, "    //arg %v %v %v varlen\n", arg, arg.Name(), arg.FieldName())
+	} else {
+		fmt.Fprintf(s, "    //arg %v %v %v %v\n", arg, arg.Name(), arg.FieldName(), arg.Size())
+	}
+
 	if depthLimit != -1 && *depth >= depthLimit {
 		return
 	}
 
-	argType := ""
-	switch tt := arg.(type) {
-	case *prog.BufferType:
-		fmt.Fprintf(s, "    //arg %v %v %v\n", arg, arg.Name(), arg.FieldName())
-	case *prog.ArrayType:
-		if tt.IsVarlen {
-			fmt.Fprintf(s, "    //arg %v %v %v varlen\n", arg, arg.Name(), arg.FieldName())
-		} else {
-			fmt.Fprintf(s, "    //arg %v %v %v\n", arg, arg.Name(), arg.FieldName())
-		}
-	case *prog.StructType:
-		if tt.IsVarlen {
-			fmt.Fprintf(s, "    //arg %v %v %v varlen %v\n", arg, arg.Name(), arg.FieldName(), tt)
-			return
-		} else {
-			fmt.Fprintf(s, "    //arg %v %v %v %v %v\n", arg, arg.Name(), arg.FieldName(), arg.Size(), tt)
-		}
-		argType = fmt.Sprintf("struct %v", tt.String())
-	case *prog.UnionType:
-		fmt.Fprintf(s, "    //arg %v %v %v %v %v\n", arg, arg.Name(), arg.FieldName(), arg.Size(), tt)
-	default:
-		argType = fmt.Sprintf("uint%v_t", 8*tt.Size())
-		fmt.Fprintf(s, "    //arg %v %v %v %v %v\n", arg, arg.Name(), arg.FieldName(), arg.Size(), tt)
+	if isIgnoredArg(arg) {
+		fmt.Fprintf(s, "    //Skip\n")
+		return
 	}
+
+	argType := ""
+	if *depth != 0 && !fromPointer {
+		argPath = argPath + "." + arg.FieldName()
+	}
+	argName = argName + "_" + arg.FieldName()
 
 	switch t := arg.(type) {
 	case *prog.PtrType:
-		if *depth != 0 {
-			path = path + "." + arg.FieldName()
-		}
 		*depth += 1
-		sifter.GenerateRecursiveTracer(t.Type, s, path, true, depth, -1)
+		sifter.GenerateRecursiveTracer(s, t.Type, argPath, argName, true, depth, -1)
 		*depth -= 1
 	case *prog.StructType:
-		structPath := ""
+		argType = fmt.Sprintf("struct %v", t.String())
 		if fromPointer {
-			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(path, &structPath, argType), 1))
-		} else {
-			structPath = path + "." + arg.FieldName()
+			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(argPath, &argPath, argType), 1))
 		}
 
 		sifter.AddStruct(t)
 		for _, field := range t.Fields {
-			sifter.GenerateRecursiveTracer(field, s, structPath, false, depth, -1)
+			sifter.GenerateRecursiveTracer(s, field, argPath, argName, false, depth, -1)
 		}
 	case *prog.LenType, *prog.IntType, *prog.ConstType:
-		if c, ok := t.(*prog.ConstType); ok && c.IsPad {
-			break
-		}
-
-		argName := ""
+		argType = fmt.Sprintf("uint%v_t", 8*arg.Size())
 		if fromPointer {
-			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(path, &argName, argType), 1))
-		} else if *depth == 0 {
-			argName = path
-		} else {
-			argName = path + "." + arg.FieldName()
+			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(argPath, &argPath, argType), 1))
 		}
 
-		m := sifter.NewArgMap(argName, argType, 0)
+		m := sifter.NewArgMap(argPath, argName, argType, 0)
 		fmt.Fprintf(s, "    %v", indent(sifter.GenerateTraceArg(m), 1))
 	case *prog.FlagsType:
-		argName := ""
+		argType = fmt.Sprintf("uint%v_t", 8*arg.Size())
 		if fromPointer {
-			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(path, &argName, argType), 1))
-		} else if *depth == 0 {
-			argName = path
-		} else {
-			argName = path + "." + arg.FieldName()
+			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(argPath, &argPath, argType), 1))
 		}
 
-		m := sifter.NewArgMap(argName, argType, 1)
+		m := sifter.NewArgMap(argPath, argName, argType, 1)
 		fmt.Fprintf(s, "    %v", indent(sifter.GenerateTraceArg(m), 1))
 	case *prog.ArrayType:
 		iter := 0
@@ -620,15 +603,7 @@ func (sifter *Sifter) GenerateRecursiveTracer(arg prog.Type, s *bytes.Buffer, pa
 
 		}
 
-		argName := ""
-		if fromPointer {
-			argName = path
-		} else if *depth == 0 {
-			argName = path
-		} else {
-			argName = path + "." + arg.FieldName()
-		}
-		sifter.GenerateTraceArray(s, t.Type, argName, iter)
+		sifter.GenerateTraceArray(s, t.Type, argPath, iter)
 	case *prog.VmaType:
 	case *prog.UnionType:
 	case *prog.BufferType:
@@ -642,7 +617,7 @@ func (sifter *Sifter) GenerateRecursiveTracer(arg prog.Type, s *bytes.Buffer, pa
 func (sifter *Sifter) GenerateSyscallTracer(syscalls []*prog.Syscall) {
 	syscall := syscalls[0]
 	if len(syscalls) > 1 {
-		fmt.Printf("%v has multiple variations. Only %v is traced!\n", syscall.CallName, syscall.Name)
+		fmt.Printf("%v has multiple variants. Only %v is traced!\n", syscall.CallName, syscall.Name)
 	}
 
 	s := sifter.GetSection("level1_tracing")
@@ -652,7 +627,8 @@ func (sifter *Sifter) GenerateSyscallTracer(syscalls []*prog.Syscall) {
 	for i, arg := range syscall.Args {
 		path := fmt.Sprintf("ctx->%v[%v]", sifter.ctx.syscallArgs, i)
 		offset := 0
-		sifter.GenerateRecursiveTracer(arg, s, path, false, &offset, -1)
+		_, isPtr := arg.(*prog.PtrType)
+		sifter.GenerateRecursiveTracer(s, arg, path, syscall.CallName, isPtr, &offset, -1)
 	}
 	fmt.Fprintf(s, "    return ret;\n")
 	fmt.Fprintf(s, "}\n\n")
@@ -693,7 +669,8 @@ func (sifter *Sifter) GenerateIoctlCmdTracer(name string, syscall *prog.Syscall)
 	fmt.Fprintf(s, "    %v ret = %v;\n", sifter.ctx.defaultRetType, sifter.ctx.defaultRetVal)
 	path := fmt.Sprintf("ctx->%v[2]", sifter.ctx.syscallArgs)
 	offset := 0
-	sifter.GenerateRecursiveTracer(syscall.Args[2], s, path, true, &offset, -1)
+	_, isPtr := syscall.Args[2].(*prog.PtrType)
+	sifter.GenerateRecursiveTracer(s, syscall.Args[2], path, syscall.Name, isPtr, &offset, -1)
 	fmt.Fprintf(s, "    return ret;\n")
 	fmt.Fprintf(s, "}\n\n")
 }

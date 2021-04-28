@@ -6,6 +6,7 @@
 #include <iostream>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <vector>
 #include <deque>
@@ -13,6 +14,7 @@
 #include <set>
 #include <bitset>
 #include <sstream>
+#include <signal.h>
 #include <thread>
 #include <unistd.h>
 #include "tracer_id.h"
@@ -20,6 +22,7 @@
 using android::base::unique_fd;
 
 std::ofstream g_log_stream;
+std::atomic<bool> g_stop(false);
 std::atomic<uint64_t> g_update_ctr;
 uint64_t g_update_ts;
 
@@ -228,7 +231,7 @@ private:
                             else
                                 std::cout << "Update events pid[" << p << "] "
                                     << (int)ctr <<"\n";
-                        }
+						}
                         rb_elem rbp;
                         android::bpf::findMapEntry(rb.fd, &p, &rbp);
                         rb.saved[p].ctr = ctr;
@@ -316,6 +319,26 @@ public:
                 int ret = bpf_attach_tracepoint(p.fd, p.event.c_str(), p.entry.c_str());
                 if (ret < 0) {
                     std::cout << "bpf_attach_tracepoint return " << ret << " " << errno << "\n";
+                    return -1;
+                }
+            }
+        }
+        return 0;
+    }
+
+    int detach_prog() {
+        for (auto &p : m_progs) {
+            if (p.type == 0 || p.type == 1) {
+                bpf_probe_attach_type type = p.type == 1? BPF_PROBE_ENTRY : BPF_PROBE_RETURN;
+                int ret = bpf_detach_kprobe(p.fd, type, p.event.c_str(), p.entry.c_str(), 0);
+                if (ret < 0) {
+                    std::cout << "bpf_attach_kprobe return " << ret << " " << errno << "\n";
+                    return -1;
+                }
+            } else if (p.type == 2) {
+                int ret = bpf_detach_tracepoint(p.event.c_str(), p.entry.c_str());
+                if (ret < 0) {
+                    std::cout << "bpf_detach_tracepoint return " << ret << " " << errno << "\n";
                     return -1;
                 }
             }
@@ -616,7 +639,17 @@ public:
         m_init = 1;
     }
 
+	~sifter_tracer() {
+        m_init = 0;
+        stop_update_rbs();
+		detach_prog();
+	}
+
 };
+
+void signal_handler(int s) {
+	g_stop.store(true);
+}
 
 int main(int argc, char *argv[]) {
     bool recover = true;
@@ -659,6 +692,12 @@ int main(int argc, char *argv[]) {
         }
     }
 
+
+	struct sigaction sa = {};
+	sa.sa_handler = signal_handler;
+	sigfillset(&sa.sa_mask);
+	sigaction(SIGINT, &sa, NULL);
+
     sifter_tracer tracer(config_file, verbose);
 
     if (!tracer) {
@@ -696,5 +735,7 @@ int main(int argc, char *argv[]) {
         std::rename(tmp_file.c_str(), log_file);
         std::remove(tmp_file.c_str());
         sleep(log_interval);
+		if (g_stop.load()) break;
     }
+	return 0;
 }
