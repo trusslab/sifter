@@ -701,8 +701,7 @@ void get_proc_spawners(std::vector<int> &proc_spawners) {
         return;
     }
 
-    //const char *proc_spawners_name[] = {"-/system/bin/sh", "zygote", "zygote64"};
-    const char *proc_spawners_name[] = {"zygote", "zygote64"};
+    const char *proc_spawners_name[] = {"-/system/bin/sh", "zygote", "zygote64"};
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
         char *p;
@@ -711,7 +710,7 @@ void get_proc_spawners(std::vector<int> &proc_spawners) {
             continue;
 
         std::string proc_name = get_proc_name(pid);
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < 3; i++) {
             if (proc_name.compare(proc_spawners_name[i]) == 0) {
                 proc_spawners.push_back(pid);
                 std::cout << "Monitoring process spawners [" << pid << "] " << proc_name << "\n";
@@ -748,7 +747,7 @@ void proc_spawner_monitor_th(int spwaner_pid) {
         std::cout << "[" << spwaner_pid << "] status changed: " << status << "\n";
         if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_CLONE<<8))) {
             ret = ptrace(PTRACE_GETEVENTMSG, spwaner_pid, NULL, &data);
-            std::cout << "[" << spwaner_pid << "]" << " spawn [" << data << "] " << "\n";
+            std::cout << "[" << spwaner_pid << "] spawn [" << data << "] " << "\n";
         }
         ptrace(PTRACE_CONT, spwaner_pid, NULL, NULL);
 
