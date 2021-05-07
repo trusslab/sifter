@@ -18,6 +18,8 @@
 #include <signal.h>
 #include <thread>
 #include <unistd.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
 
 #include "tracer_id.h"
 
@@ -684,41 +686,77 @@ void signal_handler(int s) {
 }
 
 std::string get_proc_name(int pid) {
-	std::ifstream ifs;
-	std::string proc_name;
-	std::string proc_name_path = "/proc/" + std::to_string(pid) + "/cmdline";
-	ifs.open(proc_name_path);
-	std::getline(ifs, proc_name);
-	return proc_name.substr(0, proc_name.find('\0'));
+    std::ifstream ifs;
+    std::string proc_name;
+    std::string proc_name_path = "/proc/" + std::to_string(pid) + "/cmdline";
+    ifs.open(proc_name_path);
+    std::getline(ifs, proc_name);
+    return proc_name.substr(0, proc_name.find('\0'));
 }
 
 void get_proc_spawners(std::vector<int> &proc_spawners) {
-	DIR *dir;
-	if ((dir = opendir("/proc/")) == NULL) {
-		std::cerr << "Failed to open /proc/, which is needed to monitor processes of interest\n";
-		return;
-	}
+    DIR *dir;
+    if ((dir = opendir("/proc/")) == NULL) {
+        std::cerr << "Failed to open /proc/, which is needed to monitor processes of interest\n";
+        return;
+    }
 
-	const char *proc_spawners_name[] = {"-/system/bin/sh", "zygote", "zygote64"};
-	struct dirent *de;
-	while ((de = readdir(dir)) != NULL) {
-		char *p;
-		long pid = strtol(de->d_name, &p, 10);
-		if (*p)
-			continue;
+    //const char *proc_spawners_name[] = {"-/system/bin/sh", "zygote", "zygote64"};
+    const char *proc_spawners_name[] = {"zygote", "zygote64"};
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        char *p;
+        long pid = strtol(de->d_name, &p, 10);
+        if (*p)
+            continue;
 
-		std::string proc_name = get_proc_name(pid);
-		for (int i = 0; i < 3; i++) {
-			if (proc_name.compare(proc_spawners_name[i]) == 0) {
-				proc_spawners.push_back(pid);
-				std::cout << "Monitoring process spawners [" << pid << "] " << proc_name << "\n";
-				break;
-			}
-		}
-	}
-	closedir(dir);
+        std::string proc_name = get_proc_name(pid);
+        for (int i = 0; i < 2; i++) {
+            if (proc_name.compare(proc_spawners_name[i]) == 0) {
+                proc_spawners.push_back(pid);
+                std::cout << "Monitoring process spawners [" << pid << "] " << proc_name << "\n";
+                break;
+            }
+        }
+    }
+    closedir(dir);
 
-	return;
+    return;
+}
+
+void proc_spawner_monitor_th(int spwaner_pid) {
+    int ret = 0;
+    int status = 0;
+    unsigned long data = 0;
+    ret = ptrace(PTRACE_ATTACH, spwaner_pid, NULL, NULL);
+    if (ret != 0) {
+        std::cerr << "[" << spwaner_pid << "] ptrace attach error: " << strerror(errno) << "\n";
+        return;
+    }
+    waitpid(spwaner_pid, &status, 0);
+
+    data = PTRACE_O_TRACECLONE;
+    ret = ptrace(PTRACE_SETOPTIONS, spwaner_pid, NULL, data);
+    if (ret != 0) {
+        std::cerr << "[" << spwaner_pid << "] ptrace set option error: " << strerror(errno) << "\n";
+        return;
+    }
+    ptrace(PTRACE_CONT, spwaner_pid, NULL, NULL);
+
+    while (1) {
+        waitpid(spwaner_pid, &status, 0);
+        std::cout << "[" << spwaner_pid << "] status changed: " << status << "\n";
+        if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_CLONE<<8))) {
+            ret = ptrace(PTRACE_GETEVENTMSG, spwaner_pid, NULL, &data);
+            std::cout << "[" << spwaner_pid << "]" << " spawn [" << data << "] " << "\n";
+        }
+        ptrace(PTRACE_CONT, spwaner_pid, NULL, NULL);
+
+        if (g_stop.load()) break;
+    };
+
+    ptrace(PTRACE_DETACH, spwaner_pid, NULL, NULL);
+    return;
 }
 
 int main(int argc, char *argv[]) {
@@ -762,8 +800,13 @@ int main(int argc, char *argv[]) {
         }
     }
 
-	std::vector<int> proc_spawners;
-	get_proc_spawners(proc_spawners);
+    std::vector<std::thread> proc_spawner_monitor_ths;
+    std::vector<int> proc_spawners;
+    get_proc_spawners(proc_spawners);
+    for (auto pid : proc_spawners) {
+        std::thread th(proc_spawner_monitor_th, pid);
+        proc_spawner_monitor_ths.push_back(std::move(th));
+    }
 
     struct sigaction sa = {};
     sa.sa_handler = signal_handler;
