@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <vector>
+#include <dirent.h>
 #include <deque>
 #include <map>
 #include <set>
@@ -17,6 +18,7 @@
 #include <signal.h>
 #include <thread>
 #include <unistd.h>
+
 #include "tracer_id.h"
 
 using android::base::unique_fd;
@@ -681,6 +683,44 @@ void signal_handler(int s) {
     g_stop.store(true);
 }
 
+std::string get_proc_name(int pid) {
+	std::ifstream ifs;
+	std::string proc_name;
+	std::string proc_name_path = "/proc/" + std::to_string(pid) + "/cmdline";
+	ifs.open(proc_name_path);
+	std::getline(ifs, proc_name);
+	return proc_name.substr(0, proc_name.find('\0'));
+}
+
+void get_proc_spawners(std::vector<int> &proc_spawners) {
+	DIR *dir;
+	if ((dir = opendir("/proc/")) == NULL) {
+		std::cerr << "Failed to open /proc/, which is needed to monitor processes of interest\n";
+		return;
+	}
+
+	const char *proc_spawners_name[] = {"-/system/bin/sh", "zygote", "zygote64"};
+	struct dirent *de;
+	while ((de = readdir(dir)) != NULL) {
+		char *p;
+		long pid = strtol(de->d_name, &p, 10);
+		if (*p)
+			continue;
+
+		std::string proc_name = get_proc_name(pid);
+		for (int i = 0; i < 3; i++) {
+			if (proc_name.compare(proc_spawners_name[i]) == 0) {
+				proc_spawners.push_back(pid);
+				std::cout << "Monitoring process spawners [" << pid << "] " << proc_name << "\n";
+				break;
+			}
+		}
+	}
+	closedir(dir);
+
+	return;
+}
+
 int main(int argc, char *argv[]) {
     bool recover = true;
     bool manual_mode = false;
@@ -722,6 +762,8 @@ int main(int argc, char *argv[]) {
         }
     }
 
+	std::vector<int> proc_spawners;
+	get_proc_spawners(proc_spawners);
 
     struct sigaction sa = {};
     sa.sa_handler = signal_handler;
