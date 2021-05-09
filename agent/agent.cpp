@@ -30,6 +30,9 @@ std::atomic<bool> g_stop(false);
 std::atomic<uint64_t> g_update_ctr;
 uint64_t g_update_ts;
 
+std::vector<std::thread> g_spawner_proc_ths;
+std::string g_traced_prog;
+
 struct rb_elem {
     struct bpf_spin_lock lock;
     uint8_t next;
@@ -723,6 +726,64 @@ void get_proc_spawners(std::vector<int> &proc_spawners) {
     return;
 }
 
+std::string ptrace_read_str(int pid, uint64_t addr) {
+    union u {
+        uint32_t val;
+        char chars[4];
+    } data;
+    std::cout << "addr: "<< std::hex << addr << "\n";
+    char path[256];
+    for (int i = 0; i < 256; i+=4) {
+        data.val = ptrace(PTRACE_PEEKDATA, pid, addr+i*4 , NULL);
+        std::cout << std::hex << data.val << std::dec << " ";
+        memcpy(&path[i], data.chars, 4);
+        if (data.chars[0] == 0 || data.chars[1] == 0 || data.chars[2] == 0 || data.chars[3] == 0)
+            break;
+    }
+    return std::string(path);
+}
+
+bool loop_until_identified(int pid, std::string prog_name) {
+    int ret = 0;
+    int status = 0;
+    unsigned long data = 0;
+    struct user_regs_struct regs;
+    struct iovec io;
+    io.iov_base = &regs;
+    io.iov_len = sizeof(regs);
+    while (1) {
+        std::cout << "[" << pid << "] waitpid\n";
+        waitpid(pid, &status, 0);
+        std::cout << "[" << pid << "] status changed: " << std::hex << status << std::dec<<"\n";
+        if (WIFEXITED(status)) {
+            std::cout << "[" << pid << "] exit\n";
+            break;
+        } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_FORK<<8))) {
+            ret = ptrace(PTRACE_GETEVENTMSG, pid, NULL, &data);
+            std::cout << "[" << pid << "] fork [" << data << "] " << "\n";
+        } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_VFORK<<8))) {
+            ret = ptrace(PTRACE_GETEVENTMSG, pid, NULL, &data);
+            std::cout << "[" << pid << "] vfork [" << data << "] " << "\n";
+        } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_CLONE<<8))) {
+            ret = ptrace(PTRACE_GETEVENTMSG, pid, NULL, &data);
+            std::cout << "[" << pid << "] clone [" << data << "]\n";
+        } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_EXEC<<8))) {
+            std::string new_prog_name = get_proc_name(pid);
+            std::cout << "[" << pid << "] execve " << new_prog_name << "\n";
+            if (prog_name.compare(new_prog_name) == 0)
+                return true;
+            else
+                return false;
+        }
+        std::cout << "[" << pid << "] cont \n";
+        ptrace(PTRACE_CONT, pid, NULL, NULL);
+
+        if (g_stop.load()) break;
+    };
+
+    return false;
+}
+
 void proc_spawner_monitor_th(int spwaner_pid) {
     int ret = 0;
     int status = 0;
@@ -734,7 +795,7 @@ void proc_spawner_monitor_th(int spwaner_pid) {
     }
     waitpid(spwaner_pid, &status, 0);
 
-    data = PTRACE_O_TRACECLONE;
+    data = PTRACE_O_TRACECLONE | PTRACE_O_TRACEFORK | PTRACE_O_TRACEVFORK | PTRACE_O_TRACEEXEC;
     ret = ptrace(PTRACE_SETOPTIONS, spwaner_pid, NULL, data);
     if (ret != 0) {
         std::cerr << "[" << spwaner_pid << "] ptrace set option error: " << strerror(errno) << "\n";
@@ -743,12 +804,25 @@ void proc_spawner_monitor_th(int spwaner_pid) {
     ptrace(PTRACE_CONT, spwaner_pid, NULL, NULL);
 
     while (1) {
+        std::cout << "[" << spwaner_pid << "] waitpid\n";
         waitpid(spwaner_pid, &status, 0);
         std::cout << "[" << spwaner_pid << "] status changed: " << status << "\n";
-        if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_CLONE<<8))) {
+        if (WIFEXITED(status)) {
+            std::cout << "[" << spwaner_pid << "] exit\n";
+            break;
+        } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_FORK<<8))) {
             ret = ptrace(PTRACE_GETEVENTMSG, spwaner_pid, NULL, &data);
-            std::cout << "[" << spwaner_pid << "] spawn [" << data << "] " << "\n";
+            std::cout << "[" << spwaner_pid << "] fork [" << data << "] " << "\n";
+            loop_until_identified(data, g_traced_prog);
+            ptrace(PTRACE_DETACH, data, NULL, NULL);
+        } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_VFORK<<8))) {
+            ret = ptrace(PTRACE_GETEVENTMSG, spwaner_pid, NULL, &data);
+            std::cout << "[" << spwaner_pid << "] vfork [" << data << "] " << "\n";
+        } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_CLONE<<8))) {
+            ret = ptrace(PTRACE_GETEVENTMSG, spwaner_pid, NULL, &data);
+            std::cout << "[" << spwaner_pid << "] clone [" << data << "] " << "\n";
         }
+        std::cout << "[" << spwaner_pid << "] cont \n";
         ptrace(PTRACE_CONT, spwaner_pid, NULL, NULL);
 
         if (g_stop.load()) break;
@@ -766,15 +840,17 @@ int main(int argc, char *argv[]) {
     char empty_string[] = "";
     char *config_file = empty_string;
     char *log_file = empty_string;
+    char *traced_prog = empty_string;
 
     int opt;
-    while ((opt = getopt (argc, argv, "hmi:v:c:r:o:")) != -1) {
+    while ((opt = getopt (argc, argv, "hmi:v:c:r:o:p:")) != -1) {
         switch (opt) {
             case 'h':
                 std::cout << "Sifter agent\n";
                 std::cout << "Options\n";
                 std::cout << "-c config   : agent configuration file [required]\n";
                 std::cout << "-o output   : maps logging output file [required except manual mode]\n";
+                std::cout << "-p program  : program to trace [required]\n";
                 std::cout << "-m          : use manual mode\n";
                 std::cout << "-i interval : maps logging interval in seconds [default=10]\n";
                 std::cout << "-r recover  : recover from log when start [default=1 (enabled)]\n";
@@ -787,6 +863,7 @@ int main(int argc, char *argv[]) {
             case 'c': config_file = optarg; break;
             case 'r': recover = atoi(optarg) > 0; break;
             case 'o': log_file = optarg; break;
+            case 'p': traced_prog = optarg; break;
             case '?':
                 if (optopt == 'c')
                     fprintf(stderr, "Option -%c requires an argument.\n", optopt);
@@ -799,12 +876,12 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    std::vector<std::thread> proc_spawner_monitor_ths;
+    g_traced_prog = std::string(traced_prog);
     std::vector<int> proc_spawners;
     get_proc_spawners(proc_spawners);
     for (auto pid : proc_spawners) {
         std::thread th(proc_spawner_monitor_th, pid);
-        proc_spawner_monitor_ths.push_back(std::move(th));
+        g_spawner_proc_ths.push_back(std::move(th));
     }
 
     struct sigaction sa = {};
