@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <vector>
 #include <dirent.h>
@@ -213,6 +214,8 @@ private:
     std::vector<std::thread *> m_rbs_update_threads;
     std::vector<int> m_proc_bitness;
     std::set<int> m_ignored_pids;
+    std::vector<std::string> m_target_prog_comm_list;
+    unique_fd m_target_prog_comm_map_fd;
     int m_min_pid;
     bool m_rbs_update_start;
 
@@ -672,6 +675,19 @@ public:
             return;
         }
 
+        std::string path = "/sys/fs/bpf/map_" + m_name + "_tracer_target_prog_comm_map";
+        int target_prog_comm_map_fd = bpf_obj_get(path.c_str());
+        if (target_prog_comm_map_fd != -1)
+            m_target_prog_comm_map_fd = unique_fd(target_prog_comm_map_fd);
+
+        uint32_t dummy_val = 1;
+        for (auto s : m_target_prog_comm_list) {
+            char target_prog_comm[16] = {};
+            strncpy(target_prog_comm, s.c_str(), 16);
+            android::bpf::writeToMapEntry(m_target_prog_comm_map_fd,
+                    target_prog_comm, &dummy_val, BPF_ANY);
+        }
+
         m_init = 1;
     }
 
@@ -876,13 +892,13 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    g_traced_prog = std::string(traced_prog);
-    std::vector<int> proc_spawners;
-    get_proc_spawners(proc_spawners);
-    for (auto pid : proc_spawners) {
-        std::thread th(proc_spawner_monitor_th, pid);
-        g_spawner_proc_ths.push_back(std::move(th));
-    }
+//    g_traced_prog = std::string(traced_prog);
+//    std::vector<int> proc_spawners;
+//    get_proc_spawners(proc_spawners);
+//    for (auto pid : proc_spawners) {
+//        std::thread th(proc_spawner_monitor_th, pid);
+//        g_spawner_proc_ths.push_back(std::move(th));
+//    }
 
     struct sigaction sa = {};
     sa.sa_handler = signal_handler;
