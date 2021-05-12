@@ -574,7 +574,8 @@ public:
 
     //sifter_tracer(): m_init(0) {};
 
-    sifter_tracer(std::string file, int verbose=0): m_init(0), m_verbose(verbose) {
+    sifter_tracer(std::string file, std::vector<std::string> &target_prog_list, int verbose=0)
+        : m_init(0), m_verbose(verbose), m_target_prog_comm_list(target_prog_list) {
         std::ifstream ifs(file);
 
         if (!ifs) {
@@ -856,7 +857,7 @@ int main(int argc, char *argv[]) {
     char empty_string[] = "";
     char *config_file = empty_string;
     char *log_file = empty_string;
-    char *traced_prog = empty_string;
+    char *target_prog = empty_string;
 
     int opt;
     while ((opt = getopt (argc, argv, "hmi:v:c:r:o:p:")) != -1) {
@@ -866,7 +867,7 @@ int main(int argc, char *argv[]) {
                 std::cout << "Options\n";
                 std::cout << "-c config   : agent configuration file [required]\n";
                 std::cout << "-o output   : maps logging output file [required except manual mode]\n";
-                std::cout << "-p program  : program to trace [required]\n";
+                std::cout << "-p program  : target programs to be traced (comm's seperated by \",\")\n";
                 std::cout << "-m          : use manual mode\n";
                 std::cout << "-i interval : maps logging interval in seconds [default=10]\n";
                 std::cout << "-r recover  : recover from log when start [default=1 (enabled)]\n";
@@ -879,7 +880,7 @@ int main(int argc, char *argv[]) {
             case 'c': config_file = optarg; break;
             case 'r': recover = atoi(optarg) > 0; break;
             case 'o': log_file = optarg; break;
-            case 'p': traced_prog = optarg; break;
+            case 'p': target_prog = optarg; break;
             case '?':
                 if (optopt == 'c')
                     fprintf(stderr, "Option -%c requires an argument.\n", optopt);
@@ -905,7 +906,18 @@ int main(int argc, char *argv[]) {
     sigfillset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
 
-    sifter_tracer tracer(config_file, verbose);
+    int i = 0, last_delim_pos = -1;
+    std::vector<std::string> target_prog_list;
+    while (target_prog[i] != '\0') {
+        if (target_prog[i] == ',') {
+            std::string prog(&target_prog[last_delim_pos+1], i-last_delim_pos-1);
+            target_prog_list.push_back(prog);
+            last_delim_pos = i;
+        }
+        i++;
+    }
+
+    sifter_tracer tracer(config_file, target_prog_list, verbose);
 
     if (!tracer) {
         std::cout << "Failed to create tracer\n";
