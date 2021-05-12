@@ -641,9 +641,6 @@ public:
 
     void stop_update_rbs() {
         m_rbs_update_start = 0;
-        for (auto &th : m_rbs_update_threads) {
-            th->join();
-        }
     }
 
     void start_update_args() {
@@ -1052,6 +1049,7 @@ int main(int argc, char *argv[]) {
         if (g_stop.load()) break;
     }
 
+    tracer.stop_update_rbs();
     tracer.stop_update_args();
     return 0;
 }
