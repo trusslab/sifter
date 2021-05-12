@@ -939,7 +939,6 @@ void proc_spawner_monitor_th(int spwaner_pid) {
 
 int main(int argc, char *argv[]) {
     bool recover = true;
-    bool manual_mode = false;
     int log_interval = 1;
     int verbose = 0;
     char empty_string[] = "";
@@ -948,7 +947,7 @@ int main(int argc, char *argv[]) {
     char *target_prog = empty_string;
 
     int opt;
-    while ((opt = getopt (argc, argv, "hmi:v:c:r:o:p:")) != -1) {
+    while ((opt = getopt (argc, argv, "hi:v:c:r:o:p:")) != -1) {
         switch (opt) {
             case 'h':
                 std::cout << "Sifter agent\n";
@@ -956,13 +955,11 @@ int main(int argc, char *argv[]) {
                 std::cout << "-c config   : agent configuration file [required]\n";
                 std::cout << "-o output   : maps logging output file [required except manual mode]\n";
                 std::cout << "-p program  : target programs to be traced (comm's seperated by \",\")\n";
-                std::cout << "-m          : use manual mode\n";
                 std::cout << "-i interval : maps logging interval in seconds [default=10]\n";
                 std::cout << "-r recover  : recover from log when start [default=1 (enabled)]\n";
                 std::cout << "-v verbose  : verbosity [default=0]\n";
                 std::cout << "-h          : helps\n";
                 return 0;
-            case 'm': manual_mode = true; break;
             case 'i': log_interval = atoi(optarg); break;
             case 'v': verbose = atoi(optarg); break;
             case 'c': config_file = optarg; break;
@@ -1027,15 +1024,6 @@ int main(int argc, char *argv[]) {
 
     if (tracer.args_num() > 0) {
         tracer.start_update_args();
-    }
-
-    if (manual_mode) {
-        std::cout << "\nPress enter to stop...\n";
-        std::cin.get();
-        tracer.print_maps();
-        tracer.print_rbs();
-        tracer.stop_update_rbs();
-        return 0;
     }
 
     std::string tmp_file = std::string(log_file) + ".tmp";
