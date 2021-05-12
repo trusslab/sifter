@@ -744,6 +744,18 @@ public:
                         std::cout << "Added ringbuffer (name:" << name << ")\n";
                     break;
                 }
+                case 'a': {
+                    int size;
+                    std::string name;
+                    ifs >> size >> name;
+                    if (add_arg(size, name) == -1) {
+                        std::cerr << "Failed to add argument (name:" << name << ")\n";
+                        return;
+                    }
+                    if (m_verbose > 0)
+                        std::cout << "Added argument (name:" << name << ")\n";
+                    break;
+                }
                 default:
                     std::cerr << "Failed to parse configuration. Invalid cfg entry \'"
                         << cfg_type << "\'\n";
