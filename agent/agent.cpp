@@ -146,6 +146,33 @@ struct sifter_prog {
         type(t), event(ev), entry(en), fd(android::base::unique_fd(f)) {};
 };
 
+struct arg_entry {
+    uint64_t ts;
+    uint32_t id;
+    char val[1];
+};
+
+#define CTR_BITS        10
+#define CTR_SIZE        (1 << CTR_BITS)
+#define CTR_IDX_MASK    (CTR_SIZE - 1)
+#define CTR_CTR_MASK    ~CTR_IDX_MASK
+#define CTR_IDX(x)      (CTR_IDX_MASK & x)
+#define CTR_CTR(x)      (CTR_CTR_MASK & x)
+
+struct sifter_arg {
+    int size;
+    std::string name;
+    unique_fd ctr_fd;
+    unique_fd val_fd;
+    std::vector<arg_entry> log;
+
+    sifter_arg(int s, std::string nm, int ctr, int val):
+        size(s), name(nm), ctr_fd(unique_fd(ctr)), val_fd(unique_fd(val)) {};
+
+    size_t val_size() { return size; }
+    size_t entry_size() { return sizeof(arg_entry)+size-1; }
+};
+
 int proc_bitness(std::vector<int> &proc_bitness, int pid, int verbose) {
     int bitness = proc_bitness[pid];
     if (bitness != -1)
@@ -211,6 +238,8 @@ private:
     std::vector<sifter_map> m_maps;
     std::vector<sifter_lut> m_luts;
     std::vector<sifter_rb> m_rbs;
+    std::vector<sifter_arg> m_args;
+    std::vector<std::thread *> m_args_update_threads;
     std::vector<std::thread *> m_rbs_update_threads;
     std::vector<int> m_proc_bitness;
     std::set<int> m_ignored_pids;
@@ -218,6 +247,7 @@ private:
     unique_fd m_target_prog_comm_map_fd;
     int m_min_pid;
     bool m_rbs_update_start;
+    bool m_args_update_start;
 
     void update_rbs_thread() {
         m_min_pid = gettid();
@@ -262,6 +292,38 @@ private:
         }
     }
 
+    void update_arg_thread(sifter_arg *arg) {
+        uint32_t curr_ctr;
+        uint32_t last_ctr = 0;
+        int zero_idx = 0;
+        arg_entry *ent = (arg_entry *)malloc(arg->entry_size());
+
+        while (m_args_update_start) {
+            android::bpf::findMapEntry(arg->ctr_fd, &zero_idx, &curr_ctr);
+
+            int start, end;
+            if (CTR_CTR(curr_ctr) != CTR_CTR(last_ctr)) {
+                start = 0;
+                end = CTR_IDX(curr_ctr);
+            } else if (curr_ctr != last_ctr) {
+                start = CTR_IDX(last_ctr);
+                end = CTR_IDX(curr_ctr);
+            } else {
+                continue;
+            }
+            last_ctr = curr_ctr;
+
+            int i = start;
+            do {
+                i = (i == 1024)? 0 : i;
+                android::bpf::findMapEntry(arg->val_fd, &i, ent);
+                if (m_verbose > 2) {
+                    std::cout << ent->ts << "\n";
+                }
+            } while (i++ != end);
+        }
+    }
+
 public:
     size_t map_num() {
         return m_maps.size();
@@ -269,6 +331,10 @@ public:
 
     size_t rb_num() {
         return m_rbs.size();
+    }
+
+    size_t args_num() {
+        return m_args.size();
     }
 
     int add_prog(int type, std::string event, std::string entry) {
@@ -323,6 +389,18 @@ public:
             return fd;
         }
         return -1;
+    }
+
+    int add_arg(int size, std::string name) {
+        std::string ctr_path = "/sys/fs/bpf/map_" + m_name + "_" + name + "_ctr";
+        std::string val_path = "/sys/fs/bpf/map_" + m_name + "_" + name + "_val";
+        int ctr_fd = bpf_obj_get(ctr_path.c_str());
+        int val_fd = bpf_obj_get(val_path.c_str());
+        if (ctr_fd == -1 || val_fd == -1)
+            return -1;
+
+        m_args.push_back(sifter_arg(size, name, ctr_fd, val_fd));
+        return ctr_fd;
     }
 
     int attach_prog() {
@@ -567,6 +645,18 @@ public:
             th->join();
         }
     }
+
+    void start_update_args() {
+        m_args_update_start = 1;
+        for (auto &s : m_args) {
+            std::thread *th = new std::thread(&sifter_tracer::update_arg_thread, this, &s);
+            m_rbs_update_threads.push_back(th);
+        }
+    }
+
+    void stop_update_args() {
+        m_args_update_start = 0;
+    }
     
     operator bool() const {
         return m_init == 1;
@@ -676,7 +766,7 @@ public:
             return;
         }
 
-        std::string path = "/sys/fs/bpf/map_" + m_name + "_tracer_target_prog_comm_map";
+        std::string path = "/sys/fs/bpf/map_" + m_name + "_target_prog_comm_map";
         int target_prog_comm_map_fd = bpf_obj_get(path.c_str());
         if (target_prog_comm_map_fd != -1)
             m_target_prog_comm_map_fd = unique_fd(target_prog_comm_map_fd);
@@ -703,6 +793,7 @@ public:
 void signal_handler(int s) {
     (void)s;
     g_stop.store(true);
+    exit(1);
 }
 
 std::string get_proc_name(int pid) {
@@ -937,6 +1028,10 @@ int main(int argc, char *argv[]) {
         tracer.start_update_rbs();
     }
 
+    if (tracer.args_num() > 0) {
+        tracer.start_update_args();
+    }
+
     if (manual_mode) {
         std::cout << "\nPress enter to stop...\n";
         std::cin.get();
@@ -956,5 +1051,7 @@ int main(int argc, char *argv[]) {
         sleep(log_interval);
         if (g_stop.load()) break;
     }
+
+    tracer.stop_update_args();
     return 0;
 }
