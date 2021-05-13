@@ -1017,11 +1017,13 @@ int main(int argc, char *argv[]) {
 
     int i = 0, last_delim_pos = -1;
     std::vector<std::string> target_prog_list;
-    while (target_prog[i] != '\0') {
-        if (target_prog[i] == ',') {
+    while (1) {
+        if (target_prog[i] == ',' || target_prog[i] == '\0') {
             std::string prog(&target_prog[last_delim_pos+1], i-last_delim_pos-1);
             target_prog_list.push_back(prog);
             last_delim_pos = i;
+            if (target_prog[i] == '\0')
+                break;
         }
         i++;
     }
