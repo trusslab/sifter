@@ -239,15 +239,53 @@ private:
     std::vector<sifter_lut> m_luts;
     std::vector<sifter_rb> m_rbs;
     std::vector<sifter_arg> m_args;
-    std::vector<std::thread *> m_args_update_threads;
-    std::vector<std::thread *> m_rbs_update_threads;
+    std::vector<std::thread *> m_update_threads;
     std::vector<int> m_proc_bitness;
     std::set<int> m_ignored_pids;
     std::vector<std::string> m_target_prog_comm_list;
     unique_fd m_target_prog_comm_map_fd;
     int m_min_pid;
+    bool m_maps_update_start;
     bool m_rbs_update_start;
     bool m_args_update_start;
+
+    void update_maps_thread() {
+        while (m_maps_update_start) {
+            for (auto &m : m_maps) {
+                int size = m.val.size();
+                std::vector<uint64_t> val(size);
+                for (int i = 0; i < size; i++)
+                    android::bpf::findMapEntry(m.fd, &i, &val[i]);
+
+                switch (m.type) {
+                    case 0:
+                        if (val[0] < m.val[0]) {
+                            printf("m0\n");
+                            g_update_ctr++;
+                            m.val[0] = val[0];
+                        }
+                        if (val[1] > m.val[1]) {
+                            printf("m0\n");
+                            g_update_ctr++;
+                            m.val[1] = val[1];
+                        }
+                        break;
+                    case 1:
+                        if (~m.val[0] & val[0]) {
+                            printf("m1\n");
+                            g_update_ctr++;
+                        }
+                        if (~m.val[1] & val[1]) {
+                            printf("m1\n");
+                            g_update_ctr++;
+                        }
+                        m.val[0] |= val[0];
+                        m.val[1] |= val[1];
+                        break;
+                }
+            }
+        }
+    }
 
     void update_rbs_thread() {
         m_min_pid = gettid();
@@ -596,47 +634,21 @@ public:
 
     }
 
-    void update_maps() {
-        for (auto &m : m_maps) {
-            int size = m.val.size();
-            std::vector<uint64_t> val(size);
-            for (int i = 0; i < size; i++)
-                android::bpf::findMapEntry(m.fd, &i, &val[i]);
+    void start_update_maps() {
+        m_maps_update_start = 1;
+        std::thread *th = new std::thread(&sifter_tracer::update_maps_thread, this);
+        m_update_threads.push_back(th);
+    }
 
-            switch (m.type) {
-                case 0:
-                    if (val[0] < m.val[0]) {
-                        printf("m0\n");
-                        g_update_ctr++;
-                        m.val[0] = val[0];
-                    }
-                    if (val[1] > m.val[1]) {
-                        printf("m0\n");
-                        g_update_ctr++;
-                        m.val[1] = val[1];
-                    }
-                    break;
-                case 1:
-                    if (~m.val[0] & val[0]) {
-                        printf("m1\n");
-                        g_update_ctr++;
-                    }
-                    if (~m.val[1] & val[1]) {
-                        printf("m1\n");
-                        g_update_ctr++;
-                    }
-                    m.val[0] |= val[0];
-                    m.val[1] |= val[1];
-                    break;
-            }
-        }
+    void stop_update_maps() {
+        m_rbs_update_start = 0;
     }
 
     void start_update_rbs() {
         m_ignored_pids.insert(gettid());
         m_rbs_update_start = 1;
         std::thread *th = new std::thread(&sifter_tracer::update_rbs_thread, this);
-        m_rbs_update_threads.push_back(th);
+        m_update_threads.push_back(th);
     }
 
     void stop_update_rbs() {
@@ -647,7 +659,7 @@ public:
         m_args_update_start = 1;
         for (auto &s : m_args) {
             std::thread *th = new std::thread(&sifter_tracer::update_arg_thread, this, &s);
-            m_rbs_update_threads.push_back(th);
+            m_update_threads.push_back(th);
         }
     }
 
@@ -1030,6 +1042,10 @@ int main(int argc, char *argv[]) {
             tracer.recover_maps(log_file);
     }
 
+    if (tracer.map_num() > 0) {
+        tracer.start_update_maps();
+    }
+
     if (tracer.rb_num() > 0) {
         tracer.start_update_rbs();
     }
@@ -1040,7 +1056,6 @@ int main(int argc, char *argv[]) {
 
     std::string tmp_file = std::string(log_file) + ".tmp";
     while (1) {
-        tracer.update_maps();
         tracer.dump_maps(tmp_file);
         tracer.dump_rbs(tmp_file);
         std::rename(tmp_file.c_str(), log_file);
@@ -1049,6 +1064,7 @@ int main(int argc, char *argv[]) {
         if (g_stop.load()) break;
     }
 
+    tracer.stop_update_maps();
     tracer.stop_update_rbs();
     tracer.stop_update_args();
     return 0;
