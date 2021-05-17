@@ -334,32 +334,73 @@ private:
         uint32_t curr_ctr;
         uint32_t last_ctr = 0;
         int zero_idx = 0;
-        arg_entry *ent = (arg_entry *)malloc(arg->entry_size());
+        int ent_size = arg->entry_size();
+
+        arg_entry *ent = (arg_entry *)malloc(ent_size);
+        if (!ent) {
+            std::cerr << "Failed to allocate memory for tracing " << arg->name << "\n";
+            return;
+        }
+
+        std::string trace = "raw_trace_" + arg->name + ".dat";
+        std::ofstream ofs(trace, std::ofstream::app);
+        if (!ofs) {
+            std::cerr << "Failed to open trace file " << trace << "\n";
+            return;
+        }
+
+        struct timespec time;
+        clock_gettime(CLOCK_MONOTONIC, &time);
+        uint64_t ts = time.tv_sec * 1000000000 + time.tv_nsec;
+        uint32_t id = 0x00010000; // start
+        ofs.write(reinterpret_cast<const char*>(&ts), sizeof(uint64_t));
+        ofs.write(reinterpret_cast<const char*>(&id), sizeof(uint32_t));
 
         while (m_args_update_start) {
             android::bpf::findMapEntry(arg->ctr_fd, &zero_idx, &curr_ctr);
 
             int start, end;
-            if (CTR_CTR(curr_ctr) != CTR_CTR(last_ctr)) {
-                start = 0;
+            uint32_t ctr_diff = curr_ctr - last_ctr;
+            if (ctr_diff > CTR_SIZE) {
+                if (m_verbose > 2) {
+                    std::cout << "lost events: " << last_ctr << " " << curr_ctr << "\n";
+                }
+                start = CTR_IDX(curr_ctr - CTR_SIZE/8);
                 end = CTR_IDX(curr_ctr);
-            } else if (curr_ctr != last_ctr) {
+                last_ctr = curr_ctr;
+
+                struct timespec time;
+                clock_gettime(CLOCK_MONOTONIC, &time);
+                uint64_t ts = time.tv_sec * 1000000000 + time.tv_nsec;
+                uint32_t id = 0x00010001; // lost of trace
+                ofs.write(reinterpret_cast<const char*>(&ts), sizeof(uint64_t));
+                ofs.write(reinterpret_cast<const char*>(&id), sizeof(uint32_t));
+                ofs.write(reinterpret_cast<const char*>(&last_ctr), sizeof(uint64_t));
+                ofs.write(reinterpret_cast<const char*>(&curr_ctr), sizeof(uint64_t));
+            } else if (ctr_diff > CTR_SIZE/8) {
+                if (m_verbose > 2) {
+                    std::cout << "saving events: " << last_ctr << " " << curr_ctr << "\n";
+                }
                 start = CTR_IDX(last_ctr);
                 end = CTR_IDX(curr_ctr);
+                last_ctr = curr_ctr;
             } else {
                 continue;
             }
-            last_ctr = curr_ctr;
 
             int i = start;
             do {
                 i = (i == 1024)? 0 : i;
                 android::bpf::findMapEntry(arg->val_fd, &i, ent);
-                if (m_verbose > 2) {
+                ofs.write(reinterpret_cast<const char*>(ent), ent_size);
+                if (m_verbose > 3) {
                     std::cout << ent->ts << "\n";
                 }
             } while (i++ != end);
         }
+
+        ofs.close();
+        free(ent);
     }
 
 public:
