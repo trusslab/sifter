@@ -169,7 +169,7 @@ struct sifter_arg {
     sifter_arg(int s, std::string nm, int ctr, int val):
         size(s), name(nm), ctr_fd(unique_fd(ctr)), val_fd(unique_fd(val)) {};
 
-    size_t val_size() { return size; }
+    size_t value_size() { return size; }
     size_t entry_size() { return sizeof(arg_entry)+size-1; }
 };
 
@@ -334,6 +334,7 @@ private:
         uint32_t curr_ctr;
         uint32_t last_ctr = 0;
         int zero_idx = 0;
+        int val_size = arg->value_size();
         int ent_size = arg->entry_size();
 
         arg_entry *ent = (arg_entry *)malloc(ent_size);
@@ -394,7 +395,15 @@ private:
                 android::bpf::findMapEntry(arg->val_fd, &i, ent);
                 ofs.write(reinterpret_cast<const char*>(ent), ent_size);
                 if (m_verbose > 3) {
-                    std::cout << ent->ts << "\n";
+                    std::cout << std::setw(16) << ent->ts << " "
+                        << std::setw(5) << ent->id << "\n";
+                    for (int i = 0; i < val_size; i++) {
+                        std::ios cout_state(nullptr);
+                        cout_state.copyfmt(std::cout);
+                        std::cout << std::hex << std::setfill('0') << std::setw(2);
+                        std::cout << (int)ent->val[i] << (((i+1)%16 == 0 || i == val_size-1)? "\n" : " ");
+                        std::cout.copyfmt(cout_state);
+                    }
                 }
             } while (i++ != end);
         }
