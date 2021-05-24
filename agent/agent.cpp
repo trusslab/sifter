@@ -263,26 +263,33 @@ int proc_bitness(std::vector<int> &proc_bitness, int pid, int verbose) {
 }
 
 /*
- * |     64     |   32    |  8 * size ... |
- *   timestamp     event      data
- *              | 16 | 16 |
- *                hdr size
+ * Trace entry:
+ *   User:
+ *   |     64     |   32    |  8 * size ... |
+ *     timestamp     event      data
+ *                | 16 | 16 |
+ *                  hdr size
+ *
+ *   Kernel syscall:
+ *   |     64     |   32    |      ...      |
+ *     timestamp      pid       arguments
+ *
  */
 #define EVENT_USER                (1 << 31)
+#define EVENT_USER_SIZE_MASK      0x0000ffff
+#define EVENT_USER_HDR_MASK       0xffff0000
 #define DEF_EVENT_USER(id, size)  (EVENT_USER & (id << 16) & size)
 #define EVENT_USER_TRACE_START    DEF_EVENT_USER(1, 0)
-#define EVENT_USER_TRACE_LOST     DEF_EVENT_USER(2, 4)
+#define EVENT_USER_TRACE_LOST     DEF_EVENT_USER(2, sizeof(uint32_t))
 
-void write_user_event(std::ofstream &ofs, uint32_t event, void *buf = NULL, int size = -1) {
+void write_user_event(std::ofstream &ofs, uint32_t event, void *buf = NULL) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t timestamp = ts.tv_sec * 1000000000 + ts.tv_nsec;
     ofs.write(reinterpret_cast<const char*>(&timestamp), sizeof(uint64_t));
     ofs.write(reinterpret_cast<const char*>(&event), sizeof(uint64_t));
 
-    if (size < 0)
-        size = event & 0x0000ffff;
-
+    int size = event & EVENT_USER_SIZE_MASK;
     if (size > 0) {
         if (buf) {
             ofs.write(reinterpret_cast<const char*>(&buf), size);
