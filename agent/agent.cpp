@@ -34,6 +34,8 @@ uint64_t g_update_ts;
 std::vector<std::thread> g_spawner_proc_ths;
 std::string g_traced_prog;
 
+std::string g_bpf_prog_name;
+
 struct rb_elem {
     struct bpf_spin_lock lock;
     uint8_t next;
@@ -146,12 +148,6 @@ struct sifter_prog {
         type(t), event(ev), entry(en), fd(android::base::unique_fd(f)) {};
 };
 
-struct arg_entry {
-    uint64_t ts;
-    uint32_t id;
-    char val[1];
-};
-
 #define CTR_BITS        10
 #define CTR_SIZE        (1 << CTR_BITS)
 #define CTR_IDX_MASK    (CTR_SIZE - 1)
@@ -160,17 +156,55 @@ struct arg_entry {
 #define CTR_CTR(x)      (CTR_CTR_MASK & x)
 
 struct sifter_arg {
-    int size;
+    int         size;
     std::string name;
+    unique_fd   fd;
+    char        *buf;
+
+    sifter_arg(int s, std::string name, int fd):
+        size(s), name(name), fd(unique_fd(fd)) {
+
+        buf = (char *)malloc(size);
+        if (!buf) {
+            std::cerr << "Failed to allocate memory for tracing " << name << "\n";
+        }
+    };
+
+    ~sifter_arg() { free(buf); }
+};
+
+struct sifter_syscall {
+    bool inited;
+    std::string program_name;
+    std::string syscall_name;
     unique_fd ctr_fd;
-    unique_fd val_fd;
-    std::vector<arg_entry> log;
+    std::vector<sifter_arg *> args;
 
-    sifter_arg(int s, std::string nm, int ctr, int val):
-        size(s), name(nm), ctr_fd(unique_fd(ctr)), val_fd(unique_fd(val)) {};
+    sifter_syscall(std::string prog_nm, std::string sc_nm):
+        inited(false), program_name(prog_nm), syscall_name(sc_nm) {
+        std::string path = "/sys/fs/bpf/map_" + prog_nm + "_" + sc_nm + "_ctr";
+        int fd = bpf_obj_get(path.c_str());
+        if (fd == -1)
+            return;
 
-    size_t value_size() { return size; }
-    size_t entry_size() { return sizeof(arg_entry)+size-1; }
+        inited = true;
+        ctr_fd = unique_fd(fd);
+    };
+    
+    bool is_inited() const {
+        return inited;
+    }
+
+    bool add_arg(int size, std::string arg_nm) {
+        std::string path = "/sys/fs/bpf/map_" + program_name + "_" + arg_nm;
+        int fd = bpf_obj_get(path.c_str());
+        if (fd == -1)
+            return false;
+
+        sifter_arg *arg = new sifter_arg(size, arg_nm, fd);
+        args.push_back(arg);
+        return true;
+    }
 };
 
 int proc_bitness(std::vector<int> &proc_bitness, int pid, int verbose) {
@@ -228,6 +262,48 @@ int proc_bitness(std::vector<int> &proc_bitness, int pid, int verbose) {
     return bitness;
 }
 
+/*
+ * |     64     |   32    |  8 * size ... |
+ *   timestamp     event      data
+ *              | 16 | 16 |
+ *                hdr size
+ */
+#define EVENT_USER                (1 << 31)
+#define DEF_EVENT_USER(id, size)  (EVENT_USER & (id << 16) & size)
+#define EVENT_USER_TRACE_START    DEF_EVENT_USER(1, 0)
+#define EVENT_USER_TRACE_LOST     DEF_EVENT_USER(2, 4)
+
+void write_user_event(std::ofstream &ofs, uint32_t event, void *buf = NULL, int size = -1) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t timestamp = ts.tv_sec * 1000000000 + ts.tv_nsec;
+    ofs.write(reinterpret_cast<const char*>(&timestamp), sizeof(uint64_t));
+    ofs.write(reinterpret_cast<const char*>(&event), sizeof(uint64_t));
+
+    if (size < 0)
+        size = event & 0x0000ffff;
+
+    if (size > 0) {
+        if (buf) {
+            ofs.write(reinterpret_cast<const char*>(&buf), size);
+        } else {
+            std::cerr << "write_user_event got null source ptr\n";
+            buf = calloc(1, size);
+            ofs.write(reinterpret_cast<const char*>(&buf), size);
+        }
+    }
+}
+
+void print_buffer(const char *buf, int size) {
+    for (int i = 0; i < size; i++) {
+        std::ios cout_state(nullptr);
+        cout_state.copyfmt(std::cout);
+        std::cout << std::hex << std::setfill('0') << std::setw(2);
+        std::cout << (int)buf[i] << (((i+1)%16 == 0 || i == size-1)? "\n" : " ");
+        std::cout.copyfmt(cout_state);
+    }
+}
+
 class sifter_tracer {
 private:
     int m_init;
@@ -238,7 +314,7 @@ private:
     std::vector<sifter_map> m_maps;
     std::vector<sifter_lut> m_luts;
     std::vector<sifter_rb> m_rbs;
-    std::vector<sifter_arg> m_args;
+    std::vector<sifter_syscall *> m_syscalls;
     std::vector<std::thread *> m_update_threads;
     std::vector<int> m_proc_bitness;
     std::set<int> m_ignored_pids;
@@ -330,58 +406,36 @@ private:
         }
     }
 
-    void update_arg_thread(sifter_arg *arg) {
+    void update_arg_thread(sifter_syscall *sc) {
         uint32_t curr_ctr;
         uint32_t last_ctr = 0;
         int zero_idx = 0;
-        int val_size = arg->value_size();
-        int ent_size = arg->entry_size();
 
-        arg_entry *ent = (arg_entry *)malloc(ent_size);
-        if (!ent) {
-            std::cerr << "Failed to allocate memory for tracing " << arg->name << "\n";
-            return;
-        }
-
-        std::string trace = "raw_trace_" + arg->name + ".dat";
+        std::string trace = "raw_trace_" + sc->syscall_name + ".dat";
         std::ofstream ofs(trace, std::ofstream::app);
         if (!ofs) {
             std::cerr << "Failed to open trace file " << trace << "\n";
             return;
         }
 
-        struct timespec time;
-        clock_gettime(CLOCK_MONOTONIC, &time);
-        uint64_t ts = time.tv_sec * 1000000000 + time.tv_nsec;
-        uint32_t id = 0x00010000; // start
-        ofs.write(reinterpret_cast<const char*>(&ts), sizeof(uint64_t));
-        ofs.write(reinterpret_cast<const char*>(&id), sizeof(uint32_t));
+        write_user_event(ofs, EVENT_USER_TRACE_START);
 
         while (m_args_update_start) {
-            android::bpf::findMapEntry(arg->ctr_fd, &zero_idx, &curr_ctr);
+            android::bpf::findMapEntry(sc->ctr_fd, &zero_idx, &curr_ctr);
 
             int start, end;
             uint32_t ctr_diff = curr_ctr - last_ctr;
             if (ctr_diff > CTR_SIZE) {
-                if (m_verbose > 2) {
-                    std::cout << "lost events: " << last_ctr << " " << curr_ctr << "\n";
-                }
+                std::cout << "lost events: " << last_ctr << " " << curr_ctr << "\n";
+                write_user_event(ofs, EVENT_USER_TRACE_LOST, &ctr_diff);
+
                 start = CTR_IDX(curr_ctr - CTR_SIZE/8);
                 end = CTR_IDX(curr_ctr);
                 last_ctr = curr_ctr;
-
-                struct timespec time;
-                clock_gettime(CLOCK_MONOTONIC, &time);
-                uint64_t ts = time.tv_sec * 1000000000 + time.tv_nsec;
-                uint32_t id = 0x00010001; // lost of trace
-                ofs.write(reinterpret_cast<const char*>(&ts), sizeof(uint64_t));
-                ofs.write(reinterpret_cast<const char*>(&id), sizeof(uint32_t));
-                ofs.write(reinterpret_cast<const char*>(&last_ctr), sizeof(uint64_t));
-                ofs.write(reinterpret_cast<const char*>(&curr_ctr), sizeof(uint64_t));
             } else if (ctr_diff > CTR_SIZE/8) {
-                if (m_verbose > 2) {
+                if (m_verbose > 2)
                     std::cout << "saving events: " << last_ctr << " " << curr_ctr << "\n";
-                }
+
                 start = CTR_IDX(last_ctr);
                 end = CTR_IDX(curr_ctr);
                 last_ctr = curr_ctr;
@@ -392,24 +446,20 @@ private:
             int i = start;
             do {
                 i = (i == 1024)? 0 : i;
-                android::bpf::findMapEntry(arg->val_fd, &i, ent);
-                ofs.write(reinterpret_cast<const char*>(ent), ent_size);
-                if (m_verbose > 3) {
-                    std::cout << std::setw(16) << ent->ts << " "
-                        << std::setw(5) << ent->id << "\n";
-                    for (int i = 0; i < val_size; i++) {
-                        std::ios cout_state(nullptr);
-                        cout_state.copyfmt(std::cout);
-                        std::cout << std::hex << std::setfill('0') << std::setw(2);
-                        std::cout << (int)ent->val[i] << (((i+1)%16 == 0 || i == val_size-1)? "\n" : " ");
-                        std::cout.copyfmt(cout_state);
+                for (int a = 0; a < sc->args.size(); a++) {
+                    sifter_arg *arg = sc->args[a];
+                    android::bpf::findMapEntry(arg->fd, &i, arg->buf);
+                    ofs.write(reinterpret_cast<const char*>(arg->buf), arg->size);
+
+                    if (m_verbose > 3) {
+                        std::cout << "\n";
+                        print_buffer(arg->buf, arg->size);
                     }
                 }
             } while (i++ != end);
         }
 
         ofs.close();
-        free(ent);
     }
 
 public:
@@ -421,8 +471,8 @@ public:
         return m_rbs.size();
     }
 
-    size_t args_num() {
-        return m_args.size();
+    size_t syscall_num() {
+        return m_syscalls.size();
     }
 
     int add_prog(int type, std::string event, std::string entry) {
@@ -477,18 +527,6 @@ public:
             return fd;
         }
         return -1;
-    }
-
-    int add_arg(int size, std::string name) {
-        std::string ctr_path = "/sys/fs/bpf/map_" + m_name + "_" + name + "_ctr";
-        std::string val_path = "/sys/fs/bpf/map_" + m_name + "_" + name + "_val";
-        int ctr_fd = bpf_obj_get(ctr_path.c_str());
-        int val_fd = bpf_obj_get(val_path.c_str());
-        if (ctr_fd == -1 || val_fd == -1)
-            return -1;
-
-        m_args.push_back(sifter_arg(size, name, ctr_fd, val_fd));
-        return ctr_fd;
     }
 
     int attach_prog() {
@@ -707,8 +745,8 @@ public:
 
     void start_update_args() {
         m_args_update_start = 1;
-        for (auto &s : m_args) {
-            std::thread *th = new std::thread(&sifter_tracer::update_arg_thread, this, &s);
+        for (auto s : m_syscalls) {
+            std::thread *th = new std::thread(&sifter_tracer::update_arg_thread, this, s);
             m_update_threads.push_back(th);
         }
     }
@@ -734,6 +772,7 @@ public:
         }
 
         ifs >> m_name >> m_bitness;
+        g_bpf_prog_name = m_name;
         char cfg_type;
         while (ifs >> cfg_type) {
             switch (cfg_type) {
@@ -806,16 +845,31 @@ public:
                         std::cout << "Added ringbuffer (name:" << name << ")\n";
                     break;
                 }
-                case 'a': {
+                case 's': {
                     int size;
                     std::string name;
                     ifs >> size >> name;
-                    if (add_arg(size, name) == -1) {
-                        std::cerr << "Failed to add argument (name:" << name << ")\n";
+                    sifter_syscall *syscall = new sifter_syscall(m_name, name);
+                    if (!syscall->is_inited()) {
+                        std::cerr << "Failed to add syscall (name:" << name << ")\n";
                         return;
                     }
                     if (m_verbose > 0)
-                        std::cout << "Added argument (name:" << name << ")\n";
+                        std::cout << "Added syscall (name:" << name << ")\n";
+
+                    int arg_size;
+                    std::string arg_name;
+                    for (int i = 0; i < size; i++) {
+                        ifs >> arg_size >> arg_name;
+                        if (!syscall->add_arg(arg_size, arg_name)) {
+                            std::cerr << "Failed to add argument (name:" << arg_name << ")\n";
+                            return;
+                        } else if (m_verbose > 0) {
+                            std::cout << "Added argument (name:" << arg_name << ")\n";
+                        }
+                    }
+                    m_syscalls.push_back(syscall);
+
                     break;
                 }
                 default:
@@ -1102,7 +1156,7 @@ int main(int argc, char *argv[]) {
         tracer.start_update_rbs();
     }
 
-    if (tracer.args_num() > 0) {
+    if (tracer.syscall_num() > 0) {
         tracer.start_update_args();
     }
 
