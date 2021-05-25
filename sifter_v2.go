@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/google/syzkaller/pkg/mgrconfig"
@@ -107,6 +108,8 @@ type Sifter struct {
 	stackVarId      int
 	sections        map[string]*bytes.Buffer
 
+	trace			[]*TraceEvent
+
 	outName         string
 	outSourceFile   string
 	outConfigFile   string
@@ -138,6 +141,7 @@ func newSifter(target *prog.Target, f Flags) (*Sifter, error) {
 	sifter.sections = make(map[string]*bytes.Buffer)
 	sifter.syscalls = make([]*prog.Syscall, 512)
 	sifter.moduleSyscalls = make(map[string][]*Syscall)
+	sifter.trace = make([]*TraceEvent, 0)
 	sifter.stackVarId = 0
 	sifter.depthLimit = math.MaxInt32
 
@@ -822,20 +826,28 @@ func (sifter *Sifter) ReadSyscallTrace() {
 		for _, syscall := range syscalls {
 			for {
 				var ts uint64
-				var event uint32
+				var id uint32
 				err := binary.Read(syscall.traceReader, binary.LittleEndian, &ts)
-				err = binary.Read(syscall.traceReader, binary.LittleEndian, &event)
-				traceEvent := newTraceEvent(ts, event, syscall)
+				err = binary.Read(syscall.traceReader, binary.LittleEndian, &id)
+				traceEvent := newTraceEvent(ts, id, syscall)
 				_, err = io.ReadFull(syscall.traceReader, traceEvent.data)
-				//fmt.Printf("[%v.%9d] %x\n", ts/1000000000, ts%1000000000, event)
+				//fmt.Printf("[%v.%9d] %x\n", ts/1000000000, ts%1000000000, id)
 
 				if err != nil {
 					fmt.Printf("%v\n", err)
 					break;
 				}
+
+				sifter.trace = append(sifter.trace, traceEvent)
 			}
 		}
 	}
+	sort.Slice(sifter.trace, func(i, j int) bool {
+		return sifter.trace[i].ts < sifter.trace[j].ts
+	})
+	//for _, te := range sifter.trace {
+	//	fmt.Printf("[%v.%9d] %x\n", te.ts/1000000000, te.ts%1000000000, te.id)
+	//}
 }
 
 func (sifter *Sifter) WriteAgentConfigFile() {
