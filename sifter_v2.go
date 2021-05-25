@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -18,6 +21,7 @@ type Mode int
 const (
 	TracerMode Mode = iota
 	FilterMode
+	AnalyzerMode
 )
 
 type Flags struct {
@@ -57,6 +61,8 @@ type Syscall struct {
 	name			string
 	def				*prog.Syscall
 	maps			[]*ArgMap
+	traceFile		*os.File
+	traceReader		*bufio.Reader
 }
 
 func (syscall *Syscall) AddArgMap(argName string, srcPath string, argType string, argSize uint64) {
@@ -124,6 +130,16 @@ func NewSifter(target *prog.Target, f Flags) (*Sifter, error) {
 			errorRetVal: "1",
 		}
 	} else if f.mode == "filter" {
+	} else if f.mode == "analyzer" {
+		sifter.mode = AnalyzerMode
+		sifter.ctx = Context{
+			name: "sys_enter_args",
+			syscallNum: "id",
+			syscallArgs: "regs",
+			defaultRetType: "int",
+			defaultRetVal: "0",
+			errorRetVal: "1",
+		}
 	} else {
 		return nil, fmt.Errorf("invalid mode. expected \"tracer\"/\"filter\"")
 	}
@@ -766,6 +782,53 @@ func (sifter *Sifter) WriteSourceFile() {
 	outf.Write(sifter.sections["license"].Bytes())
 }
 
+func (sifter *Sifter) ReadSyscallTrace() {
+	for _, syscalls := range sifter.moduleSyscalls {
+		for _, syscall := range syscalls {
+				fmt.Printf("%v\n", syscall.name)
+			fileName := fmt.Sprintf("raw_trace_%v.dat", syscall.name)
+			file, err := os.Open(fileName)
+			if err != nil {
+				failf("failed to open trace file: %v", fileName)
+			}
+			fmt.Printf("open %v\n", fileName)
+
+			syscall.traceFile = file
+			syscall.traceReader = bufio.NewReader(file)
+		}
+	}
+	for _, syscalls := range sifter.moduleSyscalls {
+		for _, syscall := range syscalls {
+			var argSize uint64
+			argSize = 0
+			for _, arg := range syscall.maps {
+				argSize += arg.size
+			}
+
+			for {
+				var ts uint64
+				var event uint32
+				err := binary.Read(syscall.traceReader, binary.LittleEndian, &ts)
+				err = binary.Read(syscall.traceReader, binary.LittleEndian, &event)
+				fmt.Printf("%x %x\n", ts, event)
+				if (event & 0x80000000 != 0) {
+					bytes := make([]byte, (event & 0x0000ffff))
+					_, err = io.ReadFull(syscall.traceReader, bytes)
+					fmt.Printf("%x\n", bytes)
+				} else {
+					bytes := make([]byte, 48 + argSize)
+					_, err = io.ReadFull(syscall.traceReader, bytes)
+				}
+
+				if err != nil {
+					fmt.Printf("%v\n", err)
+					break;
+				}
+			}
+		}
+	}
+}
+
 func (sifter *Sifter) WriteAgentConfigFile() {
 	outf, err := os.Create(sifter.outConfigFile)
 	if err != nil {
@@ -779,7 +842,7 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
 			fmt.Fprintf(s, "s %v %v", len(syscall.maps)+1, syscall.name)
-			fmt.Fprintf(s, " 59 %v_ent", syscall.name)
+			fmt.Fprintf(s, " 60 %v_ent", syscall.name)
 			for _, arg := range syscall.maps {
 				fmt.Fprintf(s, " %v %v", arg.size, arg.name)
 			}
@@ -833,8 +896,10 @@ func main() {
 	}
 
 	sifter.GenerateSource()
-	sifter.WriteSourceFile()
 	if sifter.mode == TracerMode {
+		sifter.WriteSourceFile()
 		sifter.WriteAgentConfigFile()
+	} else if sifter.mode == AnalyzerMode {
+		sifter.ReadSyscallTrace()
 	}
 }
