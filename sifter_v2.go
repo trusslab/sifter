@@ -77,6 +77,26 @@ func (syscall *Syscall) AddArgMap(argName string, srcPath string, argType string
 	syscall.size += argSize
 }
 
+type TraceEvent struct {
+	ts				uint64
+	id				uint32
+	syscall			*Syscall
+	data			[]byte
+}
+
+func newTraceEvent(ts uint64, id uint32, syscall *Syscall) *TraceEvent {
+	traceEvent := new(TraceEvent)
+	traceEvent.ts = ts
+	traceEvent.id = id
+	traceEvent.syscall = syscall
+	if (id & 0x80000000 != 0) {
+		traceEvent.data = make([]byte, (id & 0x0000ffff))
+	} else {
+		traceEvent.data = make([]byte, 48 + syscall.size)
+	}
+	return traceEvent
+}
+
 type Sifter struct {
 	mode		    Mode
 	target          *prog.Target
@@ -106,7 +126,7 @@ func isVariant(syscall string) bool {
 	return strings.Contains(syscall, "$") || strings.Contains(syscall, "syz_")
 }
 
-func NewSifter(target *prog.Target, f Flags) (*Sifter, error) {
+func newSifter(target *prog.Target, f Flags) (*Sifter, error) {
 	sifter := new(Sifter)
 	sifter.target = target
 	sifter.fdName = f.fd
@@ -805,16 +825,9 @@ func (sifter *Sifter) ReadSyscallTrace() {
 				var event uint32
 				err := binary.Read(syscall.traceReader, binary.LittleEndian, &ts)
 				err = binary.Read(syscall.traceReader, binary.LittleEndian, &event)
-				//fmt.Printf("%x %x\n", ts, event)
-				if (event & 0x80000000 != 0) {
-					bytes := make([]byte, (event & 0x0000ffff))
-					_, err = io.ReadFull(syscall.traceReader, bytes)
-					//fmt.Printf("%x\n", bytes)
-				} else {
-					bytes := make([]byte, 48 + syscall.size)
-					_, err = io.ReadFull(syscall.traceReader, bytes)
-					//fmt.Printf("%x\n", bytes)
-				}
+				traceEvent := newTraceEvent(ts, event, syscall)
+				_, err = io.ReadFull(syscall.traceReader, traceEvent.data)
+				//fmt.Printf("[%v.%9d] %x\n", ts/1000000000, ts%1000000000, event)
 
 				if err != nil {
 					fmt.Printf("%v\n", err)
@@ -886,7 +899,7 @@ func main() {
 		failf("failed to get target %v/%v. err: %v", cfg.TargetOS, cfg.TargetArch, err)
 	}
 
-	sifter, err := NewSifter(target, flags)
+	sifter, err := newSifter(target, flags)
 	if err != nil {
 		failf("failed to initialize sifter. err: %v", err)
 	}
