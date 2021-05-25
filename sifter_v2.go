@@ -61,6 +61,7 @@ type Syscall struct {
 	name			string
 	def				*prog.Syscall
 	maps			[]*ArgMap
+	size			uint64
 	traceFile		*os.File
 	traceReader		*bufio.Reader
 }
@@ -73,6 +74,7 @@ func (syscall *Syscall) AddArgMap(argName string, srcPath string, argType string
 		size: argSize,
 	}
 	syscall.maps = append(syscall.maps, newArgMap)
+	syscall.size += argSize
 }
 
 type Sifter struct {
@@ -785,7 +787,6 @@ func (sifter *Sifter) WriteSourceFile() {
 func (sifter *Sifter) ReadSyscallTrace() {
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
-				fmt.Printf("%v\n", syscall.name)
 			fileName := fmt.Sprintf("raw_trace_%v.dat", syscall.name)
 			file, err := os.Open(fileName)
 			if err != nil {
@@ -799,25 +800,20 @@ func (sifter *Sifter) ReadSyscallTrace() {
 	}
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
-			var argSize uint64
-			argSize = 0
-			for _, arg := range syscall.maps {
-				argSize += arg.size
-			}
-
 			for {
 				var ts uint64
 				var event uint32
 				err := binary.Read(syscall.traceReader, binary.LittleEndian, &ts)
 				err = binary.Read(syscall.traceReader, binary.LittleEndian, &event)
-				fmt.Printf("%x %x\n", ts, event)
+				//fmt.Printf("%x %x\n", ts, event)
 				if (event & 0x80000000 != 0) {
 					bytes := make([]byte, (event & 0x0000ffff))
 					_, err = io.ReadFull(syscall.traceReader, bytes)
-					fmt.Printf("%x\n", bytes)
+					//fmt.Printf("%x\n", bytes)
 				} else {
-					bytes := make([]byte, 48 + argSize)
+					bytes := make([]byte, 48 + syscall.size)
 					_, err = io.ReadFull(syscall.traceReader, bytes)
+					//fmt.Printf("%x\n", bytes)
 				}
 
 				if err != nil {
