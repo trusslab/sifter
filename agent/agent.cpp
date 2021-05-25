@@ -925,7 +925,6 @@ public:
 void signal_handler(int s) {
     (void)s;
     g_stop.store(true);
-    exit(1);
 }
 
 std::string get_proc_name(int pid) {
