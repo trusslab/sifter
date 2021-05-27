@@ -47,7 +47,7 @@ type ArgMap struct {
 	path     string
 	datatype string
 	size     uint64
-	arg		 prog.Type
+	arg      prog.Type
 }
 
 type Context struct {
@@ -68,16 +68,16 @@ type Syscall struct {
 	traceReader		*bufio.Reader
 }
 
-func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string, argType string, argSize uint64) {
+func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string, argType string) {
 	newArgMap := &ArgMap{
 		arg: arg,
 		name: argName,
 		path: srcPath,
 		datatype: argType,
-		size: argSize,
+		size: arg.Size(),
 	}
 	syscall.maps = append(syscall.maps, newArgMap)
-	syscall.size += argSize
+	syscall.size += arg.Size()
 }
 
 type TraceEvent struct {
@@ -368,7 +368,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		argType := argTypeName(arg)
 		fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, &srcPath, argType), 1))
 		fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argType), 1))
-		syscall.AddArgMap(arg, argName, srcPath, argType, arg.Size())
+		syscall.AddArgMap(arg, argName, srcPath, argType)
 
 		dstPath = argName + "_p"
 		derefOp = "*"
