@@ -47,6 +47,7 @@ type ArgMap struct {
 	path     string
 	datatype string
 	size     uint64
+	arg		 prog.Type
 }
 
 type Context struct {
@@ -67,8 +68,9 @@ type Syscall struct {
 	traceReader		*bufio.Reader
 }
 
-func (syscall *Syscall) AddArgMap(argName string, srcPath string, argType string, argSize uint64) {
+func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string, argType string, argSize uint64) {
 	newArgMap := &ArgMap{
+		arg: arg,
 		name: argName,
 		path: srcPath,
 		datatype: argType,
@@ -366,7 +368,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		argType := argTypeName(arg)
 		fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, &srcPath, argType), 1))
 		fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argType), 1))
-		syscall.AddArgMap(argName, srcPath, argType, arg.Size())
+		syscall.AddArgMap(arg, argName, srcPath, argType, arg.Size())
 
 		dstPath = argName + "_p"
 		derefOp = "*"
@@ -808,6 +810,96 @@ func (sifter *Sifter) WriteSourceFile() {
 	outf.Write(sifter.sections["license"].Bytes())
 }
 
+func (sifter *Sifter) RangeAnalysis() {
+	argRanges := make(map[*ArgMap][]uint64)
+	regRanges := make(map[*Syscall][]uint64)
+	for _, syscalls := range sifter.moduleSyscalls {
+		for _, syscall := range syscalls {
+			for i := 0; i < 6; i++ {
+				regRanges[syscall] = append(regRanges[syscall], math.MaxInt64)
+				regRanges[syscall] = append(regRanges[syscall], 0)
+			}
+			for _, arg := range syscall.maps {
+				if structArg, ok := arg.arg.(*prog.StructType); ok {
+					for _, field := range structArg.Fields {
+						fmt.Printf("%v", field.Name())
+						argRanges[arg] = append(argRanges[arg], math.MaxInt64)
+						argRanges[arg] = append(argRanges[arg], 0)
+					}
+				} else {
+					argRanges[arg] = append(argRanges[arg], math.MaxInt64)
+					argRanges[arg] = append(argRanges[arg], 0)
+				}
+			}
+		}
+	}
+	for _, te := range sifter.trace {
+		if (te.id & 0x80000000) != 0 {
+			continue
+		}
+		var offset uint64
+		fmt.Printf("[%v.%9d] %x\n", te.ts/1000000000, te.ts%1000000000, te.id)
+		for i := 0; i < 6; i++ {
+			tr := binary.LittleEndian.Uint64(te.data[offset:offset+8])
+			if (regRanges[te.syscall][i*2+0] > tr) {
+				regRanges[te.syscall][i*2+0] = tr
+				fmt.Printf("[%v.%9d] update reg[%v]\n", te.ts/1000000000, te.ts%1000000000, i)
+				fmt.Printf("%v\n", te.data)
+			}
+			if (regRanges[te.syscall][i*2+1] < tr) {
+				regRanges[te.syscall][i*2+1] = tr
+				fmt.Printf("[%v.%9d] update reg[%v]\n", te.ts/1000000000, te.ts%1000000000, i)
+				fmt.Printf("%v\n", te.data)
+			}
+			offset += 8
+		}
+		for _, arg := range te.syscall.maps {
+			if structArg, ok := arg.arg.(*prog.StructType); ok {
+				for i, field := range structArg.Fields {
+					tr := binary.LittleEndian.Uint64(te.data[offset:offset+field.Size()])
+					if (argRanges[arg][2*i+0] > tr) {
+						argRanges[arg][2*i+0] = tr
+						fmt.Printf("[%v.%9d] update %v[%v]\n", te.ts/1000000000, te.ts%1000000000, arg.name, i)
+						fmt.Printf("%v\n", te.data)
+					}
+					if (argRanges[arg][2*i+1] < tr) {
+						argRanges[arg][2*i+1] = tr
+						fmt.Printf("[%v.%9d] update %v[%v]\n", te.ts/1000000000, te.ts%1000000000, arg.name, i)
+						fmt.Printf("%v\n", te.data)
+					}
+					offset += field.Size()
+				}
+			} else {
+				fmt.Printf(" %v\n", arg.name)
+				tr := binary.LittleEndian.Uint64(te.data[offset:offset+arg.size])
+				if (argRanges[arg][0] > tr) {
+					argRanges[arg][0] = tr
+					fmt.Printf("[%v.%9d] update %v\n", te.ts/1000000000, te.ts%1000000000, arg.name)
+					fmt.Printf("%v\n", te.data)
+				}
+				if (argRanges[arg][1] < tr) {
+					argRanges[arg][1] = tr
+					fmt.Printf("[%v.%9d] update %v\n", te.ts/1000000000, te.ts%1000000000, arg.name)
+					fmt.Printf("%v\n", te.data)
+				}
+				offset += arg.size
+			}
+		}
+	}
+	for _, syscalls := range sifter.moduleSyscalls {
+		for _, syscall := range syscalls {
+			fmt.Printf("\n%v\n", syscall.name)
+			for i := 0; i < 6; i++ {
+				fmt.Printf("reg[%v] %v\n", i, regRanges[syscall][i*2:i*2+2])
+			}
+			for _, arg := range syscall.maps {
+				fmt.Printf("%v %v\n", arg.name, argRanges[arg])
+			}
+		}
+	}
+
+}
+
 func (sifter *Sifter) ReadSyscallTrace() {
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
@@ -848,6 +940,7 @@ func (sifter *Sifter) ReadSyscallTrace() {
 	//for _, te := range sifter.trace {
 	//	fmt.Printf("[%v.%9d] %x\n", te.ts/1000000000, te.ts%1000000000, te.id)
 	//}
+	sifter.RangeAnalysis()
 }
 
 func (sifter *Sifter) WriteAgentConfigFile() {
