@@ -817,6 +817,113 @@ type analysis interface {
 	PrintResult()
 }
 
+
+type Node struct {
+	syscall *Syscall
+}
+
+type Edge struct {
+	next *Node
+	prevs []*Node
+}
+
+type SequenceAnalysis struct {
+	seqLen   int
+	nodes    []Node
+	prevs    []*Node
+	seqGraph map[*Node][]*Edge
+}
+
+func (a SequenceAnalysis) String() string {
+	return "sequence analysis"
+}
+
+func (a *SequenceAnalysis) edgesEqual(e1 *Edge, e2 *Edge) bool {
+	if e1.next != e2.next {
+		return false
+	}
+
+	for i := 0; i < a.seqLen; i++ {
+		if e1.prevs[i] != e2.prevs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *SequenceAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
+	a.seqGraph = make(map[*Node][]*Edge)
+	a.prevs = make([]*Node, a.seqLen+1)
+}
+
+func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
+	if (te.id & 0x80000000) != 0 {
+		return "", 0
+	}
+
+	updateMsg := ""
+	updateNum := 0
+
+	currNode := a.prevs[a.seqLen]
+	var nextNode *Node
+	for i, node := range a.nodes {
+		if te.syscall == node.syscall {
+			nextNode = &a.nodes[i]
+		}
+	}
+	if nextNode == nil {
+		a.nodes = append(a.nodes, Node{te.syscall})
+		nextNode = &a.nodes[len(a.nodes)-1]
+		updateMsg += fmt.Sprintf("add n[%v]", te.syscall.name)
+		updateNum += 1
+	}
+
+	if a.prevs[0] != nil {
+		currEdge := new(Edge)
+		currEdge.next = nextNode
+		currEdge.prevs = a.prevs[0:a.seqLen]
+		edgeExisted := false
+		if edges, ok := a.seqGraph[currNode]; ok {
+			for _, edge := range edges {
+				if a.edgesEqual(currEdge, edge) {
+					edgeExisted = true
+				}
+			}
+		} else {
+			a.seqGraph[currNode] = make([]*Edge, 0)
+		}
+		if !edgeExisted {
+			a.seqGraph[currNode] = append(a.seqGraph[currNode], currEdge)
+			updateMsg += fmt.Sprintf("add e:n[%v]->n[%v] prevs(", currNode.syscall.name, nextNode.syscall.name)
+			for _, n := range currEdge.prevs {
+				updateMsg += fmt.Sprintf("%v->", n.syscall.name)
+			}
+			updateMsg += fmt.Sprintf(")")
+			updateNum += 1
+		}
+	}
+
+	a.prevs = a.prevs[1:]
+	a.prevs = append(a.prevs, nextNode)
+	return updateMsg, updateNum
+}
+
+func (a *SequenceAnalysis) PrintResult() {
+	for node, edges := range a.seqGraph {
+		fmt.Printf("%v\n", node.syscall.name)
+		for _, edge := range edges {
+			fmt.Printf("  ->%v (", edge.next.syscall.name)
+			for i, prevNode := range edge.prevs {
+				fmt.Printf("%v", prevNode.syscall.name)
+				if i != len(edge.prevs)-1 {
+					fmt.Printf(", ")
+				}
+			}
+			fmt.Printf(")\n")
+		}
+	}
+}
+
 type ValueRangeAnalysis struct {
 	argRanges map[*ArgMap][]uint64
 	regRanges map[*Syscall][]uint64
@@ -921,6 +1028,9 @@ func (a *ValueRangeAnalysis) PrintResult() {
 }
 
 func (sifter *Sifter) DoAnalyses() {
+	var sa SequenceAnalysis
+	sa.seqLen = 4
+	sa.Init(&sifter.moduleSyscalls)
 	var vra ValueRangeAnalysis
 	vra.Init(&sifter.moduleSyscalls)
 	for _, te := range sifter.trace {
@@ -929,8 +1039,13 @@ func (sifter *Sifter) DoAnalyses() {
 			fmt.Printf("%v: %v\n", vra, msg)
 			fmt.Printf("%v\n", te.data)
 		}
+		if msg, update := sa.ProcessTraceEvent(te); update > 0 {
+			fmt.Printf("%v: %v\n", sa, msg)
+			fmt.Printf("%v\n", te.data)
+		}
 	}
 	vra.PrintResult()
+	sa.PrintResult()
 }
 
 func (sifter *Sifter) ReadSyscallTrace() {
