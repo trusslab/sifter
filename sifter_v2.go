@@ -951,8 +951,7 @@ func (a *ValueRangeAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 			}
 			for _, arg := range syscall.maps {
 				if structArg, ok := arg.arg.(*prog.StructType); ok {
-					for _, field := range structArg.Fields {
-						fmt.Printf("%v", field.Name())
+					for _, _ = range structArg.Fields {
 						a.argRanges[arg] = append(a.argRanges[arg], math.MaxInt64)
 						a.argRanges[arg] = append(a.argRanges[arg], 0)
 					}
@@ -1046,17 +1045,23 @@ func (sifter *Sifter) DoAnalyses() {
 		analysis.Init(&sifter.moduleSyscalls)
 	}
 
-	for _, te := range sifter.trace {
-		fmt.Printf("[%v.%9d] %x\n", te.ts/1000000000, te.ts%1000000000, te.id)
+	lastUpdatedTeIdx := 0
+	for i, te := range sifter.trace {
 		hasUpdate := false
+		updateMsg := ""
 		for _, analysis := range sifter.analyses {
 			if msg, update := analysis.ProcessTraceEvent(te); update > 0 {
-				fmt.Printf("%v: %v\n", analysis, msg)
+				updateMsg += fmt.Sprintf("  ├ %v: %v\n", analysis, msg)
 				hasUpdate = true
 			}
 		}
 		if hasUpdate {
-			fmt.Printf("%v\n", te.data)
+			timeElapsed := te.ts - sifter.trace[lastUpdatedTeIdx].ts
+			fmt.Printf("  | %v events / %v.%09d sec elapsed\n", i-lastUpdatedTeIdx, timeElapsed/1000000000, timeElapsed%1000000000)
+			fmt.Printf("[%v.%09d] %x\n", te.ts/1000000000, te.ts%1000000000, te.id)
+			fmt.Printf("%v", updateMsg)
+			fmt.Printf("  ├ % x\n", te.data)
+			lastUpdatedTeIdx = i
 		}
 	}
 
@@ -1090,10 +1095,9 @@ func (sifter *Sifter) ReadSyscallTrace() {
 				err = binary.Read(syscall.traceReader, binary.LittleEndian, &id)
 				traceEvent := newTraceEvent(ts, id, syscall)
 				_, err = io.ReadFull(syscall.traceReader, traceEvent.data)
-				//fmt.Printf("[%v.%9d] %x\n", ts/1000000000, ts%1000000000, id)
 
 				if err != nil {
-					fmt.Printf("%v\n", err)
+					fmt.Printf("finish reading trace of %v: %v\n", syscall.name, err)
 					break;
 				}
 
