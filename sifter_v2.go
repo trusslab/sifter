@@ -112,6 +112,8 @@ type Sifter struct {
 
 	trace			[]*TraceEvent
 
+	analyses		[]analysis
+
 	outName         string
 	outSourceFile   string
 	outConfigFile   string
@@ -813,7 +815,7 @@ func (sifter *Sifter) WriteSourceFile() {
 type analysis interface {
 	String() string
 	Init(TracedSyscalls *map[string][]*Syscall)
-	ProccessTraceEvent(te *TraceEvent)
+	ProcessTraceEvent(te *TraceEvent) (string, int)
 	PrintResult()
 }
 
@@ -838,7 +840,7 @@ func (a SequenceAnalysis) String() string {
 	return "sequence analysis"
 }
 
-func (a *SequenceAnalysis) edgesEqual(e1 *Edge, e2 *Edge) bool {
+func (a SequenceAnalysis) edgesEqual(e1 *Edge, e2 *Edge) bool {
 	if e1.next != e2.next {
 		return false
 	}
@@ -929,7 +931,7 @@ type ValueRangeAnalysis struct {
 	regRanges map[*Syscall][]uint64
 }
 
-func (a ValueRangeAnalysis) String() string {
+func (a *ValueRangeAnalysis) String() string {
 	return "value range analysis"
 }
 
@@ -1028,24 +1030,36 @@ func (a *ValueRangeAnalysis) PrintResult() {
 }
 
 func (sifter *Sifter) DoAnalyses() {
+	var vra ValueRangeAnalysis
 	var sa SequenceAnalysis
 	sa.seqLen = 4
-	sa.Init(&sifter.moduleSyscalls)
-	var vra ValueRangeAnalysis
-	vra.Init(&sifter.moduleSyscalls)
+
+	sifter.analyses = append(sifter.analyses, &vra)
+	sifter.analyses = append(sifter.analyses, &sa)
+
+	for _, analysis := range sifter.analyses {
+		analysis.Init(&sifter.moduleSyscalls)
+	}
+
 	for _, te := range sifter.trace {
 		fmt.Printf("[%v.%9d] %x\n", te.ts/1000000000, te.ts%1000000000, te.id)
-		if msg, update := vra.ProcessTraceEvent(te); update > 0 {
-			fmt.Printf("%v: %v\n", vra, msg)
-			fmt.Printf("%v\n", te.data)
+		hasUpdate := false
+		for _, analysis := range sifter.analyses {
+			if msg, update := analysis.ProcessTraceEvent(te); update > 0 {
+				fmt.Printf("%v: %v\n", analysis, msg)
+				hasUpdate = true
+			}
 		}
-		if msg, update := sa.ProcessTraceEvent(te); update > 0 {
-			fmt.Printf("%v: %v\n", sa, msg)
+		if hasUpdate {
 			fmt.Printf("%v\n", te.data)
 		}
 	}
-	vra.PrintResult()
-	sa.PrintResult()
+
+	for _, analysis := range sifter.analyses {
+		fmt.Printf("----------------------------------------------------------------\n")
+		fmt.Printf("%v result:\n", analysis)
+		analysis.PrintResult()
+	}
 }
 
 func (sifter *Sifter) ReadSyscallTrace() {
