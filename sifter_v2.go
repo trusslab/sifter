@@ -737,7 +737,6 @@ func (sifter *Sifter) GenerateHelperSection() {
 		fmt.Fprintf(s, "    } else {\n")
 		fmt.Fprintf(s, "        return 0;\n")
 		fmt.Fprintf(s, "    }\n")
-		fmt.Fprintf(s, "    return (bpf_traced_pid_map_lookup_elem(&current_pid) != NULL);\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "\n")
 		fmt.Fprintf(s, "bool __always_inline is_forking_syscall(int nr, int is_32bit) {\n")
