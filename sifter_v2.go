@@ -403,7 +403,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 
 func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 	s := sifter.GetSection("level2_tracing")
-	fmt.Fprintf(s, "%v __always_inline trace_%v(%v *ctx) {\n", sifter.ctx.defaultRetType, syscall.name, sifter.ctx.name)
+	fmt.Fprintf(s, "%v __always_inline trace_%v(%v *ctx, int pid) {\n", sifter.ctx.defaultRetType, syscall.name, sifter.ctx.name)
 	fmt.Fprintf(s, "    int i = 0;\n")
 	fmt.Fprintf(s, "    uint32_t *ctr = bpf_%v_ctr_lookup_elem(&i);\n", syscall.name)
 	fmt.Fprintf(s, "    if (!ctr)\n")
@@ -413,7 +413,7 @@ func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 	fmt.Fprintf(s, "    syscall_ent_t *ent = bpf_%v_ent_lookup_elem(&idx);\n", syscall.name)
 	fmt.Fprintf(s, "    if (ent) {\n")
 	fmt.Fprintf(s, "    	ent->ts = bpf_ktime_get_ns();\n")
-	fmt.Fprintf(s, "    	ent->id = 0;\n")
+	fmt.Fprintf(s, "    	ent->id = pid;\n")
 	fmt.Fprintf(s, "    	ent->args[0] = ctx->regs[0];\n")
 	fmt.Fprintf(s, "    	ent->args[1] = ctx->regs[1];\n")
 	fmt.Fprintf(s, "    	ent->args[2] = ctx->regs[2];\n")
@@ -434,7 +434,7 @@ func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 
 func (sifter *Sifter) GenerateIoctlTracer(syscalls []*Syscall) {
 	s := sifter.GetSection("level1_tracing")
-	fmt.Fprintf(s, "%v __always_inline trace_ioctl(%v *ctx) {\n", sifter.ctx.defaultRetType, sifter.ctx.name)
+	fmt.Fprintf(s, "%v __always_inline trace_ioctl(%v *ctx, int pid) {\n", sifter.ctx.defaultRetType, sifter.ctx.name)
 	fmt.Fprintf(s, "    %v ret = %v;\n", sifter.ctx.defaultRetType, sifter.ctx.defaultRetVal)
 	fmt.Fprintf(s, "    uint64_t ioctl_cmd = ctx->%v[1];\n", sifter.ctx.syscallArgs)
 	fmt.Fprintf(s, "    switch (ioctl_cmd) {\n")
@@ -446,7 +446,7 @@ func (sifter *Sifter) GenerateIoctlTracer(syscalls []*Syscall) {
 		if !strings.Contains(syscall.name, "_compact_") {
 			sifter.GenerateSyscallTracer(syscall)
 			fmt.Fprintf(s, "    case 0x%x:\n", cmd.Val)
-			fmt.Fprintf(s, "        ret = trace_%v(ctx);\n", syscall.name)
+			fmt.Fprintf(s, "        ret = trace_%v(ctx, pid);\n", syscall.name)
 			fmt.Fprintf(s, "        break;\n")
 		}
 	}
@@ -515,7 +515,7 @@ func (sifter *Sifter) GenerateProgSection() {
 
 	if sifter.mode == TracerMode {
 		s := sifter.GetSection("main")
-		fmt.Fprintf(s, "void __always_inline trace_syscalls(sys_enter_args *ctx) {\n")
+		fmt.Fprintf(s, "void __always_inline trace_syscalls(sys_enter_args *ctx, int pid) {\n")
 		fmt.Fprintf(s, "    int nr = ctx->id;\n")
 		fmt.Fprintf(s, "    int fd_is_dev = 0;\n")
 		fmt.Fprintf(s, "    char dev [] = \"%v\";\n", sifter.devName)
@@ -531,11 +531,11 @@ func (sifter *Sifter) GenerateProgSection() {
 		fmt.Fprintf(s, "    }\n")
 		fmt.Fprintf(s, "    if (fd_is_dev) {\n")
 		fmt.Fprintf(s, "        if (nr == %v) {\n", sifter.SyscallNumber("ioctl"))
-		fmt.Fprintf(s, "            trace_ioctl(ctx);\n")
+		fmt.Fprintf(s, "            trace_ioctl(ctx, pid);\n")
 		for key, syscalls := range sifter.moduleSyscalls {
 			if key != "ioctl" {
 				fmt.Fprintf(s, "        } else if (nr == %v) {\n", sifter.SyscallNumber(key))
-				fmt.Fprintf(s, "            trace_%v(ctx);\n", syscalls[0].name)
+				fmt.Fprintf(s, "            trace_%v(ctx, pid);\n", syscalls[0].name)
 			}
 		}
 		fmt.Fprintf(s, "        }\n")
@@ -545,10 +545,11 @@ func (sifter *Sifter) GenerateProgSection() {
 		fmt.Fprintf(s, "\n")
 		fmt.Fprintf(s, "SEC(\"tracepoint/raw_syscalls/sys_enter\")\n")
 		fmt.Fprintf(s, "int sys_enter_prog(sys_enter_args *ctx) {\n")
-		fmt.Fprintf(s, "    if (!is_current_pid_traced())\n")
+		fmt.Fprintf(s, "    int pid = is_current_pid_traced();\n")
+		fmt.Fprintf(s, "    if (pid == 0)\n")
 		fmt.Fprintf(s, "        return 0;\n")
 		fmt.Fprintf(s, "\n")
-		fmt.Fprintf(s, "    trace_syscalls(ctx);\n")
+		fmt.Fprintf(s, "    trace_syscalls(ctx, pid);\n")
 		fmt.Fprintf(s, "    return 0;\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "\n")
@@ -729,8 +730,13 @@ func (sifter *Sifter) GenerateHelperSection() {
 		fmt.Fprintf(s, "	return (bpf_target_prog_comm_map_lookup_elem(&comm) != NULL);\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "\n")
-		fmt.Fprintf(s, "bool __always_inline is_current_pid_traced() {\n")
+		fmt.Fprintf(s, "int __always_inline is_current_pid_traced() {\n")
 		fmt.Fprintf(s, "    uint32_t current_pid = get_current_pid();\n")
+		fmt.Fprintf(s, "    if (bpf_traced_pid_map_lookup_elem(&current_pid) != NULL) {\n")
+		fmt.Fprintf(s, "        return current_pid;\n")
+		fmt.Fprintf(s, "    } else {\n")
+		fmt.Fprintf(s, "        return 0;\n")
+		fmt.Fprintf(s, "    }\n")
 		fmt.Fprintf(s, "    return (bpf_traced_pid_map_lookup_elem(&current_pid) != NULL);\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "\n")
