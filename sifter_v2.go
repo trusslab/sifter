@@ -50,6 +50,21 @@ type ArgMap struct {
 	arg      prog.Type
 }
 
+
+type VlrRecord struct {
+	header   uint64
+	name     string
+	size     uint64
+	arg      prog.Type
+}
+
+type VlrMap struct {
+	name     string
+	size     uint64
+	records  []*VlrRecord
+	arg      prog.Type
+}
+
 type Context struct {
 	name           string
 	syscallNum     string
@@ -63,21 +78,48 @@ type Syscall struct {
 	name			string
 	def				*prog.Syscall
 	maps			[]*ArgMap
+	vlrMaps			[]*VlrMap
 	size			uint64
 	traceFile		*os.File
 	traceReader		*bufio.Reader
 }
 
 func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string, argType string) {
+	var size uint64
+	if arg.Varlen() {
+		return
+	} else {
+		size = arg.Size()
+	}
 	newArgMap := &ArgMap{
 		arg: arg,
 		name: argName,
 		path: srcPath,
 		datatype: argType,
-		size: arg.Size(),
+		size: size,
 	}
 	syscall.maps = append(syscall.maps, newArgMap)
-	syscall.size += arg.Size()
+	syscall.size += size
+}
+
+func (syscall *Syscall) AddVlrMap(arg *prog.ArrayType, argName string) {
+	newVlrMap := &VlrMap {
+		arg: arg,
+		name: argName,
+		size: 512,
+	}
+	for _, record := range arg.Type.(*prog.UnionType).Fields {
+		structArg, _ := record.(*prog.StructType)
+		newVlrRecord := &VlrRecord {
+			header: structArg.Fields[0].(*prog.ConstType).Val,
+			name: structArg.FldName,
+			size: structArg.Size(),
+			arg: structArg,
+		}
+		newVlrMap.records = append(newVlrMap.records, newVlrRecord)
+	}
+	syscall.vlrMaps = append(syscall.vlrMaps, newVlrMap)
+	syscall.size += 512
 }
 
 type TraceEvent struct {
@@ -325,7 +367,10 @@ func isIgnoredArg(arg prog.Type) bool {
 		}
 	case *prog.LenType, *prog.IntType, *prog.ConstType, *prog.FlagsType:
 		ret = false
-	case *prog.ArrayType, *prog.VmaType, *prog.UnionType, *prog.BufferType, *prog.ResourceType:
+	//case *prog.ArrayType, *prog.VmaType, *prog.UnionType, *prog.BufferType, *prog.ResourceType:
+	case *prog.ArrayType:
+		ret = false
+	case *prog.VmaType, *prog.UnionType, *prog.BufferType, *prog.ResourceType:
 	default:
 		fmt.Println("Unhandled type", t)
 	}
@@ -398,6 +443,11 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		}
 	case *prog.LenType, *prog.IntType, *prog.ConstType, *prog.FlagsType:
 		fmt.Fprintf(s, "    %v%v = %v;\n", derefOp, dstPath, srcPath)
+	case *prog.ArrayType:
+		if isVLR, _, _ := sifter.IsVarLenRecord(t); isVLR {
+			syscall.AddVlrMap(t, argName)
+		}
+		fmt.Fprintf(s, "    vlr %v%v = %v; %v\n", derefOp, dstPath, srcPath, argName)
 	}
 }
 
@@ -931,9 +981,41 @@ func (a *SequenceAnalysis) PrintResult() {
 	}
 }
 
+func (sifter *Sifter) IsVarLenRecord(arg *prog.ArrayType) (bool, int, []uint64) {
+	headerSize := -1
+	headers := []uint64{}
+	unions, ok := arg.Type.(*prog.UnionType)
+	if !ok {
+		goto isNotVLR
+	}
+
+	for _, t := range unions.Fields {
+		if structure, ok := t.(*prog.StructType); ok {
+			if header, ok := structure.Fields[0].(*prog.ConstType); ok {
+				if headerSize == -1 {
+					headerSize = (int)(header.TypeSize)
+				}
+				if headerSize == (int)(header.TypeSize) {
+					headers = append(headers, header.Val)
+				} else {
+					goto isNotVLR
+				}
+			} else {
+				goto isNotVLR
+			}
+		} else {
+			goto isNotVLR
+		}
+	}
+	return true, headerSize, headers
+isNotVLR:
+	return false, 0, nil
+}
+
 type ValueRangeAnalysis struct {
 	argRanges map[*ArgMap][]uint64
 	regRanges map[*Syscall][]uint64
+	vlrRanges map[*VlrMap]map[*VlrRecord][]uint64
 }
 
 func (a *ValueRangeAnalysis) String() string {
@@ -943,6 +1025,7 @@ func (a *ValueRangeAnalysis) String() string {
 func (a *ValueRangeAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.argRanges = make(map[*ArgMap][]uint64)
 	a.regRanges = make(map[*Syscall][]uint64)
+	a.vlrRanges = make(map[*VlrMap]map[*VlrRecord][]uint64)
 	for _, syscalls := range *TracedSyscalls {
 		for _, syscall := range syscalls {
 			for i := 0; i < 6; i++ {
@@ -958,6 +1041,24 @@ func (a *ValueRangeAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 				} else {
 					a.argRanges[arg] = append(a.argRanges[arg], math.MaxInt64)
 					a.argRanges[arg] = append(a.argRanges[arg], 0)
+				}
+			}
+			for _, vlr := range syscall.vlrMaps {
+				a.vlrRanges[vlr] = make(map[*VlrRecord][]uint64)
+				for _, record := range vlr.records {
+					if structArg, ok := record.arg.(*prog.StructType); ok {
+						for _, f := range structArg.Fields {
+							if structField, ok := f.(*prog.StructType); ok {
+								for _, _ = range structField.Fields {
+									a.vlrRanges[vlr][record] = append(a.vlrRanges[vlr][record], math.MaxInt64)
+									a.vlrRanges[vlr][record] = append(a.vlrRanges[vlr][record], 0)
+								}
+							} else {
+								a.vlrRanges[vlr][record] = append(a.vlrRanges[vlr][record], math.MaxInt64)
+								a.vlrRanges[vlr][record] = append(a.vlrRanges[vlr][record], 0)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -1010,6 +1111,41 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 			offset += arg.size
 		}
 	}
+	for _, vlr := range te.syscall.vlrMaps {
+		for {
+			tr := uint64(binary.LittleEndian.Uint32(te.data[offset:offset+4]))
+			var matchedRecord *VlrRecord
+			for i, record := range vlr.records {
+				if tr == record.header {
+					matchedRecord = vlr.records[i]
+					break
+				}
+			}
+			offset += 4
+			if matchedRecord != nil {
+				structArg, _ := matchedRecord.arg.(*prog.StructType)
+				for i, field := range structArg.Fields {
+					if (field.Size() == 4) {
+						tr = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+field.Size()]))
+					} else {
+						tr = binary.LittleEndian.Uint64(te.data[offset:offset+field.Size()])
+					}
+					if (a.vlrRanges[vlr][matchedRecord][2*i+0] > tr) {
+						a.vlrRanges[vlr][matchedRecord][2*i+0] = tr
+						msgs = append(msgs, fmt.Sprintf("%v_%v:l", matchedRecord.name, field.FieldName()))
+					}
+					if (a.vlrRanges[vlr][matchedRecord][2*i+1] < tr) {
+						a.vlrRanges[vlr][matchedRecord][2*i+1] = tr
+						msgs = append(msgs, fmt.Sprintf("%v_%v:u", matchedRecord.name, field.FieldName()))
+					}
+					offset += field.Size()
+				}
+				continue;
+			} else {
+				break;
+			}
+		}
+	}
 	updatedRangesLen := len(msgs)
 	updatedRangesMsg := ""
 	for i, msg := range msgs {
@@ -1029,6 +1165,12 @@ func (a *ValueRangeAnalysis) PrintResult() {
 		}
 		for _, arg := range syscall.maps {
 			fmt.Printf("%v %v\n", arg.name, a.argRanges[arg])
+		}
+		for _, vlr := range syscall.vlrMaps {
+			fmt.Printf("\n%v %v\n", vlr.name, len(vlr.records))
+			for _, record := range vlr.records {
+				fmt.Printf("%v %v\n", record.name, a.vlrRanges[vlr][record])
+			}
 		}
 	}
 }
