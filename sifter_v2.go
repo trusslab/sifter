@@ -1076,37 +1076,41 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 		tr := binary.LittleEndian.Uint64(te.data[offset:offset+8])
 		if (a.regRanges[te.syscall][i*2+0] > tr) {
 			a.regRanges[te.syscall][i*2+0] = tr
-			msgs = append(msgs, fmt.Sprintf("reg[%v]:l", i))
+			msgs = append(msgs, fmt.Sprintf("reg[%v]:l %x", i, tr))
 		}
 		if (a.regRanges[te.syscall][i*2+1] < tr) {
 			a.regRanges[te.syscall][i*2+1] = tr
-			msgs = append(msgs, fmt.Sprintf("reg[%v]:u", i))
+			msgs = append(msgs, fmt.Sprintf("reg[%v]:u %x", i, tr))
 		}
 		offset += 8
 	}
 	for _, arg := range te.syscall.maps {
 		if structArg, ok := arg.arg.(*prog.StructType); ok {
 			for i, field := range structArg.Fields {
-				tr := binary.LittleEndian.Uint64(te.data[offset:offset+field.Size()])
-				if (a.argRanges[arg][2*i+0] > tr) {
-					a.argRanges[arg][2*i+0] = tr
-					msgs = append(msgs, fmt.Sprintf("%v:l", arg.name))
-				}
-				if (a.argRanges[arg][2*i+1] < tr) {
-					a.argRanges[arg][2*i+1] = tr
-					msgs = append(msgs, fmt.Sprintf("%v:u", arg.name))
+				if _, isPtrArg := field.(*prog.PtrType); !isPtrArg {
+					tr := binary.LittleEndian.Uint64(te.data[offset:offset+field.Size()])
+					if (a.argRanges[arg][2*i+0] > tr) {
+						a.argRanges[arg][2*i+0] = tr
+						msgs = append(msgs, fmt.Sprintf("%v:l %x", arg.name, tr))
+					}
+					if (a.argRanges[arg][2*i+1] < tr) {
+						a.argRanges[arg][2*i+1] = tr
+						msgs = append(msgs, fmt.Sprintf("%v:u %x", arg.name, tr))
+					}
 				}
 				offset += field.Size()
 			}
 		} else {
-			tr := binary.LittleEndian.Uint64(te.data[offset:offset+arg.size])
-			if (a.argRanges[arg][0] > tr) {
-				a.argRanges[arg][0] = tr
-				msgs = append(msgs, fmt.Sprintf("%v:l", arg.name))
-			}
-			if (a.argRanges[arg][1] < tr) {
-				a.argRanges[arg][1] = tr
-				msgs = append(msgs, fmt.Sprintf("%v:u", arg.name))
+			if _, isPtrArg := arg.arg.(*prog.PtrType); !isPtrArg {
+				tr := binary.LittleEndian.Uint64(te.data[offset:offset+arg.size])
+				if (a.argRanges[arg][0] > tr) {
+					a.argRanges[arg][0] = tr
+					msgs = append(msgs, fmt.Sprintf("%v:l %x", arg.name, tr))
+				}
+				if (a.argRanges[arg][1] < tr) {
+					a.argRanges[arg][1] = tr
+					msgs = append(msgs, fmt.Sprintf("%v:u %x", arg.name, tr))
+				}
 			}
 			offset += arg.size
 		}
@@ -1125,18 +1129,20 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 			if matchedRecord != nil {
 				structArg, _ := matchedRecord.arg.(*prog.StructType)
 				for i, field := range structArg.Fields {
-					if (field.Size() == 4) {
-						tr = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+field.Size()]))
-					} else {
-						tr = binary.LittleEndian.Uint64(te.data[offset:offset+field.Size()])
-					}
-					if (a.vlrRanges[vlr][matchedRecord][2*i+0] > tr) {
-						a.vlrRanges[vlr][matchedRecord][2*i+0] = tr
-						msgs = append(msgs, fmt.Sprintf("%v_%v:l", matchedRecord.name, field.FieldName()))
-					}
-					if (a.vlrRanges[vlr][matchedRecord][2*i+1] < tr) {
-						a.vlrRanges[vlr][matchedRecord][2*i+1] = tr
-						msgs = append(msgs, fmt.Sprintf("%v_%v:u", matchedRecord.name, field.FieldName()))
+					if _, isPtrArg := field.(*prog.PtrType); !isPtrArg {
+						if (field.Size() == 4) {
+							tr = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+field.Size()]))
+						} else {
+							tr = binary.LittleEndian.Uint64(te.data[offset:offset+field.Size()])
+						}
+						if (a.vlrRanges[vlr][matchedRecord][2*i+0] > tr) {
+							a.vlrRanges[vlr][matchedRecord][2*i+0] = tr
+							msgs = append(msgs, fmt.Sprintf("%v_%v:l [%v]:%x", matchedRecord.name, field.FieldName(), offset, tr))
+						}
+						if (a.vlrRanges[vlr][matchedRecord][2*i+1] < tr) {
+							a.vlrRanges[vlr][matchedRecord][2*i+1] = tr
+							msgs = append(msgs, fmt.Sprintf("%v_%v:u [%v]:%x", matchedRecord.name, field.FieldName(), offset, tr))
+						}
 					}
 					offset += field.Size()
 				}
@@ -1188,6 +1194,7 @@ func (sifter *Sifter) DoAnalyses() {
 	}
 
 	lastUpdatedTeIdx := 0
+	updatedTeNum := 0
 	for i, te := range sifter.trace {
 		hasUpdate := false
 		updateMsg := ""
@@ -1198,12 +1205,16 @@ func (sifter *Sifter) DoAnalyses() {
 			}
 		}
 		if hasUpdate {
+			updatedTeNum += 1
 			timeElapsed := te.ts - sifter.trace[lastUpdatedTeIdx].ts
 			fmt.Printf("  | %v events / %v.%09d sec elapsed\n", i-lastUpdatedTeIdx, timeElapsed/1000000000, timeElapsed%1000000000)
-			fmt.Printf("[%v.%09d] %x\n", te.ts/1000000000, te.ts%1000000000, te.id)
+			fmt.Printf("[%v.%09d] %x %d\n", te.ts/1000000000, te.ts%1000000000, te.id, updatedTeNum)
 			fmt.Printf("%v", updateMsg)
 			fmt.Printf("  ├ % x\n", te.data)
 			lastUpdatedTeIdx = i
+		}
+		if i == len(sifter.trace)-1 {
+			fmt.Printf("[%v.%09d] %x end\n", te.ts/1000000000, te.ts%1000000000, te.id)
 		}
 	}
 
