@@ -77,7 +77,7 @@ type Context struct {
 type Syscall struct {
 	name			string
 	def				*prog.Syscall
-	maps			[]*ArgMap
+	argMaps			[]*ArgMap
 	vlrMaps			[]*VlrMap
 	size			uint64
 	traceFile		*os.File
@@ -98,7 +98,7 @@ func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string,
 		datatype: argType,
 		size: size,
 	}
-	syscall.maps = append(syscall.maps, newArgMap)
+	syscall.argMaps = append(syscall.argMaps, newArgMap)
 	syscall.size += size
 }
 
@@ -249,14 +249,14 @@ func newSifter(target *prog.Target, f Flags) (*Sifter, error) {
 					tracedSyscall := new(Syscall)
 					tracedSyscall.name = fixName(syscall.Name)
 					tracedSyscall.def = syscall
-					tracedSyscall.maps = []*ArgMap{}
+					tracedSyscall.argMaps = []*ArgMap{}
 					sifter.moduleSyscalls[callName] = append(sifter.moduleSyscalls[callName], tracedSyscall)
 				} else {
 					fmt.Printf("trace syscall %v\n", callName)
 					tracedSyscall := new(Syscall)
 					tracedSyscall.name = fixName(syscall.Name)
 					tracedSyscall.def = sifter.target.SyscallMap[callName]
-					tracedSyscall.maps = []*ArgMap{}
+					tracedSyscall.argMaps = []*ArgMap{}
 					sifter.moduleSyscalls[callName] = append(sifter.moduleSyscalls[callName], tracedSyscall)
 				}
 			}
@@ -643,7 +643,7 @@ func (sifter *Sifter) GenerateMapSection() {
 			for _, syscall := range syscalls {
 				fmt.Fprintf(s, "DEFINE_BPF_MAP(%v_ctr, ARRAY, int, uint32_t, 1)\n", syscall.name)
 				fmt.Fprintf(s, "DEFINE_BPF_MAP(%v_ent, ARRAY, int, syscall_ent_t, 1024)\n", syscall.name)
-				for _, arg := range syscall.maps {
+				for _, arg := range syscall.argMaps {
 					fmt.Fprintf(s, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, 1024)\n", arg.name, arg.datatype)
 				}
 			}
@@ -1032,7 +1032,7 @@ func (a *ValueRangeAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 				a.regRanges[syscall] = append(a.regRanges[syscall], math.MaxInt64)
 				a.regRanges[syscall] = append(a.regRanges[syscall], 0)
 			}
-			for _, arg := range syscall.maps {
+			for _, arg := range syscall.argMaps {
 				if structArg, ok := arg.arg.(*prog.StructType); ok {
 					for _, _ = range structArg.Fields {
 						a.argRanges[arg] = append(a.argRanges[arg], math.MaxInt64)
@@ -1084,7 +1084,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 		}
 		offset += 8
 	}
-	for _, arg := range te.syscall.maps {
+	for _, arg := range te.syscall.argMaps {
 		if structArg, ok := arg.arg.(*prog.StructType); ok {
 			for i, field := range structArg.Fields {
 				if _, isPtrArg := field.(*prog.PtrType); !isPtrArg {
@@ -1169,7 +1169,7 @@ func (a *ValueRangeAnalysis) PrintResult() {
 		for i := 0; i < 6; i++ {
 			fmt.Printf("reg[%v] %v\n", i, regRange[i*2:i*2+2])
 		}
-		for _, arg := range syscall.maps {
+		for _, arg := range syscall.argMaps {
 			fmt.Printf("%v %v\n", arg.name, a.argRanges[arg])
 		}
 		for _, vlr := range syscall.vlrMaps {
@@ -1275,9 +1275,9 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
-			fmt.Fprintf(s, "s %v %v", len(syscall.maps)+1, syscall.name)
+			fmt.Fprintf(s, "s %v %v", len(syscall.argMaps)+1, syscall.name)
 			fmt.Fprintf(s, " 60 %v_ent", syscall.name)
-			for _, arg := range syscall.maps {
+			for _, arg := range syscall.argMaps {
 				fmt.Fprintf(s, " %v %v", arg.size, arg.name)
 			}
 			fmt.Fprintf(s, "\n")
