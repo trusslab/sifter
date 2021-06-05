@@ -47,6 +47,7 @@ type ArgMap struct {
 	path     string
 	datatype string
 	size     uint64
+	offset   uint64
 	arg      prog.Type
 }
 
@@ -61,6 +62,7 @@ type VlrRecord struct {
 type VlrMap struct {
 	name     string
 	size     uint64
+	offset   uint64
 	records  []*VlrRecord
 	arg      prog.Type
 }
@@ -97,6 +99,7 @@ func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string,
 		path: srcPath,
 		datatype: argType,
 		size: size,
+		offset: syscall.size,
 	}
 	syscall.argMaps = append(syscall.argMaps, newArgMap)
 	syscall.size += size
@@ -107,6 +110,7 @@ func (syscall *Syscall) AddVlrMap(arg *prog.ArrayType, argName string) {
 		arg: arg,
 		name: argName,
 		size: 512,
+		offset: syscall.size,
 	}
 	for _, record := range arg.Type.(*prog.UnionType).Fields {
 		structArg, _ := record.(*prog.StructType)
@@ -874,6 +878,133 @@ type analysis interface {
 	PrintResult()
 }
 
+type VlrSequenceNode struct {
+	next    []*VlrSequenceNode
+	record  *VlrRecord
+}
+
+type VlrAnalysis struct {
+	vlrSequenceRoot []*VlrSequenceNode
+}
+
+func (a VlrAnalysis) String() string {
+	return "vlr analysis"
+}
+
+func (a *VlrAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
+	for _, syscalls := range *TracedSyscalls {
+		for _, syscall := range syscalls {
+			for _, _ = range syscall.vlrMaps {
+				a.vlrSequenceRoot = append(a.vlrSequenceRoot, new(VlrSequenceNode))
+			}
+		}
+	}
+}
+
+func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
+	if (te.id & 0x80000000) != 0 {
+		return "", 0
+	}
+
+	if te.syscall.vlrMaps == nil {
+		return "", 0
+	}
+
+	updateMsg := ""
+	updateNum := 0
+	for i, vlr := range te.syscall.vlrMaps {
+		offset := vlr.offset
+		node := a.vlrSequenceRoot[i]
+
+		for {
+			tr := uint64(binary.LittleEndian.Uint32(te.data[48+offset:48+offset+4]))
+			var matchedRecord *VlrRecord
+			for j, record := range vlr.records {
+				if tr == record.header {
+					matchedRecord = vlr.records[j]
+					break
+				}
+			}
+
+			if matchedRecord != nil {
+				updateMsg += matchedRecord.name
+				nextVlrRecordIdx := -1
+				for j, nextRecord := range node.next {
+					if nextRecord.record == matchedRecord {
+						nextVlrRecordIdx = j
+						break
+					}
+				}
+				if nextVlrRecordIdx >= 0 {
+					node = node.next[nextVlrRecordIdx]
+					updateMsg += "->"
+				} else {
+					newNode := new(VlrSequenceNode)
+					newNode.record = matchedRecord
+					node.next = append(node.next, newNode)
+					node = newNode
+					updateNum += 1
+					updateMsg += "*->"
+				}
+				offset += matchedRecord.size
+			} else {
+				break
+			}
+		}
+	}
+	return updateMsg, updateNum
+}
+
+func (n *VlrSequenceNode) _Print(depth *int, depthsWithChildren map[int]bool) {
+	if n.record == nil && len(n.next) == 0 {
+		return
+	}
+	*depth = *depth + 1
+	for i, next := range n.next {
+
+		s := ""
+		if i == len(n.next)-1 {
+			depthsWithChildren[*depth] = false
+			s += "└"
+		} else {
+			depthsWithChildren[*depth] = true
+			s += "├"
+		}
+
+		if n.record == nil {
+			s += "start"
+		} else {
+			s += fmt.Sprintf("%v (%v)", n.record.name, *depth)
+		}
+
+		indent := ""
+		for i := 1; i < *depth; i++ {
+			if depthsWithChildren[i] == true && i != *depth{
+				indent += "|   "
+			} else {
+				indent += "    "
+			}
+		}
+		//fmt.Printf("%v%v %v\n", indent, s, depthsWithChildren)
+		fmt.Printf("%v%v\n", indent, s)
+
+		next._Print(depth, depthsWithChildren)
+	}
+	*depth = *depth - 1
+}
+
+func (n *VlrSequenceNode) Print() {
+	depth := 0
+	depthsWithOtherChildren := make(map[int]bool)
+	n._Print(&depth, depthsWithOtherChildren)
+}
+
+func (a *VlrAnalysis) PrintResult() {
+	for i, _ := range a.vlrSequenceRoot {
+		//fmt.Printf("%v %v:\n", syscall.name, vlr.record.name)
+		a.vlrSequenceRoot[i].Print()
+	}
+}
 
 type Node struct {
 	syscall *Syscall
@@ -1184,10 +1315,12 @@ func (a *ValueRangeAnalysis) PrintResult() {
 func (sifter *Sifter) DoAnalyses() {
 	var vra ValueRangeAnalysis
 	var sa SequenceAnalysis
+	var vlra VlrAnalysis
 	sa.seqLen = 4
 
 	sifter.analyses = append(sifter.analyses, &vra)
 	sifter.analyses = append(sifter.analyses, &sa)
+	sifter.analyses = append(sifter.analyses, &vlra)
 
 	for _, analysis := range sifter.analyses {
 		analysis.Init(&sifter.moduleSyscalls)
