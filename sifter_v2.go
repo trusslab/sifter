@@ -881,6 +881,7 @@ type analysis interface {
 type VlrSequenceNode struct {
 	next    []*VlrSequenceNode
 	record  *VlrRecord
+	count   uint64
 }
 
 type VlrAnalysis struct {
@@ -940,12 +941,14 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 			}
 			if nextVlrRecordIdx >= 0 {
 				node = node.next[nextVlrRecordIdx]
+				node.count += 1
 				updateMsg += "->"
 			} else {
 				newNode := new(VlrSequenceNode)
 				newNode.record = matchedRecord
 				node.next = append(node.next, newNode)
 				node = newNode
+				node.count = 1
 				updateNum += 1
 				updateMsg += "*->"
 			}
@@ -975,10 +978,10 @@ func (n *VlrSequenceNode) _Print(depth *int, depthsWithChildren map[int]bool, ha
 		if len(n.next) != 0 {
 			s += "start"
 		} else {
-			s += "end"
+			s += fmt.Sprintf("[%v]end (%v)", *depth, n.count)
 		}
 	} else {
-		s += fmt.Sprintf("%v (%v)", n.record.name, *depth)
+		s += fmt.Sprintf("[%v]%v", *depth, n.record.name)
 	}
 
 	indent := ""
