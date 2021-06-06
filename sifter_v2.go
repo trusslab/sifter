@@ -928,24 +928,28 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 
 			if matchedRecord != nil {
 				updateMsg += matchedRecord.name
-				nextVlrRecordIdx := -1
-				for j, nextRecord := range node.next {
-					if nextRecord.record == matchedRecord {
-						nextVlrRecordIdx = j
-						break
-					}
+			} else {
+				updateMsg += "end"
+			}
+			nextVlrRecordIdx := -1
+			for j, nextRecord := range node.next {
+				if nextRecord.record == matchedRecord {
+					nextVlrRecordIdx = j
+					break
 				}
-				if nextVlrRecordIdx >= 0 {
-					node = node.next[nextVlrRecordIdx]
-					updateMsg += "->"
-				} else {
-					newNode := new(VlrSequenceNode)
-					newNode.record = matchedRecord
-					node.next = append(node.next, newNode)
-					node = newNode
-					updateNum += 1
-					updateMsg += "*->"
-				}
+			}
+			if nextVlrRecordIdx >= 0 {
+				node = node.next[nextVlrRecordIdx]
+				updateMsg += "->"
+			} else {
+				newNode := new(VlrSequenceNode)
+				newNode.record = matchedRecord
+				node.next = append(node.next, newNode)
+				node = newNode
+				updateNum += 1
+				updateMsg += "*->"
+			}
+			if matchedRecord != nil {
 				offset += matchedRecord.size
 			} else {
 				break
@@ -955,53 +959,53 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 	return updateMsg, updateNum
 }
 
-func (n *VlrSequenceNode) _Print(depth *int, depthsWithChildren map[int]bool) {
-	if n.record == nil && len(n.next) == 0 {
-		return
-	}
+func (n *VlrSequenceNode) _Print(depth *int, depthsWithChildren map[int]bool, hasNext bool) {
 	*depth = *depth + 1
-	for i, next := range n.next {
 
-		s := ""
-		if i == len(n.next)-1 {
-			depthsWithChildren[*depth] = false
-			s += "└"
-		} else {
-			depthsWithChildren[*depth] = true
-			s += "├"
-		}
+	s := ""
+	if !hasNext {
+		depthsWithChildren[*depth] = false
+		s += "└"
+	} else {
+		depthsWithChildren[*depth] = true
+		s += "├"
+	}
 
-		if n.record == nil {
+	if n.record == nil {
+		if len(n.next) != 0 {
 			s += "start"
 		} else {
-			s += fmt.Sprintf("%v (%v)", n.record.name, *depth)
+			s += "end"
 		}
-
-		indent := ""
-		for i := 1; i < *depth; i++ {
-			if depthsWithChildren[i] == true && i != *depth{
-				indent += "|   "
-			} else {
-				indent += "    "
-			}
-		}
-		//fmt.Printf("%v%v %v\n", indent, s, depthsWithChildren)
-		fmt.Printf("%v%v\n", indent, s)
-
-		next._Print(depth, depthsWithChildren)
+	} else {
+		s += fmt.Sprintf("%v (%v)", n.record.name, *depth)
 	}
+
+	indent := ""
+	for i := 1; i < *depth; i++ {
+		if depthsWithChildren[i] == true && i != *depth{
+			indent += "|   "
+		} else {
+			indent += "    "
+		}
+	}
+	fmt.Printf("%v%v\n", indent, s)
+
+	for i, next := range n.next {
+		next._Print(depth, depthsWithChildren, i != len(n.next)-1)
+	}
+
 	*depth = *depth - 1
 }
 
 func (n *VlrSequenceNode) Print() {
 	depth := 0
 	depthsWithOtherChildren := make(map[int]bool)
-	n._Print(&depth, depthsWithOtherChildren)
+	n._Print(&depth, depthsWithOtherChildren, false)
 }
 
 func (a *VlrAnalysis) PrintResult() {
 	for i, _ := range a.vlrSequenceRoot {
-		//fmt.Printf("%v %v:\n", syscall.name, vlr.record.name)
 		a.vlrSequenceRoot[i].Print()
 	}
 }
