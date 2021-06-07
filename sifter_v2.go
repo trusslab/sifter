@@ -882,6 +882,7 @@ type VlrSequenceNode struct {
 	next    []*VlrSequenceNode
 	record  *VlrRecord
 	count   uint64
+	events  []*TraceEvent
 }
 
 type VlrAnalysis struct {
@@ -942,7 +943,6 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 			if nextVlrRecordIdx >= 0 {
 				node = node.next[nextVlrRecordIdx]
 				node.count += 1
-				updateMsg += "->"
 			} else {
 				newNode := new(VlrSequenceNode)
 				newNode.record = matchedRecord
@@ -950,11 +950,13 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 				node = newNode
 				node.count = 1
 				updateNum += 1
-				updateMsg += "*->"
+				updateMsg += "*"
 			}
 			if matchedRecord != nil {
+				updateMsg += "->"
 				offset += matchedRecord.size
 			} else {
+				node.events = append(node.events, te)
 				break
 			}
 		}
