@@ -917,14 +917,19 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 	for i, vlr := range te.syscall.vlrMaps {
 		offset := vlr.offset
 		node := a.vlrSequenceRoot[i]
+		size := uint64(binary.LittleEndian.Uint32(te.data[48:56]))
+		start := uint64(binary.LittleEndian.Uint32(te.data[56:64]))
+		offset += start
 
 		for {
 			tr := uint64(binary.LittleEndian.Uint32(te.data[48+offset:48+offset+4]))
 			var matchedRecord *VlrRecord
-			for j, record := range vlr.records {
-				if tr == record.header {
-					matchedRecord = vlr.records[j]
-					break
+			if offset < size {
+				for j, record := range vlr.records {
+					if tr == record.header {
+						matchedRecord = vlr.records[j]
+						break
+					}
 				}
 			}
 
