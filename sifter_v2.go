@@ -760,7 +760,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 	if sifter.mode == TracerMode {
 		fmt.Fprintf(s, "int __always_inline get_current_pid() {\n")
 		fmt.Fprintf(s, "    uint64_t current_pid_tgid = bpf_get_current_pid_tgid();\n")
-		fmt.Fprintf(s, "    int pid = current_pid_tgid >> 32;\n")
+		fmt.Fprintf(s, "    int pid = current_pid_tgid & 0x00000000ffffffff;\n")
 		fmt.Fprintf(s, "    return pid;\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "\n")
