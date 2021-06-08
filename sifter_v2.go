@@ -1261,13 +1261,18 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 		}
 	}
 	for _, vlr := range te.syscall.vlrMaps {
+		size := uint64(binary.LittleEndian.Uint32(te.data[48:56]))
+		start := uint64(binary.LittleEndian.Uint32(te.data[56:64]))
+		offset += start
 		for {
 			tr := uint64(binary.LittleEndian.Uint32(te.data[offset:offset+4]))
 			var matchedRecord *VlrRecord
-			for i, record := range vlr.records {
-				if tr == record.header {
-					matchedRecord = vlr.records[i]
-					break
+			if offset < size {
+				for i, record := range vlr.records {
+					if tr == record.header {
+						matchedRecord = vlr.records[i]
+						break
+					}
 				}
 			}
 			offset += 4
