@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math"
 	"os"
 	"path/filepath"
@@ -1332,18 +1333,6 @@ func (a *ValueRangeAnalysis) PrintResult() {
 }
 
 func (sifter *Sifter) DoAnalyses() {
-	var vra ValueRangeAnalysis
-	var sa SequenceAnalysis
-	var vlra VlrAnalysis
-	sa.seqLen = 4
-
-	sifter.analyses = append(sifter.analyses, &vra)
-	sifter.analyses = append(sifter.analyses, &sa)
-	sifter.analyses = append(sifter.analyses, &vlra)
-
-	for _, analysis := range sifter.analyses {
-		analysis.Init(&sifter.moduleSyscalls)
-	}
 
 	lastUpdatedTeIdx := 0
 	updatedTeNum := 0
@@ -1377,10 +1366,10 @@ func (sifter *Sifter) DoAnalyses() {
 	}
 }
 
-func (sifter *Sifter) ReadSyscallTrace() {
+func (sifter *Sifter) ReadSyscallTrace(dirPath string) {
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
-			fileName := fmt.Sprintf("raw_trace_%v.dat", syscall.name)
+			fileName := fmt.Sprintf("%v/raw_trace_%v.dat", dirPath, syscall.name)
 			file, err := os.Open(fileName)
 			if err != nil {
 				failf("failed to open trace file: %v", fileName)
@@ -1486,7 +1475,28 @@ func main() {
 		sifter.WriteSourceFile()
 		sifter.WriteAgentConfigFile()
 	} else if sifter.mode == AnalyzerMode {
-		sifter.ReadSyscallTrace()
-		sifter.DoAnalyses()
+		var vra ValueRangeAnalysis
+		var sa SequenceAnalysis
+		var vlra VlrAnalysis
+		sa.seqLen = 4
+
+		sifter.analyses = append(sifter.analyses, &vra)
+		sifter.analyses = append(sifter.analyses, &sa)
+		sifter.analyses = append(sifter.analyses, &vlra)
+
+		for _, analysis := range sifter.analyses {
+			analysis.Init(&sifter.moduleSyscalls)
+		}
+
+		traceDir := "./trace"
+		files, err := ioutil.ReadDir(traceDir)
+		if err != nil {
+			failf("failed to open trace directory %v", traceDir)
+		}
+
+		for _, file := range files {
+			sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
+			sifter.DoAnalyses()
+		}
 	}
 }
