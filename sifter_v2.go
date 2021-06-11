@@ -1488,14 +1488,25 @@ func main() {
 			analysis.Init(&sifter.moduleSyscalls)
 		}
 
-		traceDir := "./trace"
-		files, err := ioutil.ReadDir(traceDir)
+		testingDir := "./testing"
+		testingFiles, err := ioutil.ReadDir(testingDir)
 		if err != nil {
-			failf("failed to open trace directory %v", traceDir)
+			failf("failed to open trace directory %v", testingDir)
 		}
 
-		for _, file := range files {
-			sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
+		trainingDir := "./training"
+		trainingFiles, err := ioutil.ReadDir(trainingDir)
+		if err != nil {
+			failf("failed to open trace directory %v", trainingDir)
+		}
+
+		for _, file := range trainingFiles {
+			sifter.ReadSyscallTrace(trainingDir+"/"+file.Name())
+			sifter.DoAnalyses()
+		}
+
+		for _, file := range testingFiles {
+			sifter.ReadSyscallTrace(testingDir+"/"+file.Name())
 			sifter.DoAnalyses()
 		}
 	}
