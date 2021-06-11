@@ -1332,7 +1332,7 @@ func (a *ValueRangeAnalysis) PrintResult() {
 	}
 }
 
-func (sifter *Sifter) DoAnalyses() {
+func (sifter *Sifter) DoAnalyses() int {
 
 	lastUpdatedTeIdx := 0
 	updatedTeNum := 0
@@ -1364,6 +1364,7 @@ func (sifter *Sifter) DoAnalyses() {
 		fmt.Printf("%v result:\n", analysis)
 		analysis.PrintResult()
 	}
+	return updatedTeNum
 }
 
 func (sifter *Sifter) ReadSyscallTrace(dirPath string) {
@@ -1488,12 +1489,14 @@ func main() {
 			analysis.Init(&sifter.moduleSyscalls)
 		}
 
+		testingUpdates := 0
 		testingDir := "./testing"
 		testingFiles, err := ioutil.ReadDir(testingDir)
 		if err != nil {
 			failf("failed to open trace directory %v", testingDir)
 		}
 
+		trainingUpdates := 0
 		trainingDir := "./training"
 		trainingFiles, err := ioutil.ReadDir(trainingDir)
 		if err != nil {
@@ -1502,12 +1505,14 @@ func main() {
 
 		for _, file := range trainingFiles {
 			sifter.ReadSyscallTrace(trainingDir+"/"+file.Name())
-			sifter.DoAnalyses()
+			trainingUpdates += sifter.DoAnalyses()
 		}
+		fmt.Printf("#trainging updates: %v\n", trainingUpdates)
 
 		for _, file := range testingFiles {
 			sifter.ReadSyscallTrace(testingDir+"/"+file.Name())
-			sifter.DoAnalyses()
+			testingUpdates +=sifter.DoAnalyses()
 		}
+		fmt.Printf("#testing updates: %v\n", testingUpdates)
 	}
 }
