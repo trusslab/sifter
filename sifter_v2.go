@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1460,6 +1461,25 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 	outf.Write(s.Bytes())
 }
 
+func Subsets(set []int, num int) [][]int {
+	subsets := make([][]int, 0)
+	if num != 0 {
+		for i := 0; i <= len(set)-num; i++ {
+			elementSubset := []int{set[i]}
+			subSubsets := Subsets(set[i+1:], num-1)
+			if len(subSubsets) != 0 {
+				for _, subSubset := range subSubsets {
+					newSubset := append(elementSubset, subSubset...)
+					subsets = append(subsets, newSubset)
+				}
+			} else {
+				subsets = append(subsets, elementSubset)
+			}
+		}
+	}
+	return subsets
+}
+
 func main() {
 	var flags Flags
 	flag.StringVar(&flags.mode,   "mode", "", "mode (tracer/filter)")
@@ -1493,43 +1513,74 @@ func main() {
 		sifter.WriteSourceFile()
 		sifter.WriteAgentConfigFile()
 	} else if sifter.mode == AnalyzerMode {
-		var vra ValueRangeAnalysis
-		var sa SequenceAnalysis
-		var vlra VlrAnalysis
-		sa.seqLen = 4
-
-		sifter.analyses = append(sifter.analyses, &vra)
-		sifter.analyses = append(sifter.analyses, &sa)
-		sifter.analyses = append(sifter.analyses, &vlra)
-
-		for _, analysis := range sifter.analyses {
-			analysis.Init(&sifter.moduleSyscalls)
-		}
-
-		testingUpdates := 0
-		testingDir := "./testing"
-		testingFiles, err := ioutil.ReadDir(testingDir)
+		traceDir := "./trace"
+		traceFiles, err := ioutil.ReadDir(traceDir)
 		if err != nil {
-			failf("failed to open trace directory %v", testingDir)
+			failf("failed to open trace directory %v", traceDir)
 		}
 
-		trainingUpdates := 0
-		trainingDir := "./training"
-		trainingFiles, err := ioutil.ReadDir(trainingDir)
-		if err != nil {
-			failf("failed to open trace directory %v", trainingDir)
+		traceFileNum := len(traceFiles)
+		iter := 10
+		ratio := 0.9
+		trainingFileNum := int(float64(traceFileNum) * ratio)
+		testingFileNum := traceFileNum - trainingFileNum
+		set := make([]int, traceFileNum)
+		for i := 0; i < traceFileNum; i++ {
+			set[i] = i
 		}
+		testingFileIdxSets := Subsets(set, testingFileNum)
 
-		for _, file := range trainingFiles {
-			sifter.ReadSyscallTrace(trainingDir+"/"+file.Name())
-			trainingUpdates += sifter.DoAnalyses()
-		}
-		fmt.Printf("#trainging updates: %v\n", trainingUpdates)
+		testingUpdateSum := 0
+		testingUpdates := make([]int, iter)
+		trainingUpdates := make([]int, iter)
+		for i := 0; i < iter; i ++ {
+			r := rand.Int31n(int32(len(testingFileIdxSets)))
+			sifter.analyses = nil
+			sifter.trace = nil
+			var vra ValueRangeAnalysis
+			var sa SequenceAnalysis
+			var vlra VlrAnalysis
+			sa.seqLen = 4
 
-		for _, file := range testingFiles {
-			sifter.ReadSyscallTrace(testingDir+"/"+file.Name())
-			testingUpdates +=sifter.DoAnalyses()
+			sifter.analyses = append(sifter.analyses, &vra)
+			sifter.analyses = append(sifter.analyses, &sa)
+			sifter.analyses = append(sifter.analyses, &vlra)
+
+			for _, analysis := range sifter.analyses {
+				analysis.Init(&sifter.moduleSyscalls)
+			}
+
+			testingFiles := make([]os.FileInfo, 0)
+			trainingFiles := make([]os.FileInfo, 0)
+			for j := 0; j < traceFileNum; j++ {
+				isTestingFileIdx := false
+				for k := 0; k < testingFileNum; k++ {
+					if j == testingFileIdxSets[r][k] {
+						isTestingFileIdx = true
+					}
+				}
+
+				if isTestingFileIdx {
+					testingFiles = append(testingFiles, traceFiles[j])
+				} else {
+					trainingFiles = append(trainingFiles, traceFiles[j])
+				}
+			}
+
+			for _, file := range trainingFiles {
+				sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
+				trainingUpdates[i] += sifter.DoAnalyses()
+			}
+			fmt.Printf("#trainging updates: %v\n", trainingUpdates[i])
+
+			for _, file := range testingFiles {
+				sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
+				testingUpdates[i] += sifter.DoAnalyses()
+			}
+			testingUpdateSum +=	testingUpdates[i]
+			fmt.Printf("#testing updates: %v\n", testingUpdates[i])
 		}
-		fmt.Printf("#testing updates: %v\n", testingUpdates)
+		fmt.Printf("#Avg testing error: %v\n", testingUpdateSum/iter)
+
 	}
 }
