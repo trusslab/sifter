@@ -26,16 +26,25 @@ const (
 	AnalyzerMode
 )
 
+type Verbose int
+
+const (
+	InfoV Verbose = iota
+	ResultV
+	UpdateV
+)
+
 type Flags struct {
-	mode   string
-	trace  string
-	config string
-	fd     string
-	dev    string
-	entry  string
-	outdir string
-	out    string
-	unroll int
+	mode    string
+	trace   string
+	config  string
+	fd      string
+	dev     string
+	entry   string
+	outdir  string
+	out     string
+	unroll  int
+	verbose int
 }
 
 type Section struct {
@@ -149,6 +158,7 @@ func newTraceEvent(ts uint64, id uint32, syscall *Syscall) *TraceEvent {
 
 type Sifter struct {
 	mode		    Mode
+	verbose         Verbose
 	target          *prog.Target
 	structs         []*prog.StructType
 	syscalls        []*prog.Syscall
@@ -195,6 +205,7 @@ func newSifter(target *prog.Target, f Flags) (*Sifter, error) {
 	sifter.trace = make([]*TraceEvent, 0)
 	sifter.stackVarId = 0
 	sifter.depthLimit = math.MaxInt32
+	sifter.verbose = Verbose(f.verbose)
 
 	if f.mode == "tracer" {
 		sifter.mode = TracerMode
@@ -1343,26 +1354,30 @@ func (sifter *Sifter) DoAnalyses() int {
 			if msg, update := analysis.ProcessTraceEvent(te); update > 0 {
 				updateMsg += fmt.Sprintf("  ├ %v: %v\n", analysis, msg)
 				hasUpdate = true
+				updatedTeNum += 1
 			}
 		}
-		if hasUpdate {
-			updatedTeNum += 1
-			timeElapsed := te.ts - sifter.trace[lastUpdatedTeIdx].ts
-			fmt.Printf("  | %v events / %v.%09d sec elapsed\n", i-lastUpdatedTeIdx, timeElapsed/1000000000, timeElapsed%1000000000)
-			fmt.Printf("[%v.%09d] %x %d\n", te.ts/1000000000, te.ts%1000000000, te.id, updatedTeNum)
-			fmt.Printf("%v", updateMsg)
-			fmt.Printf("  ├ % x\n", te.data)
-			lastUpdatedTeIdx = i
-		}
-		if i == len(sifter.trace)-1 {
-			fmt.Printf("[%v.%09d] %x end\n", te.ts/1000000000, te.ts%1000000000, te.id)
+		if sifter.verbose >= UpdateV {
+			if hasUpdate && sifter.verbose >= UpdateV {
+				timeElapsed := te.ts - sifter.trace[lastUpdatedTeIdx].ts
+				fmt.Printf("  | %v events / %v.%09d sec elapsed\n", i-lastUpdatedTeIdx, timeElapsed/1000000000, timeElapsed%1000000000)
+				fmt.Printf("[%v.%09d] %x %d\n", te.ts/1000000000, te.ts%1000000000, te.id, updatedTeNum)
+				fmt.Printf("%v", updateMsg)
+				fmt.Printf("  ├ % x\n", te.data)
+				lastUpdatedTeIdx = i
+			}
+			if i == len(sifter.trace)-1 {
+				fmt.Printf("[%v.%09d] %x end\n", te.ts/1000000000, te.ts%1000000000, te.id)
+			}
 		}
 	}
 
-	for _, analysis := range sifter.analyses {
-		fmt.Printf("----------------------------------------------------------------\n")
-		fmt.Printf("%v result:\n", analysis)
-		analysis.PrintResult()
+	if sifter.verbose >= ResultV {
+		for _, analysis := range sifter.analyses {
+			fmt.Printf("----------------------------------------------------------------\n")
+			fmt.Printf("%v result:\n", analysis)
+			analysis.PrintResult()
+		}
 	}
 	return updatedTeNum
 }
@@ -1375,7 +1390,6 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) {
 			if err != nil {
 				failf("failed to open trace file: %v", fileName)
 			}
-			fmt.Printf("open %v\n", fileName)
 
 			syscall.traceFile = file
 			syscall.traceReader = bufio.NewReader(file)
@@ -1392,7 +1406,9 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) {
 				_, err = io.ReadFull(syscall.traceReader, traceEvent.data)
 
 				if err != nil {
-					fmt.Printf("finish reading trace of %v: %v\n", syscall.name, err)
+					if err.Error() != "EOF" {
+						fmt.Printf("trace, %v, ended unexpectedly: %v\n", syscall.name, err)
+					}
 					break;
 				}
 
@@ -1454,6 +1470,7 @@ func main() {
 	flag.StringVar(&flags.outdir, "outdir", "gen", "output file directory")
 	flag.StringVar(&flags.out,    "out", "", "output file base name")
 	flag.IntVar(&flags.unroll,    "unroll", 5, "loop unroll times")
+	flag.IntVar(&flags.verbose,   "v", 0, "verbosity")
 	flag.Parse()
 
 	cfg, err := mgrconfig.LoadFile(flags.config)
