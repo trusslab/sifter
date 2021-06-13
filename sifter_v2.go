@@ -45,6 +45,8 @@ type Flags struct {
 	outdir  string
 	out     string
 	unroll  int
+	iter    int
+	split   float64
 	verbose int
 }
 
@@ -168,9 +170,13 @@ type Sifter struct {
 	stackVarId      int
 	sections        map[string]*bytes.Buffer
 
+	traceFiles      []os.FileInfo
 	trace			[]*TraceEvent
 
 	analyses		[]analysis
+	trainTestSplit  float64
+	trainTestIter   int
+	testFileIdxSets [][]int
 
 	outName         string
 	outSourceFile   string
@@ -207,6 +213,8 @@ func newSifter(target *prog.Target, f Flags) (*Sifter, error) {
 	sifter.stackVarId = 0
 	sifter.depthLimit = math.MaxInt32
 	sifter.verbose = Verbose(f.verbose)
+	sifter.trainTestSplit = f.split
+	sifter.trainTestIter = f.iter
 
 	if f.mode == "tracer" {
 		sifter.mode = TracerMode
@@ -1461,12 +1469,12 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 	outf.Write(s.Bytes())
 }
 
-func Subsets(set []int, num int) [][]int {
+func getSubsets(set []int, num int) [][]int {
 	subsets := make([][]int, 0)
 	if num != 0 {
 		for i := 0; i <= len(set)-num; i++ {
 			elementSubset := []int{set[i]}
-			subSubsets := Subsets(set[i+1:], num-1)
+			subSubsets := getSubsets(set[i+1:], num-1)
 			if len(subSubsets) != 0 {
 				for _, subSubset := range subSubsets {
 					newSubset := append(elementSubset, subSubset...)
@@ -1480,6 +1488,48 @@ func Subsets(set []int, num int) [][]int {
 	return subsets
 }
 
+func (sifter *Sifter) ReadTraceDir(dir string) {
+	var err error
+	sifter.traceFiles, err = ioutil.ReadDir(dir)
+	if err != nil {
+		failf("failed to open trace directory %v", dir)
+	}
+
+	traceFileNum := len(sifter.traceFiles)
+	trainRatio := sifter.trainTestSplit / (1 + sifter.trainTestSplit)
+	trainFileNum := int(float64(traceFileNum) * trainRatio)
+	testFileNum := traceFileNum - trainFileNum
+	traceFileIdxSet := make([]int, traceFileNum)
+	for i := 0; i < traceFileNum; i++ {
+		traceFileIdxSet[i] = i
+	}
+
+	sifter.testFileIdxSets = getSubsets(traceFileIdxSet, testFileNum)
+}
+
+func (sifter *Sifter) GetTrainTestFiles() ([]os.FileInfo, []os.FileInfo) {
+	r := rand.Int31n(int32(len(sifter.testFileIdxSets)))
+	testFileNum := len(sifter.testFileIdxSets[0])
+
+	testFiles := make([]os.FileInfo, 0)
+	trainFiles := make([]os.FileInfo, 0)
+	for i := 0; i < len(sifter.traceFiles); i++ {
+		isTestFileIdx := false
+		for j := 0; j < testFileNum; j++ {
+			if i == sifter.testFileIdxSets[r][j] {
+				isTestFileIdx = true
+			}
+		}
+
+		if isTestFileIdx {
+			testFiles = append(testFiles, sifter.traceFiles[i])
+		} else {
+			trainFiles = append(trainFiles, sifter.traceFiles[i])
+		}
+	}
+	return trainFiles, testFiles
+}
+
 func main() {
 	var flags Flags
 	flag.StringVar(&flags.mode,   "mode", "", "mode (tracer/filter)")
@@ -1490,6 +1540,8 @@ func main() {
 	flag.StringVar(&flags.outdir, "outdir", "gen", "output file directory")
 	flag.StringVar(&flags.out,    "out", "", "output file base name")
 	flag.IntVar(&flags.unroll,    "unroll", 5, "loop unroll times")
+	flag.IntVar(&flags.iter,      "iter", 10, "training-testing iterations")
+	flag.Float64Var(&flags.split, "split", 4, "train-test split ratio (train set size/test set size)")
 	flag.IntVar(&flags.verbose,   "v", 0, "verbosity")
 	flag.Parse()
 
@@ -1514,27 +1566,12 @@ func main() {
 		sifter.WriteAgentConfigFile()
 	} else if sifter.mode == AnalyzerMode {
 		traceDir := "./trace"
-		traceFiles, err := ioutil.ReadDir(traceDir)
-		if err != nil {
-			failf("failed to open trace directory %v", traceDir)
-		}
+		sifter.ReadTraceDir(traceDir)
 
-		traceFileNum := len(traceFiles)
-		iter := 10
-		ratio := 0.9
-		trainingFileNum := int(float64(traceFileNum) * ratio)
-		testingFileNum := traceFileNum - trainingFileNum
-		set := make([]int, traceFileNum)
-		for i := 0; i < traceFileNum; i++ {
-			set[i] = i
-		}
-		testingFileIdxSets := Subsets(set, testingFileNum)
-
-		testingUpdateSum := 0
-		testingUpdates := make([]int, iter)
-		trainingUpdates := make([]int, iter)
-		for i := 0; i < iter; i ++ {
-			r := rand.Int31n(int32(len(testingFileIdxSets)))
+		testUpdateSum := 0
+		testUpdates := make([]int, sifter.trainTestIter)
+		trainUpdates := make([]int, sifter.trainTestIter)
+		for i := 0; i < sifter.trainTestIter; i ++ {
 			sifter.analyses = nil
 			sifter.trace = nil
 			var vra ValueRangeAnalysis
@@ -1550,37 +1587,22 @@ func main() {
 				analysis.Init(&sifter.moduleSyscalls)
 			}
 
-			testingFiles := make([]os.FileInfo, 0)
-			trainingFiles := make([]os.FileInfo, 0)
-			for j := 0; j < traceFileNum; j++ {
-				isTestingFileIdx := false
-				for k := 0; k < testingFileNum; k++ {
-					if j == testingFileIdxSets[r][k] {
-						isTestingFileIdx = true
-					}
-				}
+			trainFiles, testFiles := sifter.GetTrainTestFiles()
 
-				if isTestingFileIdx {
-					testingFiles = append(testingFiles, traceFiles[j])
-				} else {
-					trainingFiles = append(trainingFiles, traceFiles[j])
-				}
-			}
-
-			for _, file := range trainingFiles {
+			for _, file := range trainFiles {
 				sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
-				trainingUpdates[i] += sifter.DoAnalyses()
+				trainUpdates[i] += sifter.DoAnalyses()
 			}
-			fmt.Printf("#trainging updates: %v\n", trainingUpdates[i])
+			fmt.Printf("#trainging updates: %v\n", trainUpdates[i])
 
-			for _, file := range testingFiles {
+			for _, file := range testFiles {
 				sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
-				testingUpdates[i] += sifter.DoAnalyses()
+				testUpdates[i] += sifter.DoAnalyses()
 			}
-			testingUpdateSum +=	testingUpdates[i]
-			fmt.Printf("#testing updates: %v\n", testingUpdates[i])
+			testUpdateSum +=	testUpdates[i]
+			fmt.Printf("#testing updates: %v\n", testUpdates[i])
 		}
-		fmt.Printf("#Avg testing error: %v\n", testingUpdateSum/iter)
+		fmt.Printf("#Avg testing error: %v\n", testUpdateSum/sifter.trainTestIter)
 
 	}
 }
