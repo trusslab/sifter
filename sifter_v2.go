@@ -945,7 +945,7 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 		for {
 			tr := uint64(binary.LittleEndian.Uint32(te.data[48+offset:48+offset+4]))
 			var matchedRecord *VlrRecord
-			if offset < size {
+			if offset < vlr.offset + size {
 				for j, record := range vlr.records {
 					if tr == record.header {
 						matchedRecord = vlr.records[j]
@@ -1239,6 +1239,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 	msgs := make([]string, 0)
 	var offset uint64
 	for i := 0; i < 6; i++ {
+		if i < 1 {
 		tr := binary.LittleEndian.Uint64(te.data[offset:offset+8])
 		if (a.regRanges[te.syscall][i*2+0] > tr) {
 			a.regRanges[te.syscall][i*2+0] = tr
@@ -1248,12 +1249,13 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 			a.regRanges[te.syscall][i*2+1] = tr
 			msgs = append(msgs, fmt.Sprintf("reg[%v]:u %x", i, tr))
 		}
+		}
 		offset += 8
 	}
 	for _, arg := range te.syscall.argMaps {
 		if structArg, ok := arg.arg.(*prog.StructType); ok {
 			for i, field := range structArg.Fields {
-				if _, isPtrArg := field.(*prog.PtrType); !isPtrArg {
+				if _, isPtrArg := field.(*prog.PtrType); !isPtrArg && field.FieldName() != "ptr" {
 					tr := binary.LittleEndian.Uint64(te.data[offset:offset+field.Size()])
 					if (a.argRanges[arg][2*i+0] > tr) {
 						a.argRanges[arg][2*i+0] = tr
@@ -1267,7 +1269,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 				offset += field.Size()
 			}
 		} else {
-			if _, isPtrArg := arg.arg.(*prog.PtrType); !isPtrArg {
+			if _, isPtrArg := arg.arg.(*prog.PtrType); !isPtrArg && arg.arg.FieldName() != "ptr" {
 				tr := binary.LittleEndian.Uint64(te.data[offset:offset+arg.size])
 				if (a.argRanges[arg][0] > tr) {
 					a.argRanges[arg][0] = tr
@@ -1288,7 +1290,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 		for {
 			tr := uint64(binary.LittleEndian.Uint32(te.data[offset:offset+4]))
 			var matchedRecord *VlrRecord
-			if offset < size {
+			if offset < size+vlr.offset+48 {
 				for i, record := range vlr.records {
 					if tr == record.header {
 						matchedRecord = vlr.records[i]
@@ -1300,7 +1302,10 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 			if matchedRecord != nil {
 				structArg, _ := matchedRecord.arg.(*prog.StructType)
 				for i, field := range structArg.Fields {
-					if _, isPtrArg := field.(*prog.PtrType); !isPtrArg {
+					if i == 0 {
+						continue
+					}
+					if _, isPtrArg := field.(*prog.PtrType); !isPtrArg && field.FieldName() != "ptr" && field.FieldName() != "cookie" && field.FieldName() != "ref" {
 						if (field.Size() == 4) {
 							tr = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+field.Size()]))
 						} else {
@@ -1391,7 +1396,7 @@ func (sifter *Sifter) DoAnalyses() int {
 	return updatedTeNum
 }
 
-func (sifter *Sifter) ReadSyscallTrace(dirPath string) {
+func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
 			fileName := fmt.Sprintf("%v/raw_trace_%v.dat", dirPath, syscall.name)
@@ -1428,6 +1433,7 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) {
 	sort.Slice(sifter.trace, func(i, j int) bool {
 		return sifter.trace[i].ts < sifter.trace[j].ts
 	})
+	return len(sifter.trace)
 }
 
 func (sifter *Sifter) WriteAgentConfigFile() {
@@ -1569,8 +1575,6 @@ func main() {
 		sifter.ReadTraceDir(traceDir)
 
 		testUpdateSum := 0
-		testUpdates := make([]int, sifter.trainTestIter)
-		trainUpdates := make([]int, sifter.trainTestIter)
 		for i := 0; i < sifter.trainTestIter; i ++ {
 			sifter.analyses = nil
 			sifter.trace = nil
@@ -1587,22 +1591,48 @@ func main() {
 				analysis.Init(&sifter.moduleSyscalls)
 			}
 
+			var testSize, trainSize, testUpdates, trainUpdates int
 			trainFiles, testFiles := sifter.GetTrainTestFiles()
+			//for {
+			//	trainFiles, testFiles = sifter.GetTrainTestFiles()
+			//	if testFiles[0].Name() == "googlemap_40m" {
+			//		break
+			//	}
+			//}
 
+			fmt.Printf("Run %v\n", i)
+			fmt.Printf("#training apps:\n")
+			for i, file := range trainFiles {
+				if i != len(trainFiles) - 1 {
+					fmt.Printf("%v, ", file.Name())
+				} else {
+					fmt.Printf("%v\n", file.Name())
+				}
+			}
 			for _, file := range trainFiles {
-				sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
-				trainUpdates[i] += sifter.DoAnalyses()
+				trainSize += sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
+				trainUpdates += sifter.DoAnalyses()
 			}
-			fmt.Printf("#trainging updates: %v\n", trainUpdates[i])
+			fmt.Printf("#training size: %v\n", trainSize)
+			fmt.Printf("#training updates: %v\n", trainUpdates)
 
-			for _, file := range testFiles {
-				sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
-				testUpdates[i] += sifter.DoAnalyses()
+			fmt.Printf("#testing apps:\n")
+			for i, file := range testFiles {
+				if i != len(testFiles) - 1 {
+					fmt.Printf("%v,", file.Name())
+				} else {
+					fmt.Printf("%v\n", file.Name())
+				}
 			}
-			testUpdateSum +=	testUpdates[i]
-			fmt.Printf("#testing updates: %v\n", testUpdates[i])
+			for _, file := range testFiles {
+				testSize += sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
+				testUpdates += sifter.DoAnalyses()
+			}
+			testUpdateSum += testUpdates
+			fmt.Printf("#testing size: %v\n", testSize)
+			fmt.Printf("#testing updates: %v\n", testUpdates)
 		}
-		fmt.Printf("#Avg testing error: %v\n", testUpdateSum/sifter.trainTestIter)
+		fmt.Printf("#Avg testing error: %.3f\n", float64(testUpdateSum)/float64(sifter.trainTestIter))
 
 	}
 }
