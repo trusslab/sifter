@@ -904,10 +904,12 @@ type VlrSequenceNode struct {
 	record  *VlrRecord
 	count   uint64
 	events  []*TraceEvent
+	tag     int
 }
 
 type VlrAnalysis struct {
 	vlrSequenceRoot []*VlrSequenceNode
+	tagCounter      int
 }
 
 func (a VlrAnalysis) String() string {
@@ -977,6 +979,10 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 				node.count = 1
 				updateNum += 1
 				updateMsg += "*"
+				if matchedRecord == nil {
+					a.tagCounter += 1
+					node.tag = a.tagCounter
+				}
 			}
 			if matchedRecord != nil {
 				updateMsg += "->"
@@ -1006,7 +1012,7 @@ func (n *VlrSequenceNode) _Print(depth *int, depthsWithChildren map[int]bool, ha
 		if len(n.next) != 0 {
 			s += "start"
 		} else {
-			s += fmt.Sprintf("[%v]end (%v)", *depth, n.count)
+			s += fmt.Sprintf("[%v]end - seq%v (%v)", *depth, n.tag, n.count)
 		}
 	} else {
 		s += fmt.Sprintf("[%v]%v", *depth, n.record.name)
