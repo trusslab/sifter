@@ -895,7 +895,7 @@ func (sifter *Sifter) WriteSourceFile() {
 type analysis interface {
 	String() string
 	Init(TracedSyscalls *map[string][]*Syscall)
-	ProcessTraceEvent(te *TraceEvent) (string, int)
+	ProcessTraceEvent(te *TraceEvent) (string, int, int)
 	PrintResult()
 }
 
@@ -926,17 +926,18 @@ func (a *VlrAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	}
 }
 
-func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
+func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int, int) {
 	if (te.id & 0x80000000) != 0 {
-		return "", 0
+		return "", 0, 0
 	}
 
 	if te.syscall.vlrMaps == nil {
-		return "", 0
+		return "", 0, 0
 	}
 
 	updateMsg := ""
 	updateNum := 0
+	tag := 0
 	for i, vlr := range te.syscall.vlrMaps {
 		offset := vlr.offset
 		node := a.vlrSequenceRoot[i]
@@ -982,6 +983,7 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 				if matchedRecord == nil {
 					a.tagCounter += 1
 					node.tag = a.tagCounter
+					tag = node.tag
 				}
 			}
 			if matchedRecord != nil {
@@ -993,7 +995,7 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 			}
 		}
 	}
-	return updateMsg, updateNum
+	return updateMsg, updateNum, tag
 }
 
 func (n *VlrSequenceNode) _Print(depth *int, depthsWithChildren map[int]bool, hasNext bool) {
@@ -1085,13 +1087,14 @@ func (a *SequenceAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.prevs = make([]*Node, a.seqLen+1)
 }
 
-func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
+func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int, int) {
 	if (te.id & 0x80000000) != 0 {
-		return "", 0
+		return "", 0, 0
 	}
 
 	updateMsg := ""
 	updateNum := 0
+	tag := 0
 
 	currNode := a.prevs[a.seqLen]
 	var nextNode *Node
@@ -1134,7 +1137,7 @@ func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 
 	a.prevs = a.prevs[1:]
 	a.prevs = append(a.prevs, nextNode)
-	return updateMsg, updateNum
+	return updateMsg, updateNum, tag
 }
 
 func (a *SequenceAnalysis) PrintResult() {
@@ -1237,11 +1240,12 @@ func (a *ValueRangeAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	}
 }
 
-func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
+func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int, int) {
 	if (te.id & 0x80000000) != 0 {
-		return "", 0
+		return "", 0, 0
 	}
 
+	tag := 0
 	msgs := make([]string, 0)
 	var offset uint64
 	for i := 0; i < 6; i++ {
@@ -1342,7 +1346,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 			updatedRangesMsg += ", "
 		}
 	}
-	return updatedRangesMsg, updatedRangesLen
+	return updatedRangesMsg, updatedRangesLen, tag
 }
 
 func (a *ValueRangeAnalysis) PrintResult() {
@@ -1371,7 +1375,7 @@ func (sifter *Sifter) DoAnalyses() int {
 		hasUpdate := false
 		updateMsg := ""
 		for _, analysis := range sifter.analyses {
-			if msg, update := analysis.ProcessTraceEvent(te); update > 0 {
+			if msg, update, _ := analysis.ProcessTraceEvent(te); update > 0 {
 				updateMsg += fmt.Sprintf("  ├ %v: %v\n", analysis, msg)
 				hasUpdate = true
 				updatedTeNum += 1
