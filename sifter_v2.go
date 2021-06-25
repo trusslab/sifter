@@ -144,6 +144,7 @@ type TraceEvent struct {
 	id				uint32
 	syscall			*Syscall
 	data			[]byte
+	tags			[]int
 }
 
 func newTraceEvent(ts uint64, id uint32, syscall *Syscall) *TraceEvent {
@@ -895,7 +896,7 @@ func (sifter *Sifter) WriteSourceFile() {
 type analysis interface {
 	String() string
 	Init(TracedSyscalls *map[string][]*Syscall)
-	ProcessTraceEvent(te *TraceEvent) (string, int, int)
+	ProcessTraceEvent(te *TraceEvent) (string, int)
 	PrintResult()
 }
 
@@ -926,18 +927,20 @@ func (a *VlrAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	}
 }
 
-func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int, int) {
+func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 	if (te.id & 0x80000000) != 0 {
-		return "", 0, 0
+		return "", 0
 	}
 
 	if te.syscall.vlrMaps == nil {
-		return "", 0, 0
+		return "", 0
+	}
+	if len(te.tags) != 0 {
+		fmt.Printf("error\n");
 	}
 
 	updateMsg := ""
 	updateNum := 0
-	tag := 0
 	for i, vlr := range te.syscall.vlrMaps {
 		offset := vlr.offset
 		node := a.vlrSequenceRoot[i]
@@ -983,7 +986,6 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int, int) {
 				if matchedRecord == nil {
 					a.tagCounter += 1
 					node.tag = a.tagCounter
-					tag = node.tag
 				}
 			}
 			if matchedRecord != nil {
@@ -991,11 +993,12 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int, int) {
 				offset += matchedRecord.size
 			} else {
 				node.events = append(node.events, te)
+				te.tags = append(te.tags, node.tag)
 				break
 			}
 		}
 	}
-	return updateMsg, updateNum, tag
+	return updateMsg, updateNum
 }
 
 func (n *VlrSequenceNode) _Print(depth *int, depthsWithChildren map[int]bool, hasNext bool) {
@@ -1051,6 +1054,7 @@ func (a *VlrAnalysis) PrintResult() {
 
 type Node struct {
 	syscall *Syscall
+	tags    []int
 }
 
 type Edge struct {
@@ -1067,6 +1071,19 @@ type SequenceAnalysis struct {
 
 func (a SequenceAnalysis) String() string {
 	return "sequence analysis"
+}
+
+func tagsEqual (t1 []int, t2 []int) bool {
+	if (len(t1) != len(t2)) {
+		return false
+	}
+
+	for i := 0; i < len(t1); i++ {
+		if t1[i] != t2[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (a SequenceAnalysis) edgesEqual(e1 *Edge, e2 *Edge) bool {
@@ -1087,26 +1104,25 @@ func (a *SequenceAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.prevs = make([]*Node, a.seqLen+1)
 }
 
-func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int, int) {
+func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 	if (te.id & 0x80000000) != 0 {
-		return "", 0, 0
+		return "", 0
 	}
 
 	updateMsg := ""
 	updateNum := 0
-	tag := 0
 
 	currNode := a.prevs[a.seqLen]
 	var nextNode *Node
 	for i, node := range a.nodes {
-		if te.syscall == node.syscall {
+		if te.syscall == node.syscall && tagsEqual(te.tags, node.tags) {
 			nextNode = &a.nodes[i]
 		}
 	}
 	if nextNode == nil {
-		a.nodes = append(a.nodes, Node{te.syscall})
+		a.nodes = append(a.nodes, Node{te.syscall, te.tags})
 		nextNode = &a.nodes[len(a.nodes)-1]
-		updateMsg += fmt.Sprintf("add n[%v]", te.syscall.name)
+		updateMsg += fmt.Sprintf("add n[%v %v] ", te.syscall.name, te.tags)
 		updateNum += 1
 	}
 
@@ -1126,9 +1142,9 @@ func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int, int) 
 		}
 		if !edgeExisted {
 			a.seqGraph[currNode] = append(a.seqGraph[currNode], currEdge)
-			updateMsg += fmt.Sprintf("add e:n[%v]->n[%v] prevs(", currNode.syscall.name, nextNode.syscall.name)
+			updateMsg += fmt.Sprintf("add e:n[%v %v]->n[%v %v] prevs(", currNode.syscall.name, currNode.tags, nextNode.syscall.name, nextNode.tags)
 			for _, n := range currEdge.prevs {
-				updateMsg += fmt.Sprintf("%v->", n.syscall.name)
+				updateMsg += fmt.Sprintf("%v %v->", n.syscall.name, n.tags)
 			}
 			updateMsg += fmt.Sprintf(")")
 			updateNum += 1
@@ -1137,16 +1153,16 @@ func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int, int) 
 
 	a.prevs = a.prevs[1:]
 	a.prevs = append(a.prevs, nextNode)
-	return updateMsg, updateNum, tag
+	return updateMsg, updateNum
 }
 
 func (a *SequenceAnalysis) PrintResult() {
 	for node, edges := range a.seqGraph {
-		fmt.Printf("%v\n", node.syscall.name)
+		fmt.Printf("%v %v\n", node.syscall.name, node.tags)
 		for _, edge := range edges {
-			fmt.Printf("  ->%v (", edge.next.syscall.name)
+			fmt.Printf("  ->%v %v (", edge.next.syscall.name, edge.next.tags)
 			for i, prevNode := range edge.prevs {
-				fmt.Printf("%v", prevNode.syscall.name)
+				fmt.Printf("%v %v", prevNode.syscall.name, prevNode.tags)
 				if i != len(edge.prevs)-1 {
 					fmt.Printf(", ")
 				}
@@ -1240,12 +1256,11 @@ func (a *ValueRangeAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	}
 }
 
-func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int, int) {
+func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int) {
 	if (te.id & 0x80000000) != 0 {
-		return "", 0, 0
+		return "", 0
 	}
 
-	tag := 0
 	msgs := make([]string, 0)
 	var offset uint64
 	for i := 0; i < 6; i++ {
@@ -1346,7 +1361,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent) (string, int, int
 			updatedRangesMsg += ", "
 		}
 	}
-	return updatedRangesMsg, updatedRangesLen, tag
+	return updatedRangesMsg, updatedRangesLen
 }
 
 func (a *ValueRangeAnalysis) PrintResult() {
@@ -1371,11 +1386,23 @@ func (sifter *Sifter) DoAnalyses() int {
 
 	lastUpdatedTeIdx := 0
 	updatedTeNum := 0
-	for i, te := range sifter.trace {
+	for i, _ := range sifter.trace {
+		te := sifter.trace[i]
+		allZero := true
+		for _, e := range te.data {
+			if e != 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
+			continue
+		}
+
 		hasUpdate := false
 		updateMsg := ""
 		for _, analysis := range sifter.analyses {
-			if msg, update, _ := analysis.ProcessTraceEvent(te); update > 0 {
+			if msg, update := analysis.ProcessTraceEvent(te); update > 0 {
 				updateMsg += fmt.Sprintf("  ├ %v: %v\n", analysis, msg)
 				hasUpdate = true
 				updatedTeNum += 1
@@ -1587,15 +1614,14 @@ func main() {
 		testUpdateSum := 0
 		for i := 0; i < sifter.trainTestIter; i ++ {
 			sifter.analyses = nil
-			sifter.trace = nil
 			var vra ValueRangeAnalysis
 			var sa SequenceAnalysis
 			var vlra VlrAnalysis
-			sa.seqLen = 4
+			sa.seqLen = 0
 
 			sifter.analyses = append(sifter.analyses, &vra)
-			sifter.analyses = append(sifter.analyses, &sa)
 			sifter.analyses = append(sifter.analyses, &vlra)
+			sifter.analyses = append(sifter.analyses, &sa)
 
 			for _, analysis := range sifter.analyses {
 				analysis.Init(&sifter.moduleSyscalls)
@@ -1620,6 +1646,7 @@ func main() {
 				}
 			}
 			for _, file := range trainFiles {
+				sifter.trace = nil
 				trainSize += sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
 				trainUpdates += sifter.DoAnalyses()
 			}
@@ -1635,6 +1662,7 @@ func main() {
 				}
 			}
 			for _, file := range testFiles {
+				sifter.trace = nil
 				testSize += sifter.ReadSyscallTrace(traceDir+"/"+file.Name())
 				testUpdates += sifter.DoAnalyses()
 			}
