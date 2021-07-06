@@ -47,11 +47,14 @@ func main() {
 			var vra sifter.ValueRangeAnalysis
 			var sa sifter.SequenceAnalysis
 			var vlra sifter.VlrAnalysis
+			var pa sifter.PatternAnalysis
 			sa.SetLen(0)
+			pa.SetGroupingThreshold(10000)
 
 			s.AddAnalysis(&vra)
 			s.AddAnalysis(&vlra)
 			s.AddAnalysis(&sa)
+			s.AddAnalysis(&pa)
 
 			var testSize, trainSize, testUpdates, trainUpdates int
 			trainFiles, testFiles := s.GetTrainTestFiles()
