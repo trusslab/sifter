@@ -28,7 +28,7 @@ func (a SequenceAnalysis) String() string {
 	return "sequence analysis"
 }
 
-func (a SequenceAnalysis) SetLen(l int) {
+func (a *SequenceAnalysis) SetLen(l int) {
 	a.seqLen = l
 }
 
