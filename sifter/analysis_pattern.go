@@ -4,6 +4,13 @@ import (
 	"fmt"
 )
 
+type Grouping int
+
+const (
+	TimeGrouping Grouping = iota
+	SyscallGrouping
+)
+
 type TaggedSyscall struct {
 	syscall *Syscall
 	tags	[]int
@@ -18,11 +25,14 @@ type TaggedSyscallNode struct {
 }
 
 type PatternAnalysis struct {
+	groupingMode      Grouping
 	groupingThreshold uint64
 	lastNodeOfPid     map[uint32]*TaggedSyscallNode
 	lastEventOfPid    map[uint32]*TraceEvent
+	eventCounterOfPid map[uint32]uint64
 	patternTreeRoot   *TaggedSyscallNode
 	tagCounter        int
+	moduleSyscalls    map[*Syscall]bool
 }
 
 func (a *PatternAnalysis) String() string {
@@ -32,11 +42,20 @@ func (a *PatternAnalysis) String() string {
 func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.lastNodeOfPid = make(map[uint32]*TaggedSyscallNode)
 	a.lastEventOfPid = make(map[uint32]*TraceEvent)
+	a.eventCounterOfPid = make(map[uint32]uint64)
 	a.patternTreeRoot = new(TaggedSyscallNode)
 	a.patternTreeRoot.syscall = new(TaggedSyscall)
+	a.moduleSyscalls = make(map[*Syscall]bool)
+
+	for _, syscalls := range *TracedSyscalls {
+		for _, syscall := range syscalls {
+			a.moduleSyscalls[syscall] = true
+		}
+	}
 }
 
-func (a *PatternAnalysis) SetGroupingThreshold (th uint64) {
+func (a *PatternAnalysis) SetGroupingThreshold (g Grouping, th uint64) {
+	a.groupingMode = g
 	a.groupingThreshold = th
 }
 
@@ -86,11 +105,24 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 				}
 			}
 			a.lastEventOfPid[pid] = te
+			a.eventCounterOfPid[pid] = 0
 		}
-	} else {
+	} else if _, ok := a.moduleSyscalls[te.syscall]; ok {
 
 		if event, ok := a.lastEventOfPid[te.id]; ok {
-			if te.ts - event.ts > a.groupingThreshold {
+			breakDownSeq := false
+			switch a.groupingMode {
+			case TimeGrouping:
+				if te.ts - event.ts > a.groupingThreshold {
+					breakDownSeq = true
+				}
+			case SyscallGrouping:
+				if a.eventCounterOfPid[te.id] > a.groupingThreshold {
+					breakDownSeq = true
+				}
+			}
+
+			if breakDownSeq {
 				if a.lastNodeOfPid[te.id] != a.patternTreeRoot {
 					hasNilNext := false
 					for i, _ := range a.lastNodeOfPid[te.id].next {
@@ -145,6 +177,9 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 			msgs = append(msgs, "new next")
 		}
 		a.lastEventOfPid[te.id] = te
+		a.eventCounterOfPid[te.id] = 0
+	} else {
+		a.eventCounterOfPid[te.id] += 1
 	}
 
 	updatedRangesLen := len(msgs)

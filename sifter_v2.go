@@ -49,7 +49,7 @@ func main() {
 			var vlra sifter.VlrAnalysis
 			var pa sifter.PatternAnalysis
 			sa.SetLen(0)
-			pa.SetGroupingThreshold(10000)
+			pa.SetGroupingThreshold(sifter.TimeGrouping, 10000)
 
 			s.AddAnalysis(&vra)
 			s.AddAnalysis(&vlra)
