@@ -875,7 +875,7 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 			}
 
 			if sifter.verbose >= AllTraceV || updateMsg != "" {
-				fmt.Printf("[%v] %x %d", toSecString(te.ts), te.id, updatedTeNum)
+				fmt.Printf("[%v] %x %d %v %v", toSecString(te.ts), te.id, updatedTeNum, te.syscall.name, te.tags)
 				if i == len(sifter.trace)-1 {
 					fmt.Printf(" end")
 				}
