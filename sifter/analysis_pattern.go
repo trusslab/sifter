@@ -101,7 +101,7 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 					n.next = append(n.next, newEndNode)
 					a.tagCounter += 1
 					a.lastNodeOfPid[pid] = a.patternTreeRoot
-					msgs = append(msgs, "new seq")
+					msgs = append(msgs, fmt.Sprintf("new seq%d", newEndNode.tag))
 				}
 			}
 			a.lastEventOfPid[pid] = te
@@ -142,7 +142,7 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 						newEndNode.tag = a.tagCounter
 						a.tagCounter += 1
 						a.lastNodeOfPid[te.id].next = append(a.lastNodeOfPid[te.id].next, newEndNode)
-						msgs = append(msgs, "new seq")
+						msgs = append(msgs, fmt.Sprintf("new seq%d", newEndNode.tag))
 					}
 					a.lastNodeOfPid[te.id] = a.patternTreeRoot
 				}
@@ -174,7 +174,6 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 			a.tagCounter += 1
 			a.lastNodeOfPid[te.id].next = append(a.lastNodeOfPid[te.id].next, newNextNode)
 			a.lastNodeOfPid[te.id] = newNextNode
-			msgs = append(msgs, "new next")
 		}
 		a.lastEventOfPid[te.id] = te
 		a.eventCounterOfPid[te.id] = 0
@@ -212,7 +211,7 @@ func (n *TaggedSyscallNode) Print(depth *int, depthsWithChildren map[int]bool, h
 			if n.flag == TrainFlag {
 				s += fmt.Sprintf("[%v]end - seq%v (%v/%v)", *depth, n.tag, n.counts[TrainFlag], n.counts[TestFlag])
 			} else if n.flag == TestFlag {
-				s += fmt.Sprintf("[%v]end - seq* (%v/%v)", *depth, n.counts[TrainFlag], n.counts[TestFlag])
+				s += fmt.Sprintf("[%v]end - seq%v* (%v/%v)", *depth, n.tag, n.counts[TrainFlag], n.counts[TestFlag])
 			}
 		}
 	} else {

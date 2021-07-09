@@ -20,6 +20,8 @@ const (
 	InfoV Verbose = iota
 	ResultV
 	UpdateV
+	DebugV
+	AllTraceV
 )
 
 type ArgMap struct {

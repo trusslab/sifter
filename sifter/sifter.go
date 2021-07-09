@@ -837,6 +837,10 @@ isNotVLR:
 	return false, 0, nil
 }
 
+func toSecString(ns uint64) string {
+	return fmt.Sprintf("%v.%09d", ns/1000000000, ns%1000000000)
+}
+
 func (sifter *Sifter) DoAnalyses(flag Flag) int {
 
 	lastUpdatedTeIdx := 0
@@ -854,27 +858,31 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 			continue
 		}
 
-		hasUpdate := false
 		updateMsg := ""
 		for _, analysis := range sifter.analyses {
 			if msg, update := analysis.ProcessTraceEvent(te, flag); update > 0 {
 				updateMsg += fmt.Sprintf("  ├ %v: %v\n", analysis, msg)
-				hasUpdate = true
+				updateMsg += fmt.Sprintf("  ├ % x\n", te.data)
 				updatedTeNum += 1
 			}
 		}
+
 		if sifter.verbose >= UpdateV {
-			if hasUpdate && sifter.verbose >= UpdateV {
+			if sifter.verbose < AllTraceV && updateMsg != "" {
 				timeElapsed := te.ts - sifter.trace[lastUpdatedTeIdx].ts
-				fmt.Printf("  | %v events / %v.%09d sec elapsed\n", i-lastUpdatedTeIdx, timeElapsed/1000000000, timeElapsed%1000000000)
-				fmt.Printf("[%v.%09d] %x %d\n", te.ts/1000000000, te.ts%1000000000, te.id, updatedTeNum)
-				fmt.Printf("%v", updateMsg)
-				fmt.Printf("  ├ % x\n", te.data)
+				fmt.Printf("  | %v events / %v sec elapsed\n", i-lastUpdatedTeIdx, toSecString(timeElapsed))
 				lastUpdatedTeIdx = i
 			}
-			if i == len(sifter.trace)-1 {
-				fmt.Printf("[%v.%09d] %x end\n", te.ts/1000000000, te.ts%1000000000, te.id)
+
+			if sifter.verbose >= AllTraceV || updateMsg != "" {
+				fmt.Printf("[%v] %x %d", toSecString(te.ts), te.id, updatedTeNum)
+				if i == len(sifter.trace)-1 {
+					fmt.Printf(" end")
+				}
+				fmt.Printf("\n")
 			}
+
+			fmt.Printf("%v", updateMsg)
 		}
 	}
 
