@@ -113,6 +113,8 @@ func newTraceEvent(ts uint64, id uint32, syscall *Syscall) *TraceEvent {
 	traceEvent.syscall = syscall
 	if (id & 0x80000000 != 0) {
 		traceEvent.data = make([]byte, (id & 0x0000ffff))
+	} else if syscall == nil {
+		traceEvent.data = make([]byte, 48)
 	} else {
 		traceEvent.data = make([]byte, 48 + syscall.size)
 	}

@@ -49,6 +49,7 @@ type Sifter struct {
 	structs        []*prog.StructType
 	syscalls       []*prog.Syscall
 	moduleSyscalls map[string][]*Syscall
+	otherSyscalls   map[uint64]*Syscall
 
 	stackVarId int
 	sections   map[string]*bytes.Buffer
@@ -102,6 +103,7 @@ func NewSifter(f Flags) (*Sifter, error) {
 	s.sections = make(map[string]*bytes.Buffer)
 	s.syscalls = make([]*prog.Syscall, 512)
 	s.moduleSyscalls = make(map[string][]*Syscall)
+	s.otherSyscalls = make(map[uint64]*Syscall)
 	s.trace = make([]*TraceEvent, 0)
 	s.stackVarId = 0
 	s.depthLimit = math.MaxInt32
@@ -158,25 +160,11 @@ func NewSifter(f Flags) (*Sifter, error) {
 				}
 			}
 		}
-		// Scan for syscalls using the driver
+		// Scan for syscalls using the kernel module
+		toModule := false
 		for _, arg := range syscall.Args {
 			if arg.Name() == s.fdName {
-				callName := syscall.CallName
-				if callName == "ioctl" {
-					fmt.Printf("trace syscall %v\n", syscall.Name)
-					tracedSyscall := new(Syscall)
-					tracedSyscall.name = fixName(syscall.Name)
-					tracedSyscall.def = syscall
-					tracedSyscall.argMaps = []*ArgMap{}
-					s.moduleSyscalls[callName] = append(s.moduleSyscalls[callName], tracedSyscall)
-				} else {
-					fmt.Printf("trace syscall %v\n", callName)
-					tracedSyscall := new(Syscall)
-					tracedSyscall.name = fixName(syscall.Name)
-					tracedSyscall.def = s.target.SyscallMap[callName]
-					tracedSyscall.argMaps = []*ArgMap{}
-					s.moduleSyscalls[callName] = append(s.moduleSyscalls[callName], tracedSyscall)
-				}
+				toModule = true
 			}
 //			if vma, ok := arg.(*prog.VmaType); ok {
 //					fmt.Printf("vma %v %v\n", syscall.Name, vma.FldName)
@@ -188,6 +176,30 @@ func NewSifter(f Flags) (*Sifter, error) {
 //					s.moduleSyscalls[callName] = append(s.moduleSyscalls[callName], s.target.SyscallMap[callName])
 //				}
 //			}
+		}
+
+		if toModule {
+			callName := syscall.CallName
+			if callName == "ioctl" {
+				fmt.Printf("trace syscall %v\n", syscall.Name)
+				tracedSyscall := new(Syscall)
+				tracedSyscall.name = fixName(syscall.Name)
+				tracedSyscall.def = syscall
+				tracedSyscall.argMaps = []*ArgMap{}
+				s.moduleSyscalls[callName] = append(s.moduleSyscalls[callName], tracedSyscall)
+			} else {
+				fmt.Printf("trace syscall %v\n", callName)
+				tracedSyscall := new(Syscall)
+				tracedSyscall.name = fixName(syscall.Name)
+				tracedSyscall.def = s.target.SyscallMap[callName]
+				tracedSyscall.argMaps = []*ArgMap{}
+				s.moduleSyscalls[callName] = append(s.moduleSyscalls[callName], tracedSyscall)
+			}
+		} else if _, ok := s.otherSyscalls[syscall.NR]; !ok {
+			otherSyscall := new(Syscall)
+			otherSyscall.name = fixName(syscall.Name)
+			otherSyscall.def = syscall
+			s.otherSyscalls[syscall.NR] = otherSyscall
 		}
 	}
 
@@ -930,9 +942,62 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
 			}
 		}
 	}
+
+	fileName := fmt.Sprintf("%v/raw_trace_other_syscalls.dat", dirPath)
+	file, err := os.Open(fileName)
+	if err != nil {
+		failf("failed to open trace file: %v", fileName)
+	}
+
+	traceReader := bufio.NewReader(file)
+	for {
+		var ts uint64
+		var id uint32
+		var nr uint32
+		var err error
+		var traceEvent *TraceEvent
+		if err = binary.Read(traceReader, binary.LittleEndian, &ts); err != nil {
+			if err.Error() == "EOF" {
+				goto end
+			} else {
+				goto endUnexpectedly
+			}
+		}
+
+		if err = binary.Read(traceReader, binary.LittleEndian, &id); err != nil {
+			goto endUnexpectedly
+		}
+
+		traceEvent = newTraceEvent(ts, id, nil)
+		if id & 0x80000000 == 0 {
+			if _, err = io.ReadFull(traceReader, traceEvent.data); err != nil {
+				goto endUnexpectedly
+			}
+			if err = binary.Read(traceReader, binary.LittleEndian, &nr); err != nil {
+				goto endUnexpectedly
+			}
+			fmt.Printf("os %v\n", nr)
+			traceEvent.syscall = sifter.otherSyscalls[uint64(nr)]
+		} else {
+			if _, err = io.ReadFull(traceReader, traceEvent.data); err != nil {
+				goto endUnexpectedly
+			}
+			fmt.Printf("id %x\n", id)
+		}
+
+		sifter.trace = append(sifter.trace, traceEvent)
+		continue
+
+endUnexpectedly:
+		fmt.Printf("trace, other_syscalls, ended unexpectedly: %v\n", err)
+end:
+		break
+	}
+
 	sort.Slice(sifter.trace, func(i, j int) bool {
 		return sifter.trace[i].ts < sifter.trace[j].ts
 	})
+
 	return len(sifter.trace)
 }
 

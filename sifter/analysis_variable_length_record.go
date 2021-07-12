@@ -17,6 +17,7 @@ type VlrSequenceNode struct {
 type VlrAnalysis struct {
 	vlrSequenceRoot []*VlrSequenceNode
 	tagCounter      int
+	moduleSyscalls  map[*Syscall]bool
 }
 
 func (a VlrAnalysis) String() string {
@@ -31,6 +32,13 @@ func (a *VlrAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 			}
 		}
 	}
+
+	a.moduleSyscalls = make(map[*Syscall]bool)
+	for _, syscalls := range *TracedSyscalls {
+		for _, syscall := range syscalls {
+			a.moduleSyscalls[syscall] = true
+		}
+	}
 }
 
 func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
@@ -38,9 +46,14 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 		return "", 0
 	}
 
+	if _, ok := a.moduleSyscalls[te.syscall]; !ok {
+		return "", 0
+	}
+
 	if te.syscall.vlrMaps == nil {
 		return "", 0
 	}
+
 	if len(te.tags) != 0 {
 		fmt.Printf("error\n");
 	}
