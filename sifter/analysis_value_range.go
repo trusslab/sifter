@@ -102,7 +102,12 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (strin
 		if structArg, ok := arg.arg.(*prog.StructType); ok {
 			for i, field := range structArg.Fields {
 				if _, isPtrArg := field.(*prog.PtrType); !isPtrArg && field.FieldName() != "ptr" {
-					tr := binary.LittleEndian.Uint64(te.data[offset:offset+field.Size()])
+					var tr uint64
+					if (field.Size() == 4) {
+						tr = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+field.Size()]))
+					} else {
+						tr = binary.LittleEndian.Uint64(te.data[offset:offset+field.Size()])
+					}
 					if (a.argRanges[arg][2*i+0] > tr) {
 						if flag == TrainFlag {
 							a.argRanges[arg][2*i+0] = tr
@@ -120,7 +125,12 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (strin
 			}
 		} else {
 			if _, isPtrArg := arg.arg.(*prog.PtrType); !isPtrArg && arg.arg.FieldName() != "ptr" {
-				tr := binary.LittleEndian.Uint64(te.data[offset:offset+arg.size])
+				var tr uint64
+				if (arg.arg.Size() == 4) {
+					tr = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+arg.size]))
+				} else {
+					tr = binary.LittleEndian.Uint64(te.data[offset:offset+arg.size])
+				}
 				if (a.argRanges[arg][0] > tr) {
 					if flag == TrainFlag {
 						a.argRanges[arg][0] = tr
