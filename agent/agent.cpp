@@ -427,7 +427,7 @@ private:
 
         write_user_event(ofs, EVENT_USER_TRACE_START);
 
-        while (m_args_update_start) {
+        while (1) {
             android::bpf::findMapEntry(sc->ctr_fd, &zero_idx, &curr_ctr);
 
             int start, end;
@@ -439,7 +439,7 @@ private:
                 start = CTR_IDX(curr_ctr - CTR_SIZE/8);
                 end = CTR_IDX(curr_ctr);
                 last_ctr = curr_ctr;
-            } else if (ctr_diff > CTR_SIZE/8) {
+            } else if (ctr_diff > CTR_SIZE/8 || !m_args_update_start) {
                 if (m_verbose > 2)
                     std::cout << "saving events: " << last_ctr << " " << curr_ctr << "\n";
 
@@ -464,6 +464,9 @@ private:
                     }
                 }
             } while (i++ != end);
+
+            if (!m_args_update_start)
+                break;
         }
 
         ofs.close();
