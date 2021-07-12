@@ -887,9 +887,19 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 			}
 
 			if sifter.verbose >= AllTraceV || updateMsg != "" {
-				fmt.Printf("[%v] %x %d %v %v", toSecString(te.ts), te.id, updatedTeNum, te.syscall.name, te.tags)
+				fmt.Printf("[%v] %x %d", toSecString(te.ts), te.id, updatedTeNum)
+				if te.id & 0x80000000 != 0 {
+					switch te.id & 0x0fff0000 {
+					case 1:
+						fmt.Printf(" start")
+					case 2:
+						fmt.Printf(" lost %v events", binary.LittleEndian.Uint32(te.data))
+					}
+				} else {
+					fmt.Printf(" %v %v", te.syscall.name, te.tags)
+				}
 				if i == len(sifter.trace)-1 {
-					fmt.Printf(" end")
+					fmt.Printf(" end of trace")
 				}
 				fmt.Printf("\n")
 			}
@@ -976,13 +986,19 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
 			if err = binary.Read(traceReader, binary.LittleEndian, &nr); err != nil {
 				goto endUnexpectedly
 			}
-			fmt.Printf("os %v\n", nr)
-			traceEvent.syscall = sifter.otherSyscalls[uint64(nr)]
+
+			if _, ok := sifter.otherSyscalls[uint64(nr)]; ok {
+				traceEvent.syscall = sifter.otherSyscalls[uint64(nr)]
+			} else {
+				newSyscall := new(Syscall)
+				newSyscall.name = fmt.Sprintf("syscall_%v", nr)
+				traceEvent.syscall = newSyscall
+				sifter.otherSyscalls[uint64(nr)] = newSyscall
+			}
 		} else {
 			if _, err = io.ReadFull(traceReader, traceEvent.data); err != nil {
 				goto endUnexpectedly
 			}
-			fmt.Printf("id %x\n", id)
 		}
 
 		sifter.trace = append(sifter.trace, traceEvent)
