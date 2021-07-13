@@ -402,6 +402,38 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 	}
 }
 
+func (sifter *Sifter) GenerateOtherSyscallsTracer() {
+	s := sifter.GetSection("level2_tracing")
+	fmt.Fprintf(s, "%v __always_inline trace_other_syscalls(%v *ctx, int pid) {\n", sifter.ctx.defaultRetType, sifter.ctx.name)
+	fmt.Fprintf(s, "    int i = 0;\n")
+	fmt.Fprintf(s, "    uint32_t *ctr = bpf_other_syscalls_ctr_lookup_elem(&i);\n")
+	fmt.Fprintf(s, "    if (!ctr)\n")
+	fmt.Fprintf(s, "    	return 1;\n")
+	fmt.Fprintf(s, "    int idx = *ctr & 0x000003ff;\n")
+	fmt.Fprintf(s, "\n")
+	fmt.Fprintf(s, "    syscall_ent_t *ent = bpf_other_syscalls_ent_lookup_elem(&idx);\n")
+	fmt.Fprintf(s, "    if (ent) {\n")
+	fmt.Fprintf(s, "    	ent->ts = bpf_ktime_get_ns();\n")
+	fmt.Fprintf(s, "    	ent->id = pid;\n")
+	fmt.Fprintf(s, "    	ent->args[0] = ctx->regs[0];\n")
+	fmt.Fprintf(s, "    	ent->args[1] = ctx->regs[1];\n")
+	fmt.Fprintf(s, "    	ent->args[2] = ctx->regs[2];\n")
+	fmt.Fprintf(s, "    	ent->args[3] = ctx->regs[3];\n")
+	fmt.Fprintf(s, "    	ent->args[4] = ctx->regs[4];\n")
+	fmt.Fprintf(s, "    	ent->args[5] = ctx->regs[5];\n")
+	fmt.Fprintf(s, "    }\n")
+	fmt.Fprintf(s, "\n")
+	fmt.Fprintf(s, "    int *nr = bpf_other_syscalls_nr_lookup_elem(&idx);\n")
+	fmt.Fprintf(s, "    if (!nr)\n")
+	fmt.Fprintf(s, "    	return 1;\n")
+	fmt.Fprintf(s, "    *nr = ctx->id;\n")
+	fmt.Fprintf(s, "\n")
+	fmt.Fprintf(s, "    %v ret = %v;\n", sifter.ctx.defaultRetType, sifter.ctx.defaultRetVal)
+	fmt.Fprintf(s, "    *ctr = *ctr + 1;\n")
+	fmt.Fprintf(s, "    return ret;\n")
+	fmt.Fprintf(s, "}\n\n")
+}
+
 func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 	s := sifter.GetSection("level2_tracing")
 	fmt.Fprintf(s, "%v __always_inline trace_%v(%v *ctx, int pid) {\n", sifter.ctx.defaultRetType, syscall.name, sifter.ctx.name)
@@ -513,6 +545,7 @@ func (sifter *Sifter) GenerateProgSection() {
 			sifter.GenerateSyscallTracer(syscall)
 		}
 	}
+	sifter.GenerateOtherSyscallsTracer()
 
 	if sifter.mode == TracerMode {
 		s := sifter.GetSection("main")
@@ -540,6 +573,8 @@ func (sifter *Sifter) GenerateProgSection() {
 			}
 		}
 		fmt.Fprintf(s, "        }\n")
+		fmt.Fprintf(s, "    } else {\n")
+		fmt.Fprintf(s, "        trace_other_syscalls(ctx, pid);\n")
 		fmt.Fprintf(s, "    }\n")
 		fmt.Fprintf(s, "    return;\n")
 		fmt.Fprintf(s, "}\n")
@@ -599,6 +634,9 @@ func (sifter *Sifter) GenerateMapSection() {
 				}
 			}
 		}
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_ctr, ARRAY, int, uint32_t, 1)\n")
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_ent, ARRAY, int, syscall_ent_t, 16384)\n")
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_nr, ARRAY, int, int, 1024)\n")
 	}
 	fmt.Fprintf(s, "\n")
 }
@@ -1029,7 +1067,7 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
-			fmt.Fprintf(s, "s %v %v", len(syscall.argMaps)+1, syscall.name)
+			fmt.Fprintf(s, "s 10 %v %v", len(syscall.argMaps)+1, syscall.name)
 			fmt.Fprintf(s, " 60 %v_ent", syscall.name)
 			for _, arg := range syscall.argMaps {
 				fmt.Fprintf(s, " %v %v", arg.size, arg.name)
@@ -1037,6 +1075,7 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 			fmt.Fprintf(s, "\n")
 		}
 	}
+	fmt.Fprintf(s, "s 14 2 other_syscalls 60 other_syscalls_ent 4 other_syscalls_nr\n")
 
 	fmt.Fprintf(s, "p 2 raw_syscalls sys_enter\n")
 	fmt.Fprintf(s, "p 2 raw_syscalls sys_exit\n")
