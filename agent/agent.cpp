@@ -174,19 +174,25 @@ struct sifter_arg {
 };
 
 struct sifter_syscall {
+    int  ctr_size;
+    uint32_t ctr_idx_mask;
+    uint32_t ctr_ctr_mask;
     bool inited;
     std::string program_name;
     std::string syscall_name;
     unique_fd ctr_fd;
     std::vector<sifter_arg *> args;
 
-    sifter_syscall(std::string prog_nm, std::string sc_nm):
+    sifter_syscall(std::string prog_nm, std::string sc_nm, int ctr_bits):
         inited(false), program_name(prog_nm), syscall_name(sc_nm) {
         std::string path = "/sys/fs/bpf/map_" + prog_nm + "_" + sc_nm + "_ctr";
         int fd = bpf_obj_get(path.c_str());
         if (fd == -1)
             return;
 
+        ctr_size = 1 << ctr_bits;
+        ctr_idx_mask = ctr_size - 1;
+        ctr_ctr_mask = ~ctr_idx_mask;
         inited = true;
         ctr_fd = unique_fd(fd);
     };
@@ -204,6 +210,14 @@ struct sifter_syscall {
         sifter_arg *arg = new sifter_arg(size, arg_nm, fd);
         args.push_back(arg);
         return true;
+    }
+
+    inline uint32_t ctr_idx(int ctr) {
+        return ctr & ctr_idx_mask;
+    }
+
+    inline uint32_t ctr_ctr(int ctr) {
+        return ctr & ctr_ctr_mask;
     }
 };
 
@@ -432,19 +446,19 @@ private:
 
             int start, end;
             uint32_t ctr_diff = curr_ctr - last_ctr;
-            if (ctr_diff > CTR_SIZE) {
+            if (ctr_diff > sc->ctr_size) {
                 std::cout << "lost events: " << last_ctr << " " << curr_ctr << "\n";
                 write_user_event(ofs, EVENT_USER_TRACE_LOST, &ctr_diff);
 
-                start = CTR_IDX(curr_ctr - CTR_SIZE/8);
-                end = CTR_IDX(curr_ctr);
+                start = sc->ctr_idx(curr_ctr - sc->ctr_size/8);
+                end = sc->ctr_idx(curr_ctr);
                 last_ctr = curr_ctr;
-            } else if (ctr_diff > CTR_SIZE/8 || !m_args_update_start) {
+            } else if (ctr_diff > sc->ctr_size/8 || !m_args_update_start) {
                 if (m_verbose > 2)
                     std::cout << "saving events: " << last_ctr << " " << curr_ctr << "\n";
 
-                start = CTR_IDX(last_ctr);
-                end = CTR_IDX(curr_ctr);
+                start = sc->ctr_idx(last_ctr);
+                end = sc->ctr_idx(curr_ctr);
                 last_ctr = curr_ctr;
             } else {
                 continue;
@@ -856,10 +870,11 @@ public:
                     break;
                 }
                 case 's': {
-                    int size;
+                    int arg_num;
+                    int ctr_bits;
                     std::string name;
-                    ifs >> size >> name;
-                    sifter_syscall *syscall = new sifter_syscall(m_name, name);
+                    ifs >> ctr_bits >> arg_num >> name;
+                    sifter_syscall *syscall = new sifter_syscall(m_name, name, ctr_bits);
                     if (!syscall->is_inited()) {
                         std::cerr << "Failed to add syscall (name:" << name << ")\n";
                         return;
@@ -869,7 +884,7 @@ public:
 
                     int arg_size;
                     std::string arg_name;
-                    for (int i = 0; i < size; i++) {
+                    for (int i = 0; i < arg_num; i++) {
                         ifs >> arg_size >> arg_name;
                         if (!syscall->add_arg(arg_size, arg_name)) {
                             std::cerr << "Failed to add argument (name:" << arg_name << ")\n";
