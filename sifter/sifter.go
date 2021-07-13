@@ -948,7 +948,7 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 
 	if sifter.verbose >= ResultV {
 		for _, analysis := range sifter.analyses {
-			fmt.Printf("----------------------------------------------------------------\n")
+			fmt.Printf("================================================================================\n")
 			fmt.Printf("%v result:\n", analysis)
 			analysis.PrintResult()
 		}

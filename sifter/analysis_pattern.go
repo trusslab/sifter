@@ -16,6 +16,13 @@ type TaggedSyscall struct {
 	tags	[]int
 }
 
+func NewTaggedSyscall(s *Syscall, t []int) *TaggedSyscall {
+	newTaggedSyscall := new(TaggedSyscall)
+	newTaggedSyscall.syscall = s
+	newTaggedSyscall.tags = append([]int(nil), t...)
+	return newTaggedSyscall
+}
+
 type TaggedSyscallNode struct {
 	next    []*TaggedSyscallNode
 	syscall *TaggedSyscall
@@ -31,6 +38,7 @@ type PatternAnalysis struct {
 	lastEventOfPid    map[uint32]*TraceEvent
 	eventCounterOfPid map[uint32]uint64
 	patternTreeRoot   *TaggedSyscallNode
+	purgedTreeRoot    *TaggedSyscallNode
 	tagCounter        int
 	moduleSyscalls    map[*Syscall]bool
 }
@@ -45,6 +53,8 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.eventCounterOfPid = make(map[uint32]uint64)
 	a.patternTreeRoot = new(TaggedSyscallNode)
 	a.patternTreeRoot.syscall = new(TaggedSyscall)
+	a.purgedTreeRoot = new(TaggedSyscallNode)
+	a.purgedTreeRoot.syscall = new(TaggedSyscall)
 	a.moduleSyscalls = make(map[*Syscall]bool)
 
 	for _, syscalls := range *TracedSyscalls {
@@ -59,17 +69,17 @@ func (a *PatternAnalysis) SetGroupingThreshold (g Grouping, th uint64) {
 	a.groupingThreshold = th
 }
 
-func taggedSyscallEqual(te *TraceEvent, ts *TaggedSyscall) bool {
-	if te.syscall != ts.syscall {
+func (a *TaggedSyscall) Equal(b *TaggedSyscall) bool {
+	if a.syscall != b.syscall {
 		return false
 	}
 
-	if len(te.tags) != len(ts.tags) {
+	if len(a.tags) != len(b.tags) {
 		return false
 	}
 
-	for i, _ := range te.tags {
-		if te.tags[i] != ts.tags[i] {
+	for i, _ := range a.tags {
+		if a.tags[i] != b.tags[i] {
 			return false
 		}
 	}
@@ -153,7 +163,7 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 
 		nextExist := false
 		for _, next := range a.lastNodeOfPid[te.id].next {
-			if taggedSyscallEqual(te, next.syscall) {
+			if next.syscall.Equal(NewTaggedSyscall(te.syscall, te.tags)) {
 				next.counts[flag] += 1
 				a.lastNodeOfPid[te.id] = next
 				nextExist = true
@@ -162,11 +172,7 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 
 		if !nextExist {
 			newNextNode := new(TaggedSyscallNode)
-			newNextNode.syscall = new(TaggedSyscall)
-			newNextNode.syscall.syscall = te.syscall
-			for _, t := range te.tags {
-				newNextNode.syscall.tags = append(newNextNode.syscall.tags, t)
-			}
+			newNextNode.syscall = NewTaggedSyscall(te.syscall, te.tags)
 			newNextNode.flag = flag
 			newNextNode.counts = make(map[Flag]uint64)
 			newNextNode.counts[flag] += 1
@@ -192,7 +198,66 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 	return updatedRangesMsg, updatedRangesLen
 }
 
-func (n *TaggedSyscallNode) Print(depth *int, depthsWithChildren map[int]bool, hasNext bool) {
+func (a *PatternAnalysis) MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallNode) {
+	for _, srcNext := range src.next {
+		isInDst := false
+		var dstNext *TaggedSyscallNode
+		for _, dstNext = range dst.next {
+			if dstNext.syscall.Equal(srcNext.syscall) {
+				isInDst = true
+				break
+			}
+		}
+		if isInDst {
+			a.MergeTrees(dstNext, srcNext)
+		} else {
+			dst.next = append(dst.next, srcNext)
+		}
+	}
+}
+
+func (a *PatternAnalysis) PurgeTree(n *TaggedSyscallNode) {
+	removed := 0
+	for i, next := range n.next {
+		toBreak := false
+		for _, pn := range a.purgedTreeRoot.next {
+			if next.syscall.Equal(pn.syscall) {
+				toBreak = true
+				break
+			}
+		}
+		if toBreak {
+			a.MergeTrees(a.patternTreeRoot, next)
+			n.next = append(n.next[:i-removed], n.next[i-removed+1:]...)
+			removed += 1
+		} else {
+			a.PurgeTree(next)
+		}
+	}
+}
+
+func (a *PatternAnalysis) CheckNewIndependentNode() bool {
+	hasIndependentNode := false
+	for _, n := range a.patternTreeRoot.next {
+		for _, nn := range n.next {
+			if nn.syscall.syscall == nil {
+				notInPurgedList := true
+				for _, pn := range a.purgedTreeRoot.next {
+					if n.syscall.Equal(pn.syscall) {
+						notInPurgedList = false
+					}
+				}
+				if notInPurgedList {
+					a.purgedTreeRoot.next = append(a.purgedTreeRoot.next, n)
+					hasIndependentNode = true
+				}
+			}
+		}
+	}
+	return hasIndependentNode
+}
+
+func (n *TaggedSyscallNode) print(depth *int, depthsWithChildren map[int]bool, hasNext bool) {
 	*depth = *depth + 1
 
 	s := ""
@@ -229,16 +294,33 @@ func (n *TaggedSyscallNode) Print(depth *int, depthsWithChildren map[int]bool, h
 	fmt.Printf("%v%v\n", indent, s)
 
 	for i, next := range n.next {
-		next.Print(depth, depthsWithChildren, i != len(n.next)-1)
+		next.print(depth, depthsWithChildren, i != len(n.next)-1)
 	}
 
 	*depth = *depth - 1
 }
 
-func (a *PatternAnalysis) PrintResult() {
+func (n *TaggedSyscallNode) Print() {
 	depth := 0
 	depthsWithOtherChildren := make(map[int]bool)
-	a.patternTreeRoot.Print(&depth, depthsWithOtherChildren, false)
+	n.print(&depth, depthsWithOtherChildren, false)
+}
+
+func (a *PatternAnalysis) PrintResult() {
+	fmt.Print("pattern tree before purging\n")
+	a.patternTreeRoot.Print()
+	for {
+		if !a.CheckNewIndependentNode() {
+			break
+		}
+		a.PurgeTree(a.patternTreeRoot)
+	}
+	fmt.Print("--------------------------------------------------------------------------------\n")
+	fmt.Print("purge tree\n")
+	a.purgedTreeRoot.Print()
+	fmt.Print("--------------------------------------------------------------------------------\n")
+	fmt.Print("pattern tree after purging\n")
+	a.patternTreeRoot.Print()
 }
 
 
