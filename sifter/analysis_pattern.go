@@ -31,6 +31,16 @@ type TaggedSyscallNode struct {
 	tag     int
 }
 
+func NewTaggedSyscallEndNode(flag Flag, tag int) *TaggedSyscallNode {
+	newEndNode := new(TaggedSyscallNode)
+	newEndNode.syscall = new(TaggedSyscall)
+	newEndNode.flag = flag
+	newEndNode.counts = make(map[Flag]uint64)
+	newEndNode.counts[flag] += 1
+	newEndNode.tag = tag
+	return newEndNode
+}
+
 type PatternAnalysis struct {
 	groupingMode      Grouping
 	groupingThreshold uint64
@@ -102,12 +112,7 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 				}
 
 				if !hasNilNext {
-					newEndNode := new(TaggedSyscallNode)
-					newEndNode.syscall = new(TaggedSyscall)
-					newEndNode.flag = flag
-					newEndNode.counts = make(map[Flag]uint64)
-					newEndNode.counts[flag] += 1
-					newEndNode.tag = a.tagCounter
+					newEndNode := NewTaggedSyscallEndNode(flag, a.tagCounter)
 					n.next = append(n.next, newEndNode)
 					a.tagCounter += 1
 					a.lastNodeOfPid[pid] = a.patternTreeRoot
@@ -144,12 +149,7 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 					}
 
 					if !hasNilNext {
-						newEndNode := new(TaggedSyscallNode)
-						newEndNode.syscall = new(TaggedSyscall)
-						newEndNode.flag = flag
-						newEndNode.counts = make(map[Flag]uint64)
-						newEndNode.counts[flag] += 1
-						newEndNode.tag = a.tagCounter
+						newEndNode := NewTaggedSyscallEndNode(flag, a.tagCounter)
 						a.tagCounter += 1
 						a.lastNodeOfPid[te.id].next = append(a.lastNodeOfPid[te.id].next, newEndNode)
 						msgs = append(msgs, fmt.Sprintf("new seq%d", newEndNode.tag))
@@ -216,19 +216,33 @@ func (a *PatternAnalysis) MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallN
 	}
 }
 
+func (n *TaggedSyscallNode) hasEndChild() bool {
+	for _, next := range n.next {
+		if next.syscall.syscall == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *TaggedSyscallNode) isLeaf() bool {
+	return len(n.next) == 1 && n.hasEndChild()
+}
+
 func (a *PatternAnalysis) PurgeTree(n *TaggedSyscallNode) {
 	removed := 0
-	for i, next := range n.next {
+	for _, next := range n.next {
 		toBreak := false
 		for _, pn := range a.purgedTreeRoot.next {
-			if next.syscall.Equal(pn.syscall) {
+			if next.syscall.Equal(pn.syscall) && !next.isLeaf() {
 				toBreak = true
 				break
 			}
 		}
 		if toBreak {
 			a.MergeTrees(a.patternTreeRoot, next)
-			n.next = append(n.next[:i-removed], n.next[i-removed+1:]...)
+			next.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
+			a.tagCounter += 1
 			removed += 1
 		} else {
 			a.PurgeTree(next)
@@ -240,7 +254,7 @@ func (a *PatternAnalysis) CheckNewIndependentNode() bool {
 	hasIndependentNode := false
 	for _, n := range a.patternTreeRoot.next {
 		for _, nn := range n.next {
-			if nn.syscall.syscall == nil {
+			if nn.hasEndChild() {
 				notInPurgedList := true
 				for _, pn := range a.purgedTreeRoot.next {
 					if n.syscall.Equal(pn.syscall) {
@@ -309,11 +323,20 @@ func (n *TaggedSyscallNode) Print() {
 func (a *PatternAnalysis) PrintResult() {
 	fmt.Print("pattern tree before purging\n")
 	a.patternTreeRoot.Print()
+	i := 0
 	for {
 		if !a.CheckNewIndependentNode() {
 			break
 		}
+		//fmt.Print("--------------------------------------------------------------------------------\n")
+		//fmt.Printf("#%v.1\n", i)
 		a.PurgeTree(a.patternTreeRoot)
+		//a.patternTreeRoot.Print()
+		//fmt.Print("--------------------------------------------------------------------------------\n")
+		//fmt.Printf("#%v.2\n", i)
+		a.PurgeTree(a.patternTreeRoot)
+		//a.patternTreeRoot.Print()
+		i += 1
 	}
 	fmt.Print("--------------------------------------------------------------------------------\n")
 	fmt.Print("purge tree\n")
