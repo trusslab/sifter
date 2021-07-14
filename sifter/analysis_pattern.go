@@ -29,6 +29,7 @@ type TaggedSyscallNode struct {
 	counts  map[Flag]uint64
 	flag    Flag
 	tag     int
+	events  []*TraceEvent
 }
 
 func NewTaggedSyscallEndNode(flag Flag, tag int) *TaggedSyscallNode {
@@ -181,6 +182,7 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 			a.lastNodeOfPid[te.id].next = append(a.lastNodeOfPid[te.id].next, newNextNode)
 			a.lastNodeOfPid[te.id] = newNextNode
 		}
+		a.lastNodeOfPid[te.id].events = append(a.lastNodeOfPid[te.id].events, te)
 		a.lastEventOfPid[te.id] = te
 		a.eventCounterOfPid[te.id] = 0
 	} else {
@@ -199,6 +201,10 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 }
 
 func (a *PatternAnalysis) MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallNode) {
+	for f, _ := range dst.counts {
+		dst.counts[f] += src.counts[f]
+	}
+	dst.events = append(dst.events, src.events...)
 	for _, srcNext := range src.next {
 		isInDst := false
 		var dstNext *TaggedSyscallNode
@@ -216,21 +222,20 @@ func (a *PatternAnalysis) MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallN
 	}
 }
 
-func (n *TaggedSyscallNode) hasEndChild() bool {
-	for _, next := range n.next {
+func (n *TaggedSyscallNode) endChildIdx() int {
+	for i, next := range n.next {
 		if next.syscall.syscall == nil {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
 func (n *TaggedSyscallNode) isLeaf() bool {
-	return len(n.next) == 1 && n.hasEndChild()
+	return len(n.next) == 1 && n.endChildIdx() >= 0
 }
 
 func (a *PatternAnalysis) PurgeTree(n *TaggedSyscallNode) {
-	removed := 0
 	for _, next := range n.next {
 		toBreak := false
 		for _, pn := range a.purgedTreeRoot.next {
@@ -241,9 +246,12 @@ func (a *PatternAnalysis) PurgeTree(n *TaggedSyscallNode) {
 		}
 		if toBreak {
 			a.MergeTrees(a.patternTreeRoot, next)
-			next.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
-			a.tagCounter += 1
-			removed += 1
+			if idx := next.endChildIdx(); idx >= 0 {
+				next.next = []*TaggedSyscallNode{next.next[idx]}
+			} else {
+				next.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
+				a.tagCounter += 1
+			}
 		} else {
 			a.PurgeTree(next)
 		}
@@ -254,7 +262,7 @@ func (a *PatternAnalysis) CheckNewIndependentNode() bool {
 	hasIndependentNode := false
 	for _, n := range a.patternTreeRoot.next {
 		for _, nn := range n.next {
-			if nn.hasEndChild() {
+			if nn.endChildIdx() >= 0 {
 				notInPurgedList := true
 				for _, pn := range a.purgedTreeRoot.next {
 					if n.syscall.Equal(pn.syscall) {
