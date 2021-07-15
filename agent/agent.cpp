@@ -466,7 +466,7 @@ private:
 
             int i = start;
             do {
-                i = (i == 1024)? 0 : i;
+                i = (i == sc->ctr_size)? 0 : i;
                 for (int a = 0; a < sc->args.size(); a++) {
                     sifter_arg *arg = sc->args[a];
                     android::bpf::findMapEntry(arg->fd, &i, arg->buf);
