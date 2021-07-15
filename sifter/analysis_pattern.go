@@ -103,16 +103,9 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 	if (te.id & 0x80000000) != 0 {
 		for pid, n := range a.lastNodeOfPid {
 			if n != a.patternTreeRoot {
-				hasNilNext := false
-				for i, _ := range n.next {
-					if n.next[i].syscall.syscall == nil {
-						n.next[i].counts[flag] += 1
-						hasNilNext = true
-						break
-					}
-				}
-
-				if !hasNilNext {
+				if idx := n.endChildIdx(); idx >= 0 {
+					n.next[idx].counts[flag] += 1
+				} else {
 					newEndNode := NewTaggedSyscallEndNode(flag, a.tagCounter)
 					n.next = append(n.next, newEndNode)
 					a.tagCounter += 1
@@ -140,16 +133,9 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 
 			if breakDownSeq {
 				if a.lastNodeOfPid[te.id] != a.patternTreeRoot {
-					hasNilNext := false
-					for i, _ := range a.lastNodeOfPid[te.id].next {
-						if a.lastNodeOfPid[te.id].next[i].syscall.syscall == nil {
-							a.lastNodeOfPid[te.id].next[i].counts[flag] += 1
-							hasNilNext = true
-							break
-						}
-					}
-
-					if !hasNilNext {
+					if idx := a.lastNodeOfPid[te.id].endChildIdx(); idx >= 0 {
+						a.lastNodeOfPid[te.id].next[idx].counts[flag] += 1
+					} else {
 						newEndNode := NewTaggedSyscallEndNode(flag, a.tagCounter)
 						a.tagCounter += 1
 						a.lastNodeOfPid[te.id].next = append(a.lastNodeOfPid[te.id].next, newEndNode)
