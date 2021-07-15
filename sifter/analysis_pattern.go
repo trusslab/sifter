@@ -261,18 +261,16 @@ func (a *PatternAnalysis) PurgeTree(n *TaggedSyscallNode) {
 func (a *PatternAnalysis) CheckNewIndependentNode() bool {
 	hasIndependentNode := false
 	for _, n := range a.patternTreeRoot.next {
-		for _, nn := range n.next {
-			if nn.endChildIdx() >= 0 {
-				notInPurgedList := true
-				for _, pn := range a.purgedTreeRoot.next {
-					if n.syscall.Equal(pn.syscall) {
-						notInPurgedList = false
-					}
+		if n.endChildIdx() >= 0 {
+			notInPurgedList := true
+			for _, pn := range a.purgedTreeRoot.next {
+				if n.syscall.Equal(pn.syscall) {
+					notInPurgedList = false
 				}
-				if notInPurgedList {
-					a.purgedTreeRoot.next = append(a.purgedTreeRoot.next, n)
-					hasIndependentNode = true
-				}
+			}
+			if notInPurgedList {
+				a.purgedTreeRoot.next = append(a.purgedTreeRoot.next, n)
+				hasIndependentNode = true
 			}
 		}
 	}
