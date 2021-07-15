@@ -207,7 +207,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (strin
 	return updatedRangesMsg, updatedRangesLen
 }
 
-func (a *ValueRangeAnalysis) PrintResult() {
+func (a *ValueRangeAnalysis) PrintResult(v Verbose) {
 	for syscall, regRange := range a.regRanges {
 		fmt.Printf("\n%v\n", syscall.name)
 		for i := 0; i < 6; i++ {

@@ -950,7 +950,7 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 		for _, analysis := range sifter.analyses {
 			fmt.Printf("================================================================================\n")
 			fmt.Printf("%v result:\n", analysis)
-			analysis.PrintResult()
+			analysis.PrintResult(sifter.verbose)
 		}
 	}
 	return updatedTeNum

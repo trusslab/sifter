@@ -326,7 +326,7 @@ func (n *TaggedSyscallNode) Print() {
 	n.print(&depth, depthsWithOtherChildren, false)
 }
 
-func (a *PatternAnalysis) PrintResult() {
+func (a *PatternAnalysis) PrintResult(v Verbose) {
 	fmt.Print("pattern tree before purging\n")
 	a.patternTreeRoot.Print()
 	i := 0
@@ -334,14 +334,19 @@ func (a *PatternAnalysis) PrintResult() {
 		if !a.CheckNewIndependentNode() {
 			break
 		}
-		//fmt.Print("--------------------------------------------------------------------------------\n")
-		//fmt.Printf("#%v.1\n", i)
+
 		a.PurgeTree(a.patternTreeRoot)
-		//a.patternTreeRoot.Print()
-		//fmt.Print("--------------------------------------------------------------------------------\n")
-		//fmt.Printf("#%v.2\n", i)
+		if v >= DebugV {
+			fmt.Print("--------------------------------------------------------------------------------\n")
+			fmt.Printf("purging #%v.1\n", i)
+			a.patternTreeRoot.Print()
+		}
 		a.PurgeTree(a.patternTreeRoot)
-		//a.patternTreeRoot.Print()
+		if v >= DebugV {
+			fmt.Print("--------------------------------------------------------------------------------\n")
+			fmt.Printf("purging #%v.2\n", i)
+			a.patternTreeRoot.Print()
+		}
 		i += 1
 	}
 	fmt.Print("--------------------------------------------------------------------------------\n")

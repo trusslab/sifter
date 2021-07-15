@@ -11,6 +11,6 @@ type Analysis interface {
 	String() string
 	Init(TracedSyscalls *map[string][]*Syscall)
 	ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
-	PrintResult()
+	PrintResult(v Verbose)
 }
 

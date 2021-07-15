@@ -125,7 +125,7 @@ func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string,
 	return updateMsg, updateNum
 }
 
-func (a *SequenceAnalysis) PrintResult() {
+func (a *SequenceAnalysis) PrintResult(v Verbose) {
 	for node, edges := range a.seqGraph {
 		fmt.Printf("%v %v\n", node.syscall.name, node.tags)
 		for _, edge := range edges {
