@@ -637,6 +637,37 @@ public:
         }
     }
 
+    int save_traced_pid_comm() {
+        std::string path = "/sys/fs/bpf/map_" + m_name + "_traced_pid_comm_map";
+        std::ofstream ofs("traced_pid_comm_map.log");
+        int fd = bpf_obj_get(path.c_str());
+        if (fd == -1 || !ofs)
+            return -1;
+
+        unique_fd ufd = unique_fd(fd);
+        uint32_t pid;
+        char comm[16];
+
+        if (android::bpf::getFirstMapKey(ufd, &pid))
+            goto error;
+
+        if (android::bpf::findMapEntry(ufd, &pid, (void *)comm))
+            goto error;
+
+        ofs << pid << " " << comm << "\n";
+        while (android::bpf::getNextMapKey(ufd, &pid, &pid) == 0) {
+            if (android::bpf::findMapEntry(ufd, &pid, (void *)comm))
+                goto error;
+            ofs << pid << " " << comm << "\n";
+        }
+        ofs.close();
+        return 0;
+
+error:
+        ofs.close();
+        return -1;
+    }
+
     void dump_rbs(std::string file) {
         std::ofstream ofs(file, std::ofstream::app);
         for (auto &rb : m_rbs) {
@@ -1194,6 +1225,7 @@ int main(int argc, char *argv[]) {
         if (g_stop.load()) break;
     }
 
+    tracer.save_traced_pid_comm();
     tracer.stop_update_maps();
     tracer.stop_update_rbs();
     tracer.stop_update_args();
