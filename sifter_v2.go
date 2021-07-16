@@ -76,6 +76,7 @@ func main() {
 			}
 			for _, file := range trainFiles {
 				s.ClearTrace()
+				s.ReadTracedPidComm(traceDir+"/"+file.Name())
 				trainSize += s.ReadSyscallTrace(traceDir+"/"+file.Name())
 				trainUpdates += s.DoAnalyses(sifter.TrainFlag)
 			}
@@ -92,6 +93,7 @@ func main() {
 			}
 			for _, file := range testFiles {
 				s.ClearTrace()
+				s.ReadTracedPidComm(traceDir+"/"+file.Name())
 				testSize += s.ReadSyscallTrace(traceDir+"/"+file.Name())
 				testUpdates += s.DoAnalyses(sifter.TestFlag)
 			}

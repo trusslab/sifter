@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"strconv"
 
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/prog"
@@ -56,6 +57,7 @@ type Sifter struct {
 
 	traceFiles []os.FileInfo
 	trace      []*TraceEvent
+	tracedPidComm map[uint32]string
 
 	analyses        []Analysis
 	trainTestSplit  float64
@@ -105,6 +107,7 @@ func NewSifter(f Flags) (*Sifter, error) {
 	s.moduleSyscalls = make(map[string][]*Syscall)
 	s.otherSyscalls = make(map[uint64]*Syscall)
 	s.trace = make([]*TraceEvent, 0)
+	s.tracedPidComm = make(map[uint32]string)
 	s.stackVarId = 0
 	s.depthLimit = math.MaxInt32
 	s.verbose = Verbose(f.Verbose)
@@ -932,19 +935,24 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 			}
 
 			if sifter.verbose >= AllTraceV || updateMsg != "" {
-				fmt.Printf("[%v] %x %d", toSecString(te.ts), te.id, updatedTeNum)
+				fmt.Printf("[%v] %d ", toSecString(te.ts), updatedTeNum)
 				if te.id & 0x80000000 != 0 {
 					switch te.id & 0x0fff0000 {
 					case 1:
-						fmt.Printf(" start")
+						fmt.Printf("start ")
 					case 2:
-						fmt.Printf(" lost %v events", binary.LittleEndian.Uint32(te.data))
+						fmt.Printf("lost %v events ", binary.LittleEndian.Uint32(te.data))
+					default:
+						fmt.Printf("unknown id %v ", te.id)
 					}
 				} else {
-					fmt.Printf(" %v %v", te.syscall.name, te.tags)
+					if procName, ok := sifter.tracedPidComm[te.id]; ok {
+						fmt.Printf("%v", procName)
+					}
+					fmt.Printf("(%d) %v %v ", te.id, te.syscall.name, te.tags)
 				}
 				if i == len(sifter.trace)-1 {
-					fmt.Printf(" end of trace")
+					fmt.Printf("end of trace")
 				}
 				fmt.Printf("\n")
 			}
@@ -961,6 +969,27 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 		}
 	}
 	return updatedTeNum
+}
+
+func (sifter *Sifter) ReadTracedPidComm(dirPath string) {
+	fileName := fmt.Sprintf("%v/traced_pid_comm_map.log", dirPath)
+	file, err := os.Open(fileName)
+	if err != nil {
+		failf("failed to open %v", fileName)
+	}
+
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		entry := strings.SplitN(scanner.Text(), " ", 2)
+		if pid, err := strconv.Atoi(entry[0]); err == nil {
+			sifter.tracedPidComm[uint32(pid)] = entry[1]
+		} else {
+			break
+		}
+	}
 }
 
 func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
