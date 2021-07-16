@@ -629,8 +629,8 @@ func (sifter *Sifter) GenerateMapSection() {
 	fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_fd_mask, ARRAY, int, uint8_t, %v);\n", len(sifter.syscalls))
 
 	if sifter.mode == TracerMode {
-		fmt.Fprintf(s, "DEFINE_BPF_MAP(traced_pid_map, HASH, uint32_t, uint32_t, 128);\n")
-		fmt.Fprintf(s, "DEFINE_BPF_MAP(traced_pid_comm_map, HASH, uint32_t, comm_string, 128);\n")
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(traced_pid_map, HASH, uint32_t, uint32_t, 1024);\n")
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(traced_pid_comm_map, HASH, uint32_t, comm_string, 1024);\n")
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(target_prog_comm_map, HASH, comm_string, uint32_t, 128);\n")
 		for _, syscalls := range sifter.moduleSyscalls {
 			for _, syscall := range syscalls {
