@@ -601,6 +601,12 @@ func (sifter *Sifter) GenerateProgSection() {
 		fmt.Fprintf(s, "		if (is_current_prog_target()) {\n")
 		fmt.Fprintf(s, "			bpf_traced_pid_map_update_elem(&current_pid, &data, BPF_ANY);\n")
 		fmt.Fprintf(s, "		}\n")
+		fmt.Fprintf(s, "		uint32_t pid = is_current_pid_traced();\n")
+		fmt.Fprintf(s, "		if (pid != 0) {\n")
+		fmt.Fprintf(s, "			comm_string comm;\n")
+		fmt.Fprintf(s, "			bpf_get_current_comm(&comm, 16);\n")
+		fmt.Fprintf(s, "			bpf_traced_pid_comm_map_update_elem(&pid, &comm, BPF_ANY);\n")
+		fmt.Fprintf(s, "		}\n")
 		fmt.Fprintf(s, "	} else if (is_forking_syscall(nr, is_32bit)) {\n")
 		fmt.Fprintf(s, "		if (is_current_pid_traced()) {\n")
 		fmt.Fprintf(s, "			bpf_traced_pid_map_update_elem(&child_pid, &data, BPF_ANY);\n")
@@ -624,6 +630,7 @@ func (sifter *Sifter) GenerateMapSection() {
 
 	if sifter.mode == TracerMode {
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(traced_pid_map, HASH, uint32_t, uint32_t, 128);\n")
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(traced_pid_comm_map, HASH, uint32_t, comm_string, 128);\n")
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(target_prog_comm_map, HASH, comm_string, uint32_t, 128);\n")
 		for _, syscalls := range sifter.moduleSyscalls {
 			for _, syscall := range syscalls {
