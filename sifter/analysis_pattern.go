@@ -37,8 +37,7 @@ func NewTaggedSyscallNode(n *TaggedSyscallNode) *TaggedSyscallNode {
 	newNode := new(TaggedSyscallNode)
 	newNode.syscall = n.syscall
 	newNode.flag = n.flag
-	//newEndNode.counts = make(map[Flag]uint64)
-	//newEndNode.counts[flag] += 1
+	newNode.counts = make(map[Flag]uint64)
 	newNode.tag = n.tag
 	return newNode
 }
@@ -54,8 +53,7 @@ func NewTaggedSyscallEndNode(flag Flag, tag int) *TaggedSyscallNode {
 }
 
 type PatternAnalysis struct {
-	groupingMode      Grouping
-	groupingThreshold uint64
+	groupingThreshold map[Grouping]uint64
 	lastNodeOfPid     map[uint32]*TaggedSyscallNode
 	lastEventOfPid    map[uint32]*TraceEvent
 	eventCounterOfPid map[uint32]uint64
@@ -87,8 +85,27 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 }
 
 func (a *PatternAnalysis) SetGroupingThreshold (g Grouping, th uint64) {
-	a.groupingMode = g
-	a.groupingThreshold = th
+	if a.groupingThreshold == nil {
+		a.groupingThreshold = make(map[Grouping]uint64)
+	}
+	a.groupingThreshold[g] = th
+}
+
+func (a *PatternAnalysis) toBreakDown(te *TraceEvent) bool {
+	breakDownSeq := false
+	for g, th := range a.groupingThreshold {
+		switch g {
+		case TimeGrouping:
+			if te.ts - a.lastEventOfPid[te.id].ts > th {
+				breakDownSeq = true
+			}
+		case SyscallGrouping:
+			if a.eventCounterOfPid[te.id] > th {
+				breakDownSeq = true
+			}
+		}
+	}
+	return breakDownSeq
 }
 
 func (a *TaggedSyscall) Equal(b *TaggedSyscall) bool {
@@ -129,20 +146,8 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 		}
 	} else if _, ok := a.moduleSyscalls[te.syscall]; ok {
 
-		if event, ok := a.lastEventOfPid[te.id]; ok {
-			breakDownSeq := false
-			switch a.groupingMode {
-			case TimeGrouping:
-				if te.ts - event.ts > a.groupingThreshold {
-					breakDownSeq = true
-				}
-			case SyscallGrouping:
-				if a.eventCounterOfPid[te.id] > a.groupingThreshold {
-					breakDownSeq = true
-				}
-			}
-
-			if breakDownSeq {
+		if _, ok := a.lastEventOfPid[te.id]; ok {
+			if a.toBreakDown(te) {
 				if a.lastNodeOfPid[te.id] != a.seqTreeRoot {
 					if idx := a.lastNodeOfPid[te.id].findEndChild(); idx >= 0 {
 						a.lastNodeOfPid[te.id].next[idx].counts[flag] += 1
