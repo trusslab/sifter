@@ -479,7 +479,7 @@ private:
                 }
             } while (i++ != end);
 
-            if (!m_args_update_start)
+            if (!m_args_update_start && ctr_diff == 0)
                 break;
         }
 
@@ -967,6 +967,9 @@ error:
         m_init = 0;
         stop_update_rbs();
         detach_prog();
+        for (auto th : m_update_threads) {
+            th->join();
+        }
     }
 
 };
