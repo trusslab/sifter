@@ -56,6 +56,7 @@ type PatternAnalysis struct {
 	groupingThreshold map[Grouping]uint64
 	lastNodeOfPid     map[uint32]*TaggedSyscallNode
 	lastEventOfPid    map[uint32]*TraceEvent
+	firstAndLastOfPid map[uint32][]*TraceEvent
 	eventCounterOfPid map[uint32]uint64
 	seqTreeRoot       *TaggedSyscallNode
 	patTreeRoot       *TaggedSyscallNode
@@ -70,6 +71,7 @@ func (a *PatternAnalysis) String() string {
 func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.lastNodeOfPid = make(map[uint32]*TaggedSyscallNode)
 	a.lastEventOfPid = make(map[uint32]*TraceEvent)
+	a.firstAndLastOfPid = make(map[uint32][]*TraceEvent)
 	a.eventCounterOfPid = make(map[uint32]uint64)
 	a.seqTreeRoot = new(TaggedSyscallNode)
 	a.seqTreeRoot.syscall = new(TaggedSyscall)
@@ -127,6 +129,15 @@ func (a *TaggedSyscall) Equal(b *TaggedSyscall) bool {
 
 func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
 	msgs := make([]string, 0)
+
+	if (te.id & 0x80000000) == 0 {
+		if _, ok := a.firstAndLastOfPid[te.id]; !ok {
+			a.firstAndLastOfPid[te.id] = append(a.firstAndLastOfPid[te.id], te)
+			a.firstAndLastOfPid[te.id] = append(a.firstAndLastOfPid[te.id], nil)
+		} else {
+			a.firstAndLastOfPid[te.id][1] = te
+		}
+	}
 
 	if (te.id & 0x80000000) != 0 {
 		for pid, n := range a.lastNodeOfPid {
@@ -294,6 +305,7 @@ func (a *PatternAnalysis) PurgeTree2(osn *TaggedSyscallNode, opn *TaggedSyscallN
 				ne.next = []*TaggedSyscallNode{ne.next[idx]}
 			} else {
 				ne.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
+				a.tagCounter += 1
 			}
 			purged = true
 		} else if a.PurgeTree2(sn, a.patTreeRoot) {
@@ -373,7 +385,73 @@ func (a *PatternAnalysis) extractPattern(osn *TaggedSyscallNode, opn *TaggedSysc
 	return extracted
 }
 
-func (n *TaggedSyscallNode) print(depth *int, depthsWithChildren map[int]bool, hasNext bool) {
+func (a *PatternAnalysis) getPhaseString(n *TaggedSyscallNode) string {
+	s := ""
+
+	if len(n.events) == 0 {
+		return s
+	}
+
+	phaseFlag := 0
+	startEvent := n.events[0]
+	endEvent := n.events[len(n.events)-1]
+	startEventProcStartTime := a.firstAndLastOfPid[startEvent.id][0].ts
+	startEventProcEndTime := a.firstAndLastOfPid[startEvent.id][1].ts
+	startEventProcTime := startEventProcEndTime - startEventProcStartTime
+	endEventProcStartTime := a.firstAndLastOfPid[endEvent.id][0].ts
+	endEventProcEndTime := a.firstAndLastOfPid[endEvent.id][1].ts
+	endEventProcTime := endEventProcEndTime - endEventProcStartTime
+	startEventTimePct := float64((startEvent.ts - startEventProcStartTime)) / float64(startEventProcTime)
+	endEventTimePct := float64((endEvent.ts - endEventProcStartTime)) / float64(endEventProcTime)
+	//s += fmt.Sprintf(" %.4f %.4f", startEventTimePct, endEventTimePct)
+	//s += fmt.Sprintf(" %e %e", float64(startEvent.ts - startEventProcStartTime), float64(endEvent.ts - endEventProcStartTime))
+	//s += fmt.Sprintf(" %e %e", float64(startEventProcEndTime - startEvent.ts), float64(endEventProcEndTime - endEvent.ts))
+	if startEvent.ts - startEventProcStartTime < 100000000 && endEvent.ts - endEventProcStartTime < 100000000 {
+		phaseFlag |= (1 << 0)
+	}
+	if startEventProcEndTime - startEvent.ts < 100000000 && endEventProcEndTime - endEvent.ts < 100000000 {
+		phaseFlag |= (1 << 4)
+	}
+	if startEventTimePct < 0.001 && endEventTimePct < 0.001 {
+		phaseFlag |= (1 << 1)
+	}
+	if startEventTimePct > 0.999 && endEventTimePct > 0.999 {
+		phaseFlag |= (1 << 5)
+	}
+
+	if phaseFlag != 0 {
+		s += fmt.Sprintf(" [")
+		if initFlag := (phaseFlag & 0x0000000f) >> 0; initFlag != 0 {
+			s += fmt.Sprintf("i%v", initFlag)
+		}
+		if termFlag := (phaseFlag & 0x000000f0) >> 4; termFlag != 0 {
+			s += fmt.Sprintf("t%v", termFlag)
+		}
+		s += fmt.Sprintf("]")
+	}
+
+	return s
+}
+
+func getPidsUniqueString(n *TaggedSyscallNode) string {
+	s := ""
+	pidsUnique := true
+	pidMap := make(map[uint32]bool)
+	for _, te := range n.events {
+		if _, ok := pidMap[te.id]; !ok {
+			pidMap[te.id] = true
+		} else {
+			pidsUnique = false
+			break
+		}
+	}
+	if pidsUnique && len(n.events) != 0 {
+		s += fmt.Sprintf(" [u]")
+	}
+	return s
+}
+
+func (n *TaggedSyscallNode) print(depth *int, depthsWithChildren map[int]bool, hasNext bool, a *PatternAnalysis) {
 	*depth = *depth + 1
 
 	s := ""
@@ -397,9 +475,8 @@ func (n *TaggedSyscallNode) print(depth *int, depthsWithChildren map[int]bool, h
 		}
 	} else {
 		s += fmt.Sprintf("[%v]%v%v", *depth, n.syscall.syscall.name, n.syscall.tags)
-			if len(n.events) > 0 {
-				s += fmt.Sprintf(" %v %v", n.events[0].ts, n.events[len(n.events)-1].ts)
-			}
+		s += fmt.Sprintf("%v", a.getPhaseString(n))
+		s += fmt.Sprintf("%v", getPidsUniqueString(n))
 	}
 
 	indent := ""
@@ -413,21 +490,21 @@ func (n *TaggedSyscallNode) print(depth *int, depthsWithChildren map[int]bool, h
 	fmt.Printf("%v%v\n", indent, s)
 
 	for i, next := range n.next {
-		next.print(depth, depthsWithChildren, i != len(n.next)-1)
+		next.print(depth, depthsWithChildren, i != len(n.next)-1, a)
 	}
 
 	*depth = *depth - 1
 }
 
-func (n *TaggedSyscallNode) Print() {
+func (n *TaggedSyscallNode) Print(a *PatternAnalysis) {
 	depth := 0
 	depthsWithOtherChildren := make(map[int]bool)
-	n.print(&depth, depthsWithOtherChildren, false)
+	n.print(&depth, depthsWithOtherChildren, false, a)
 }
 
 func (a *PatternAnalysis) PrintResult(v Verbose) {
 	fmt.Print("sequence tree before purging\n")
-	a.seqTreeRoot.Print()
+	a.seqTreeRoot.Print(a)
 	i := 0
 	/*
 	for {
@@ -458,7 +535,7 @@ func (a *PatternAnalysis) PrintResult(v Verbose) {
 		if v >= DebugV {
 			fmt.Print("--------------------------------------------------------------------------------\n")
 			fmt.Printf("purging #%v purged=%v extracted=%v\n", i, purged, extracted)
-			a.seqTreeRoot.Print()
+			a.seqTreeRoot.Print(a)
 		}
 
 		if !purged && !extracted {
@@ -467,10 +544,10 @@ func (a *PatternAnalysis) PrintResult(v Verbose) {
 	}
 	fmt.Print("--------------------------------------------------------------------------------\n")
 	fmt.Print("pattern tree\n")
-	a.patTreeRoot.Print()
+	a.patTreeRoot.Print(a)
 	fmt.Print("--------------------------------------------------------------------------------\n")
 	fmt.Print("sequence tree after purging\n")
-	a.seqTreeRoot.Print()
+	a.seqTreeRoot.Print(a)
 }
 
 
