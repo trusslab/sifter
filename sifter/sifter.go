@@ -937,7 +937,7 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 			if sifter.verbose >= AllTraceV || updateMsg != "" {
 				fmt.Printf("[%v] %d ", toSecString(te.ts), updatedTeNum)
 				if te.id & 0x80000000 != 0 {
-					switch te.id & 0x0fff0000 {
+					switch (te.id & 0x0fff0000) >> 16 {
 					case 1:
 						fmt.Printf("start ")
 					case 2:
