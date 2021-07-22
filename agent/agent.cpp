@@ -447,7 +447,7 @@ private:
             int start, end;
             uint32_t ctr_diff = curr_ctr - last_ctr;
             if (ctr_diff > sc->ctr_size) {
-                std::cout << "lost events: " << last_ctr << " " << curr_ctr << "\n";
+                std::cout << "lost events: " << sc->syscall_name << " " << last_ctr << " " << curr_ctr << "\n";
                 write_user_event(ofs, EVENT_USER_TRACE_LOST, &ctr_diff);
 
                 start = sc->ctr_idx(curr_ctr - sc->ctr_size/8);

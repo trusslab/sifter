@@ -412,7 +412,7 @@ func (sifter *Sifter) GenerateOtherSyscallsTracer() {
 	fmt.Fprintf(s, "    uint32_t *ctr = bpf_other_syscalls_ctr_lookup_elem(&i);\n")
 	fmt.Fprintf(s, "    if (!ctr)\n")
 	fmt.Fprintf(s, "    	return 1;\n")
-	fmt.Fprintf(s, "    int idx = *ctr & 0x000003ff;\n")
+	fmt.Fprintf(s, "    int idx = *ctr & 0x0003ffff;\n")
 	fmt.Fprintf(s, "\n")
 	fmt.Fprintf(s, "    syscall_ent_t *ent = bpf_other_syscalls_ent_lookup_elem(&idx);\n")
 	fmt.Fprintf(s, "    if (ent) {\n")
@@ -645,7 +645,7 @@ func (sifter *Sifter) GenerateMapSection() {
 			}
 		}
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_ctr, ARRAY, int, uint32_t, 1)\n")
-		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_ent, ARRAY, int, syscall_ent_t, 16384)\n")
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_ent, ARRAY, int, syscall_ent_t, 262144)\n")
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_nr, ARRAY, int, int, 1024)\n")
 	}
 	fmt.Fprintf(s, "\n")
@@ -1111,7 +1111,7 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 			fmt.Fprintf(s, "\n")
 		}
 	}
-	fmt.Fprintf(s, "s 14 2 other_syscalls 60 other_syscalls_ent 4 other_syscalls_nr\n")
+	fmt.Fprintf(s, "s 18 2 other_syscalls 60 other_syscalls_ent 4 other_syscalls_nr\n")
 
 	fmt.Fprintf(s, "p 2 raw_syscalls sys_enter\n")
 	fmt.Fprintf(s, "p 2 raw_syscalls sys_exit\n")
