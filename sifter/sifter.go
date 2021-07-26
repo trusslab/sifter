@@ -57,7 +57,7 @@ type Sifter struct {
 
 	traceFiles []os.FileInfo
 	trace      []*TraceEvent
-	tracedPidComm map[uint32]string
+	traceInfo  map[string]*TraceInfo
 
 	analyses        []Analysis
 	trainTestSplit  float64
@@ -107,7 +107,7 @@ func NewSifter(f Flags) (*Sifter, error) {
 	s.moduleSyscalls = make(map[string][]*Syscall)
 	s.otherSyscalls = make(map[uint64]*Syscall)
 	s.trace = make([]*TraceEvent, 0)
-	s.tracedPidComm = make(map[uint32]string)
+	s.traceInfo = make(map[string]*TraceInfo)
 	s.stackVarId = 0
 	s.depthLimit = math.MaxInt32
 	s.verbose = Verbose(f.Verbose)
@@ -946,7 +946,7 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 						fmt.Printf("unknown id %v ", te.id)
 					}
 				} else {
-					if procName, ok := sifter.tracedPidComm[te.id]; ok {
+					if procName, ok := te.info.pidComm[te.id]; ok {
 						fmt.Printf("%v", procName)
 					}
 					fmt.Printf("(%d) %v %v ", te.id, te.syscall.name, te.tags)
@@ -981,18 +981,21 @@ func (sifter *Sifter) ReadTracedPidComm(dirPath string) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+	traceInfo := newTraceInfo(dirPath)
 
 	for scanner.Scan() {
 		entry := strings.SplitN(scanner.Text(), " ", 2)
 		if pid, err := strconv.Atoi(entry[0]); err == nil {
-			sifter.tracedPidComm[uint32(pid)] = entry[1]
+			traceInfo.pidComm[uint32(pid)] = entry[1]
 		} else {
 			break
 		}
 	}
+	sifter.traceInfo[dirPath] = traceInfo
 }
 
 func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
+	info := sifter.traceInfo[dirPath]
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
 			fileName := fmt.Sprintf("%v/raw_trace_%v.dat", dirPath, syscall.name)
@@ -1012,7 +1015,7 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
 				var id uint32
 				err := binary.Read(syscall.traceReader, binary.LittleEndian, &ts)
 				err = binary.Read(syscall.traceReader, binary.LittleEndian, &id)
-				traceEvent := newTraceEvent(ts, id, syscall)
+				traceEvent := newTraceEvent(ts, id, info, syscall)
 				_, err = io.ReadFull(syscall.traceReader, traceEvent.data)
 
 				if err != nil {
@@ -1052,7 +1055,7 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
 			goto endUnexpectedly
 		}
 
-		traceEvent = newTraceEvent(ts, id, nil)
+		traceEvent = newTraceEvent(ts, id, info, nil)
 		if id & 0x80000000 == 0 {
 			if _, err = io.ReadFull(traceReader, traceEvent.data); err != nil {
 				goto endUnexpectedly

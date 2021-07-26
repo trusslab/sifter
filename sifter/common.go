@@ -98,18 +98,32 @@ func (syscall *Syscall) AddVlrMap(arg *prog.ArrayType, argName string) {
 	syscall.size += 512
 }
 
-type TraceEvent struct {
-	ts				uint64
-	id				uint32
-	syscall			*Syscall
-	data			[]byte
-	tags			[]int
+type TraceInfo struct {
+	name    string
+	pidComm map[uint32]string
 }
 
-func newTraceEvent(ts uint64, id uint32, syscall *Syscall) *TraceEvent {
+func newTraceInfo(name string) *TraceInfo {
+	traceInfo := new(TraceInfo)
+	traceInfo.name = name
+	traceInfo.pidComm = make(map[uint32]string)
+	return traceInfo
+}
+
+type TraceEvent struct {
+	ts      uint64
+	id      uint32
+	syscall *Syscall
+	info    *TraceInfo
+	data    []byte
+	tags    []int
+}
+
+func newTraceEvent(ts uint64, id uint32, info *TraceInfo, syscall *Syscall) *TraceEvent {
 	traceEvent := new(TraceEvent)
 	traceEvent.ts = ts
 	traceEvent.id = id
+	traceEvent.info = info
 	traceEvent.syscall = syscall
 	if (id & 0x80000000 != 0) {
 		traceEvent.data = make([]byte, (id & 0x0000ffff))
