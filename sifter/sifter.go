@@ -968,6 +968,9 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 			analysis.PrintResult(sifter.verbose)
 		}
 	}
+	for _, analysis := range sifter.analyses {
+		analysis.Reset()
+	}
 	return updatedTeNum
 }
 

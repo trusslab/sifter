@@ -69,6 +69,9 @@ func (a *ValueRangeAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	}
 }
 
+func (a *ValueRangeAnalysis) Reset() {
+}
+
 func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
 	if (te.id & 0x80000000) != 0 {
 		return "", 0

@@ -63,6 +63,9 @@ func (a *SequenceAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.prevs = make([]*Node, a.seqLen+1)
 }
 
+func (a *SequenceAnalysis) Reset() {
+}
+
 func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
 	if (te.id & 0x80000000) != 0 {
 		return "", 0

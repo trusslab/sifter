@@ -10,6 +10,7 @@ const (
 type Analysis interface {
 	String() string
 	Init(TracedSyscalls *map[string][]*Syscall)
+	Reset()
 	ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 	PrintResult(v Verbose)
 }

@@ -41,6 +41,9 @@ func (a *VlrAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	}
 }
 
+func (a *VlrAnalysis) Reset() {
+}
+
 func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
 	if (te.id & 0x80000000) != 0 {
 		return "", 0
