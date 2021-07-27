@@ -50,7 +50,7 @@ type Sifter struct {
 	structs        []*prog.StructType
 	syscalls       []*prog.Syscall
 	moduleSyscalls map[string][]*Syscall
-	otherSyscalls   map[uint64]*Syscall
+	otherSyscalls  map[uint64]*Syscall
 
 	stackVarId int
 	sections   map[string]*bytes.Buffer
@@ -658,7 +658,7 @@ func (sifter *Sifter) GenerateMapSection() {
 		}
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_ctr, ARRAY, int, uint32_t, 1)\n")
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_ent, ARRAY, int, syscall_ent_t, 262144)\n")
-		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_nr, ARRAY, int, int, 1024)\n")
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_nr, ARRAY, int, int, 262144)\n")
 	}
 	fmt.Fprintf(s, "\n")
 }
