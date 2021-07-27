@@ -319,7 +319,11 @@ func isIgnoredArg(arg prog.Type) bool {
 		if !t.IsVarlen {
 			ret = false
 		}
-	case *prog.LenType, *prog.IntType, *prog.ConstType, *prog.FlagsType:
+	case *prog.ConstType:
+		if !t.IsPad {
+			ret = false
+		}
+	case *prog.LenType, *prog.IntType, *prog.FlagsType:
 		ret = false
 	//case *prog.ArrayType, *prog.VmaType, *prog.UnionType, *prog.BufferType, *prog.ResourceType:
 	case *prog.ArrayType:
@@ -400,8 +404,16 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 	case *prog.ArrayType:
 		if isVLR, _, _ := sifter.IsVarLenRecord(t); isVLR {
 			syscall.AddVlrMap(t, argName)
+			fmt.Fprintf(s, "    //vlr %v%v = %v; %v\n", derefOp, dstPath, srcPath, argName)
+		} else {
+			if t.RangeBegin != t.RangeEnd {
+				fmt.Fprintf(s, "    //Unhandled %v%v = %v; %v\n", derefOp, dstPath, srcPath, argName)
+			} else {
+				for i := 0; i < int(t.RangeBegin); i++ {
+					fmt.Fprintf(s, "    %v%v[%v] = %v[%v];\n", derefOp, dstPath, i, srcPath, i)
+				}
+			}
 		}
-		fmt.Fprintf(s, "    vlr %v%v = %v; %v\n", derefOp, dstPath, srcPath, argName)
 	}
 }
 
