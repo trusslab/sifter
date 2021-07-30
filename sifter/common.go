@@ -2,6 +2,7 @@ package sifter
 
 import (
 	"bufio"
+	"math"
 	"os"
 	"github.com/google/syzkaller/prog"
 )
@@ -54,8 +55,21 @@ type Syscall struct {
 	argMaps			[]*ArgMap
 	vlrMaps			[]*VlrMap
 	size			uint64
+	traceSizeBits   int
 	traceFile		*os.File
 	traceReader		*bufio.Reader
+}
+
+func (syscall *Syscall) TraceSizeBits() int {
+	return syscall.traceSizeBits
+}
+
+func (syscall *Syscall) TraceSizeMask() uint32 {
+	return uint32(math.Pow(2, float64(syscall.traceSizeBits))-1)
+}
+
+func (syscall *Syscall) TraceSize() int {
+	return int(math.Pow(2, float64(syscall.traceSizeBits)))
 }
 
 func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string, argType string) {

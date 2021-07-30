@@ -51,9 +51,7 @@ type Sifter struct {
 	syscalls       []*prog.Syscall
 	moduleSyscalls map[string][]*Syscall
 	otherSyscalls  map[uint64]*Syscall
-
-	moduleSyscallEntryBits int
-	otherSyscallEntryBits  int
+	otherSyscall   *Syscall
 
 	stackVarId int
 	sections   map[string]*bytes.Buffer
@@ -109,8 +107,6 @@ func NewSifter(f Flags) (*Sifter, error) {
 	s.syscalls = make([]*prog.Syscall, 512)
 	s.moduleSyscalls = make(map[string][]*Syscall)
 	s.otherSyscalls = make(map[uint64]*Syscall)
-	s.moduleSyscallEntryBits = 10
-	s.otherSyscallEntryBits = 18
 	s.trace = make([]*TraceEvent, 0)
 	s.traceInfo = make(map[string]*TraceInfo)
 	s.stackVarId = 0
@@ -194,6 +190,7 @@ func NewSifter(f Flags) (*Sifter, error) {
 				tracedSyscall.name = fixName(syscall.Name)
 				tracedSyscall.def = syscall
 				tracedSyscall.argMaps = []*ArgMap{}
+				tracedSyscall.traceSizeBits = 10
 				s.moduleSyscalls[callName] = append(s.moduleSyscalls[callName], tracedSyscall)
 			} else {
 				fmt.Printf("trace syscall %v\n", callName)
@@ -201,14 +198,19 @@ func NewSifter(f Flags) (*Sifter, error) {
 				tracedSyscall.name = fixName(syscall.Name)
 				tracedSyscall.def = s.target.SyscallMap[callName]
 				tracedSyscall.argMaps = []*ArgMap{}
+				tracedSyscall.traceSizeBits = 10
 				s.moduleSyscalls[callName] = append(s.moduleSyscalls[callName], tracedSyscall)
 			}
 		} else if _, ok := s.otherSyscalls[syscall.NR]; !ok {
 			otherSyscall := new(Syscall)
 			otherSyscall.name = fixName(syscall.Name)
 			otherSyscall.def = syscall
+			otherSyscall.traceSizeBits = 18
 			s.otherSyscalls[syscall.NR] = otherSyscall
 		}
+		s.otherSyscall = new(Syscall)
+		s.otherSyscall.name = "other_syscalls"
+		s.otherSyscall.traceSizeBits = 18
 	}
 
 	if len(s.devName) == 0 {
@@ -429,7 +431,7 @@ func (sifter *Sifter) GenerateOtherSyscallsTracer() {
 	fmt.Fprintf(s, "    uint32_t *ctr = bpf_other_syscalls_ctr_lookup_elem(&i);\n")
 	fmt.Fprintf(s, "    if (!ctr)\n")
 	fmt.Fprintf(s, "    	return 1;\n")
-	fmt.Fprintf(s, "    int idx = *ctr & 0x%08x;\n", uint32(math.Pow(2, float64(sifter.otherSyscallEntryBits))-1))
+	fmt.Fprintf(s, "    int idx = *ctr & 0x%08x;\n", sifter.otherSyscall.TraceSizeMask())
 	fmt.Fprintf(s, "\n")
 	fmt.Fprintf(s, "    syscall_ent_t *ent = bpf_other_syscalls_ent_lookup_elem(&idx);\n")
 	fmt.Fprintf(s, "    if (ent) {\n")
@@ -461,7 +463,7 @@ func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 	fmt.Fprintf(s, "    uint32_t *ctr = bpf_%v_ctr_lookup_elem(&i);\n", syscall.name)
 	fmt.Fprintf(s, "    if (!ctr)\n")
 	fmt.Fprintf(s, "    	return 1;\n")
-	fmt.Fprintf(s, "    int idx = *ctr & 0x%08x;\n", uint32(math.Pow(2, float64(sifter.moduleSyscallEntryBits))-1))
+	fmt.Fprintf(s, "    int idx = *ctr & 0x%08x;\n", syscall.TraceSizeMask())
 	fmt.Fprintf(s, "\n")
 	fmt.Fprintf(s, "    syscall_ent_t *ent = bpf_%v_ent_lookup_elem(&idx);\n", syscall.name)
 	fmt.Fprintf(s, "    if (ent) {\n")
@@ -655,15 +657,15 @@ func (sifter *Sifter) GenerateMapSection() {
 		for _, syscalls := range sifter.moduleSyscalls {
 			for _, syscall := range syscalls {
 				fmt.Fprintf(s, "DEFINE_BPF_MAP(%v_ctr, ARRAY, int, uint32_t, 1)\n", syscall.name)
-				fmt.Fprintf(s, "DEFINE_BPF_MAP(%v_ent, ARRAY, int, syscall_ent_t, %v)\n", syscall.name, math.Pow(2, float64(sifter.moduleSyscallEntryBits)))
+				fmt.Fprintf(s, "DEFINE_BPF_MAP(%v_ent, ARRAY, int, syscall_ent_t, %v)\n", syscall.name, syscall.TraceSize())
 				for _, arg := range syscall.argMaps {
-					fmt.Fprintf(s, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, %v)\n", arg.name, arg.datatype, math.Pow(2, float64(sifter.moduleSyscallEntryBits)))
+					fmt.Fprintf(s, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, %v)\n", arg.name, arg.datatype, syscall.TraceSize())
 				}
 			}
 		}
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_ctr, ARRAY, int, uint32_t, 1)\n")
-		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_ent, ARRAY, int, syscall_ent_t, %v)\n", math.Pow(2, float64(sifter.otherSyscallEntryBits)))
-		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_nr, ARRAY, int, int, %v)\n", math.Pow(2, float64(sifter.otherSyscallEntryBits)))
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_ent, ARRAY, int, syscall_ent_t, %v)\n", sifter.otherSyscall.TraceSize())
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(other_syscalls_nr, ARRAY, int, int, %v)\n", sifter.otherSyscall.TraceSize())
 	}
 	fmt.Fprintf(s, "\n")
 }
@@ -1126,7 +1128,7 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
-			fmt.Fprintf(s, "s %v %v %v", sifter.moduleSyscallEntryBits, len(syscall.argMaps)+1, syscall.name)
+			fmt.Fprintf(s, "s %v %v %v", syscall.TraceSizeBits(), len(syscall.argMaps)+1, syscall.name)
 			fmt.Fprintf(s, " 60 %v_ent", syscall.name)
 			for _, arg := range syscall.argMaps {
 				fmt.Fprintf(s, " %v %v", arg.size, arg.name)
@@ -1135,7 +1137,7 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 		}
 	}
 
-	fmt.Fprintf(s, "s %v 2 other_syscalls 60 other_syscalls_ent 4 other_syscalls_nr\n", sifter.otherSyscallEntryBits)
+	fmt.Fprintf(s, "s %v 2 other_syscalls 60 other_syscalls_ent 4 other_syscalls_nr\n", sifter.otherSyscall.TraceSizeBits())
 
 	fmt.Fprintf(s, "p 2 raw_syscalls sys_enter\n")
 	fmt.Fprintf(s, "p 2 raw_syscalls sys_exit\n")
