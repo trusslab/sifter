@@ -25,6 +25,10 @@
 #include "tracer_id.h"
 
 using android::base::unique_fd;
+using std::chrono::steady_clock;
+using std::chrono::duration;
+using std::chrono::duration_cast;
+using std::chrono::milliseconds;
 
 std::ofstream g_log_stream;
 std::atomic<bool> g_stop(false);
@@ -174,7 +178,7 @@ struct sifter_arg {
 };
 
 struct sifter_syscall {
-    int  ctr_size;
+    int ctr_size;
     uint32_t ctr_idx_mask;
     uint32_t ctr_ctr_mask;
     bool inited;
@@ -428,6 +432,10 @@ private:
     }
 
     void update_arg_thread(sifter_syscall *sc) {
+        steady_clock::time_point curr_time;
+        steady_clock::time_point last_update_time = steady_clock::now();
+        uint32_t last_update_period_ms = 0;
+        uint32_t update_period_ms = 0;
         uint32_t curr_ctr;
         uint32_t last_ctr = 0;
         int zero_idx = 0;
@@ -444,29 +452,32 @@ private:
         while (1) {
             android::bpf::findMapEntry(sc->ctr_fd, &zero_idx, &curr_ctr);
 
-            int start, end;
+            int start = 0, end = 0;
             uint32_t ctr_diff = curr_ctr - last_ctr;
+            curr_time = steady_clock::now();
+            last_update_period_ms = duration_cast<milliseconds>(curr_time - last_update_time).count();
             if (ctr_diff > sc->ctr_size) {
-                std::cout << "lost events: " << sc->syscall_name << " " << last_ctr << " " << curr_ctr << "\n";
+                std::cout << "lost events: " << sc->syscall_name << " "
+                        << last_ctr << "-" << curr_ctr << "\n";
                 write_user_event(ofs, EVENT_USER_TRACE_LOST, &ctr_diff);
 
                 start = sc->ctr_idx(curr_ctr - sc->ctr_size/8);
                 end = sc->ctr_idx(curr_ctr);
                 last_ctr = curr_ctr;
+                last_update_time = curr_time;
             } else if (ctr_diff > sc->ctr_size/8 || !m_args_update_start) {
                 if (m_verbose > 2)
-                    std::cout << "saving events: " << last_ctr << " " << curr_ctr << "\n";
+                    std::cout << "saving events: " << sc->syscall_name << " "
+                            << last_ctr << "-" << curr_ctr << "\n";
 
                 start = sc->ctr_idx(last_ctr);
                 end = sc->ctr_idx(curr_ctr);
                 last_ctr = curr_ctr;
-            } else {
-                continue;
+                last_update_time = curr_time;
             }
 
             int i = start;
-            do {
-                i = (i == sc->ctr_size)? 0 : i;
+            while (i != end) {
                 for (int a = 0; a < sc->args.size(); a++) {
                     sifter_arg *arg = sc->args[a];
                     android::bpf::findMapEntry(arg->fd, &i, arg->buf);
@@ -477,7 +488,14 @@ private:
                         print_buffer(arg->buf, arg->size);
                     }
                 }
-            } while (i++ != end);
+                i = ++i & (sc->ctr_size - 1);
+            }
+
+            update_period_ms = (last_update_period_ms + update_period_ms) / 2;
+            if (update_period_ms > 100) {
+                update_period_ms = 100;
+            }
+            usleep(update_period_ms * 1000);
 
             if (!m_args_update_start && ctr_diff == 0)
                 break;
