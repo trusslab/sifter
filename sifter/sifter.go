@@ -56,6 +56,7 @@ type Sifter struct {
 	stackVarId int
 	sections   map[string]*bytes.Buffer
 
+	traceDir   string
 	traceFiles []os.FileInfo
 	trace      []*TraceEvent
 	traceInfo  map[string]*TraceInfo
@@ -107,6 +108,7 @@ func NewSifter(f Flags) (*Sifter, error) {
 	s.syscalls = make([]*prog.Syscall, 512)
 	s.moduleSyscalls = make(map[string][]*Syscall)
 	s.otherSyscalls = make(map[uint64]*Syscall)
+	s.traceDir = f.Trace
 	s.trace = make([]*TraceEvent, 0)
 	s.traceInfo = make(map[string]*TraceInfo)
 	s.stackVarId = 0
@@ -1216,4 +1218,81 @@ func (sifter *Sifter) GetTrainTestFiles() ([]os.FileInfo, []os.FileInfo) {
 		}
 	}
 	return trainFiles, testFiles
+}
+
+func (sifter *Sifter) AnalyzeSinlgeTrace() {
+	var vra ValueRangeAnalysis
+	var vlra VlrAnalysis
+	var pa PatternAnalysis
+	pa.SetGroupingThreshold(TimeGrouping, 1000000000)
+	pa.SetGroupingThreshold(SyscallGrouping, 1)
+
+	sifter.AddAnalysis(&vra)
+	sifter.AddAnalysis(&vlra)
+	sifter.AddAnalysis(&pa)
+
+	sifter.ReadTracedPidComm(sifter.traceDir)
+	sifter.ReadSyscallTrace(sifter.traceDir)
+	sifter.DoAnalyses(TrainFlag)
+}
+
+func (sifter *Sifter) TrainAndTest() {
+	sifter.ReadTraceDir(sifter.traceDir)
+
+	testUpdateSum := 0
+	for i := 0; i < sifter.Iter(); i ++ {
+		sifter.ClearAnalysis()
+		var vra ValueRangeAnalysis
+		var sa SequenceAnalysis
+		var vlra VlrAnalysis
+		var pa PatternAnalysis
+		sa.SetLen(0)
+		pa.SetGroupingThreshold(TimeGrouping, 1000000000)
+		pa.SetGroupingThreshold(SyscallGrouping, 1)
+
+		sifter.AddAnalysis(&vra)
+		sifter.AddAnalysis(&vlra)
+		//sifter.AddAnalysis(&sa)
+		sifter.AddAnalysis(&pa)
+
+		var testSize, trainSize, testUpdates, trainUpdates int
+		trainFiles, testFiles := sifter.GetTrainTestFiles()
+
+		fmt.Printf("Run %v\n", i)
+		fmt.Printf("#training apps:\n")
+		for i, file := range trainFiles {
+			if i != len(trainFiles) - 1 {
+				fmt.Printf("%v, ", file.Name())
+			} else {
+				fmt.Printf("%v\n", file.Name())
+			}
+		}
+		for _, file := range trainFiles {
+			sifter.ClearTrace()
+			sifter.ReadTracedPidComm(sifter.traceDir+"/"+file.Name())
+			trainSize += sifter.ReadSyscallTrace(sifter.traceDir+"/"+file.Name())
+			trainUpdates += sifter.DoAnalyses(TrainFlag)
+		}
+		fmt.Printf("#training size: %v\n", trainSize)
+		fmt.Printf("#training updates: %v\n", trainUpdates)
+
+		fmt.Printf("#testing apps:\n")
+		for i, file := range testFiles {
+			if i != len(testFiles) - 1 {
+				fmt.Printf("%v,", file.Name())
+			} else {
+				fmt.Printf("%v\n", file.Name())
+			}
+		}
+		for _, file := range testFiles {
+			sifter.ClearTrace()
+			sifter.ReadTracedPidComm(sifter.traceDir+"/"+file.Name())
+			testSize += sifter.ReadSyscallTrace(sifter.traceDir+"/"+file.Name())
+			testUpdates += sifter.DoAnalyses(TestFlag)
+		}
+		testUpdateSum += testUpdates
+		fmt.Printf("#testing size: %v\n", testSize)
+		fmt.Printf("#testing updates: %v\n", testUpdates)
+	}
+	fmt.Printf("#Avg testing error: %.3f\n", float64(testUpdateSum)/float64(sifter.Iter()))
 }

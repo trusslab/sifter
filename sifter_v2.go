@@ -38,70 +38,7 @@ func main() {
 		s.WriteSourceFile()
 		s.WriteAgentConfigFile()
 	} else if s.Mode() == sifter.AnalyzerMode {
-		traceDir := "./trace"
-		s.ReadTraceDir(traceDir)
-
-		testUpdateSum := 0
-		for i := 0; i < s.Iter(); i ++ {
-			s.ClearAnalysis()
-			var vra sifter.ValueRangeAnalysis
-			var sa sifter.SequenceAnalysis
-			var vlra sifter.VlrAnalysis
-			var pa sifter.PatternAnalysis
-			sa.SetLen(0)
-			pa.SetGroupingThreshold(sifter.TimeGrouping, 10000)
-
-			s.AddAnalysis(&vra)
-			s.AddAnalysis(&vlra)
-			s.AddAnalysis(&sa)
-			s.AddAnalysis(&pa)
-
-			var testSize, trainSize, testUpdates, trainUpdates int
-			trainFiles, testFiles := s.GetTrainTestFiles()
-			//for {
-			//	trainFiles, testFiles = s.GetTrainTestFiles()
-			//	if testFiles[0].Name() == "googlemap_40m" {
-			//		break
-			//	}
-			//}
-
-			fmt.Printf("Run %v\n", i)
-			fmt.Printf("#training apps:\n")
-			for i, file := range trainFiles {
-				if i != len(trainFiles) - 1 {
-					fmt.Printf("%v, ", file.Name())
-				} else {
-					fmt.Printf("%v\n", file.Name())
-				}
-			}
-			for _, file := range trainFiles {
-				s.ClearTrace()
-				s.ReadTracedPidComm(traceDir+"/"+file.Name())
-				trainSize += s.ReadSyscallTrace(traceDir+"/"+file.Name())
-				trainUpdates += s.DoAnalyses(sifter.TrainFlag)
-			}
-			fmt.Printf("#training size: %v\n", trainSize)
-			fmt.Printf("#training updates: %v\n", trainUpdates)
-
-			fmt.Printf("#testing apps:\n")
-			for i, file := range testFiles {
-				if i != len(testFiles) - 1 {
-					fmt.Printf("%v,", file.Name())
-				} else {
-					fmt.Printf("%v\n", file.Name())
-				}
-			}
-			for _, file := range testFiles {
-				s.ClearTrace()
-				s.ReadTracedPidComm(traceDir+"/"+file.Name())
-				testSize += s.ReadSyscallTrace(traceDir+"/"+file.Name())
-				testUpdates += s.DoAnalyses(sifter.TestFlag)
-			}
-			testUpdateSum += testUpdates
-			fmt.Printf("#testing size: %v\n", testSize)
-			fmt.Printf("#testing updates: %v\n", testUpdates)
-		}
-		fmt.Printf("#Avg testing error: %.3f\n", float64(testUpdateSum)/float64(s.Iter()))
-
+		s.TrainAndTest()
+		//s.AnalyzeSinlgeTrace()
 	}
 }
