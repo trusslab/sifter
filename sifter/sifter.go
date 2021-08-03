@@ -190,7 +190,7 @@ func NewSifter(f Flags) (*Sifter, error) {
 				tracedSyscall.name = fixName(syscall.Name)
 				tracedSyscall.def = syscall
 				tracedSyscall.argMaps = []*ArgMap{}
-				tracedSyscall.traceSizeBits = 10
+				tracedSyscall.traceSizeBits = 12
 				s.moduleSyscalls[callName] = append(s.moduleSyscalls[callName], tracedSyscall)
 			} else {
 				fmt.Printf("trace syscall %v\n", callName)
