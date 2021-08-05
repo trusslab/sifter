@@ -62,6 +62,8 @@ type PatternAnalysis struct {
 	patTreeRoot       *TaggedSyscallNode
 	tagCounter        int
 	moduleSyscalls    map[*Syscall]bool
+	patternInterval   map[*TraceInfo]map[int][]uint64
+	patternOrder      map[int]map[int]int
 }
 
 func (a *PatternAnalysis) String() string {
@@ -78,6 +80,8 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.patTreeRoot = new(TaggedSyscallNode)
 	a.patTreeRoot.syscall = new(TaggedSyscall)
 	a.moduleSyscalls = make(map[*Syscall]bool)
+	a.patternInterval = make(map[*TraceInfo]map[int][]uint64)
+	a.patternOrder = make(map[int]map[int]int)
 
 	for _, syscalls := range *TracedSyscalls {
 		for _, syscall := range syscalls {
@@ -166,6 +170,8 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 					}
 					a.lastNodeOfPid[te.id] = a.seqTreeRoot
 				}
+			} else if idx := a.lastNodeOfPid[te.id].findEndChild(); idx >= 0 && a.lastNodeOfPid[te.id] != a.seqTreeRoot {
+				a.lastNodeOfPid[te.id] = a.seqTreeRoot
 			}
 		} else {
 			a.lastNodeOfPid[te.id] = a.seqTreeRoot
@@ -239,6 +245,9 @@ func (a *PatternAnalysis) testSeqTreeModel(te *TraceEvent) (string, int) {
 func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
 	msg := ""
 	update := 0
+	if _, ok := a.patternInterval[te.info]; !ok {
+		a.patternInterval[te.info] = make(map[int][]uint64)
+	}
 	if flag == TrainFlag {
 		a.buildSeqTree(te)
 	} else if flag == TestFlag {
@@ -536,6 +545,103 @@ func (n *TaggedSyscallNode) Print(a *PatternAnalysis) {
 	n.print(&depth, depthsWithOtherChildren, false, a)
 }
 
+func findRangeOfTrace(n *TaggedSyscallNode, info *TraceInfo) (bool, uint64, uint64) {
+	var first, last uint64
+	found := false
+	for _, event := range n.events {
+		if event.info == info {
+			if first == 0 {
+				first = event.ts
+				found = true
+			}
+			last = event.ts
+		}
+	}
+	return found, first, last
+}
+
+func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
+	if idx := n.findEndChild(); idx != -1 {
+		tag := n.next[idx].tag
+		for info, _ := range a.patternInterval {
+			//fmt.Printf("%v\n", info.name)
+			if found, first, last := findRangeOfTrace(n, info); found {
+				a.patternInterval[info][tag] = append(a.patternInterval[info][tag], first)
+				a.patternInterval[info][tag] = append(a.patternInterval[info][tag], last)
+				//fmt.Printf("%v %v\n", first, last)
+			}
+		}
+	}
+
+	for _, next := range n.next {
+		a.GetPatternTimeInterval(next)
+	}
+}
+
+func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
+	a.GetPatternTimeInterval(a.seqTreeRoot)
+
+	for info, patternInterval := range a.patternInterval {
+		fmt.Printf("%v\n", info.name)
+		for i, ni := range patternInterval {
+			if _, ok := a.patternOrder[i]; !ok {
+				a.patternOrder[i] = make(map[int]int)
+			}
+			for j, nj := range patternInterval {
+				if _, ok := a.patternOrder[i][j]; !ok {
+					a.patternOrder[i][j] = 0
+				}
+
+				if i == j || (ni[0] == 0 && ni[1] == 0) || (nj[0] == 0 && nj[1] == 0) {
+					continue
+				} else if ni[1] < nj[0] {
+					if a.patternOrder[i][j] == 0 || a.patternOrder[i][j] == 1 {
+						a.patternOrder[i][j] = 1
+					} else {
+						a.patternOrder[i][j] = 3
+					}
+					//fmt.Printf("%v > %v\n", i, j)
+				} else if ni[0] > nj[1] {
+					if a.patternOrder[i][j] == 0 || a.patternOrder[i][j] == 2 {
+						a.patternOrder[i][j] = 2
+					} else {
+						a.patternOrder[i][j] = 3
+					}
+					//fmt.Printf("%v > %v\n", j, i)
+				} else {
+					a.patternOrder[i][j] = 3
+				}
+				//if i == 2 && j == 73 {
+				//	fmt.Printf("i:%v j:%v\n", ni, nj)
+				//	fmt.Printf("%v\n" ,a.patternOrder[i][j])
+				//}
+			}
+		}
+	}
+	fmt.Printf("\t")
+	for k, _ := range a.patternOrder {
+		fmt.Printf("%03d ", k)
+	}
+	fmt.Printf("\n")
+	for ks, vs := range a.patternOrder {
+		fmt.Printf("%03d\t", ks)
+		for _, vd := range vs {
+			if vd == 0 {
+				fmt.Printf(" -  ")
+			} else if vd == 1 {
+				fmt.Printf(" >  ")
+			} else if vd == 2 {
+				fmt.Printf(" <  ")
+			} else if vd == 3 {
+				fmt.Printf("    ")
+			} else {
+				fmt.Printf("%03d ", vd)
+			}
+		}
+		fmt.Printf("\n")
+	}
+}
+
 func (a *PatternAnalysis) PrintResult(v Verbose) {
 	fmt.Print("sequence tree before purging\n")
 	a.seqTreeRoot.Print(a)
@@ -582,6 +688,9 @@ func (a *PatternAnalysis) PrintResult(v Verbose) {
 	fmt.Print("--------------------------------------------------------------------------------\n")
 	fmt.Print("sequence tree after purging\n")
 	a.seqTreeRoot.Print(a)
+	//fmt.Print("--------------------------------------------------------------------------------\n")
+	//a.AnalyzeIntraPatternOrder()
+
 }
 
 
