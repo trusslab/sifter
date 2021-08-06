@@ -1,7 +1,6 @@
 package sifter
 
 import (
-	"encoding/binary"
 	"fmt"
 )
 
@@ -163,9 +162,12 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			a.eventCounterOfPid[pid] = 0
 		}
 	} else if _, ok := a.moduleSyscalls[te.syscall]; ok {
-		reg0 := binary.LittleEndian.Uint64(te.data[0:8])
-		if _, ok := a.patternInterval[ProcFDKey{te.info, reg0}]; !ok {
-			a.patternInterval[ProcFDKey{te.info, reg0}] = make(map[int][]uint64)
+		regID, fd := te.GetFD()
+		if regID == -1 {
+			fmt.Printf("syscall to kernel module not associated with fd: %v\n", te.syscall.name)
+		}
+		if _, ok := a.patternInterval[ProcFDKey{te.info, fd}]; !ok {
+			a.patternInterval[ProcFDKey{te.info, fd}] = make(map[int][]uint64)
 		}
 
 		if _, ok := a.lastEventOfPid[te.id]; ok {
@@ -557,7 +559,7 @@ func findRangeOfTrace(n *TaggedSyscallNode, key ProcFDKey) (bool, uint64, uint64
 	var first, last uint64
 	found := false
 	for _, event := range n.events {
-		if event.info == key.info && binary.LittleEndian.Uint64(event.data[0:8]) == key.fd {
+		if regID, fd := event.GetFD(); regID != -1 && fd == key.fd && event.info == key.info {
 			if first == 0 {
 				first = event.ts
 				found = true
@@ -569,7 +571,6 @@ func findRangeOfTrace(n *TaggedSyscallNode, key ProcFDKey) (bool, uint64, uint64
 }
 
 func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
-	fmt.Printf("GetPatternTimeInterval\n")
 	if idx := n.findEndChild(); idx != -1 {
 		tag := n.next[idx].tag
 		for key, _ := range a.patternInterval {
@@ -599,6 +600,10 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 					a.patternOrder[i][j] = 0
 				}
 
+				//if i == 3 && j == 7 {
+				//	fmt.Printf("i:%v j:%v\n", ni, nj)
+				//	fmt.Printf("%v\n" ,a.patternOrder[i][j])
+				//}
 				if i == j || (ni[0] == 0 && ni[1] == 0) || (nj[0] == 0 && nj[1] == 0) {
 					continue
 				} else if ni[1] < nj[0] {
@@ -616,10 +621,6 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 				} else {
 					a.patternOrder[i][j] = 3
 				}
-				//if i == 3 && j == 7 {
-				//	fmt.Printf("i:%v j:%v\n", ni, nj)
-				//	fmt.Printf("%v\n" ,a.patternOrder[i][j])
-				//}
 			}
 		}
 	}

@@ -2,6 +2,7 @@ package sifter
 
 import (
 	"bufio"
+	"encoding/binary"
 	"math"
 	"os"
 	"github.com/google/syzkaller/prog"
@@ -147,5 +148,14 @@ func newTraceEvent(ts uint64, id uint32, info *TraceInfo, syscall *Syscall) *Tra
 		traceEvent.data = make([]byte, 48 + syscall.size)
 	}
 	return traceEvent
+}
+
+func (te *TraceEvent) GetFD() (int, uint64) {
+	for i, arg := range te.syscall.def.Args {
+		if res, ok := arg.(*prog.ResourceType); ok && res.FldName == "fd" {
+			return i, binary.LittleEndian.Uint64(te.data[i*8:i*8+8])
+		}
+	}
+	return -1, 0
 }
 
