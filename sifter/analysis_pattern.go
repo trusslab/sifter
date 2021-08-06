@@ -68,6 +68,7 @@ type PatternAnalysis struct {
 	tagCounter        int
 	moduleSyscalls    map[*Syscall]bool
 	patternInterval   map[ProcFDKey]map[int][]uint64
+	patternOccurence  map[ProcFDKey]map[int]int
 	patternOrder      map[int]map[int]int
 }
 
@@ -86,6 +87,7 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.patTreeRoot.syscall = new(TaggedSyscall)
 	a.moduleSyscalls = make(map[*Syscall]bool)
 	a.patternInterval = make(map[ProcFDKey]map[int][]uint64)
+	a.patternOccurence = make(map[ProcFDKey]map[int]int)
 	a.patternOrder = make(map[int]map[int]int)
 
 	for _, syscalls := range *TracedSyscalls {
@@ -168,6 +170,7 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 		}
 		if _, ok := a.patternInterval[ProcFDKey{te.info, fd}]; !ok {
 			a.patternInterval[ProcFDKey{te.info, fd}] = make(map[int][]uint64)
+			a.patternOccurence[ProcFDKey{te.info, fd}] = make(map[int]int)
 		}
 
 		if _, ok := a.lastEventOfPid[te.id]; ok {
@@ -555,16 +558,16 @@ func (n *TaggedSyscallNode) Print(a *PatternAnalysis) {
 	n.print(&depth, depthsWithOtherChildren, false, a)
 }
 
-func findRangeOfTrace(n *TaggedSyscallNode, key ProcFDKey) (bool, uint64, uint64) {
+func findRangeOfTrace(n *TaggedSyscallNode, key ProcFDKey) (int, uint64, uint64) {
 	var first, last uint64
-	found := false
+	found := 0
 	for _, event := range n.events {
 		if regID, fd := event.GetFD(); regID != -1 && fd == key.fd && event.info == key.info {
 			if first == 0 {
 				first = event.ts
-				found = true
 			}
 			last = event.ts
+			found += 1
 		}
 	}
 	return found, first, last
@@ -574,9 +577,10 @@ func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
 	if idx := n.findEndChild(); idx != -1 {
 		tag := n.next[idx].tag
 		for key, _ := range a.patternInterval {
-			if found, first, last := findRangeOfTrace(n, key); found {
+			if found, first, last := findRangeOfTrace(n, key); found >= 0 {
 				a.patternInterval[key][tag] = append(a.patternInterval[key][tag], first)
 				a.patternInterval[key][tag] = append(a.patternInterval[key][tag], last)
+				a.patternOccurence[key][tag] += found
 			}
 		}
 	}
@@ -600,7 +604,7 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 					a.patternOrder[i][j] = 0
 				}
 
-				//if i == 3 && j == 7 {
+				//if i == 3 && j == 826 {
 				//	fmt.Printf("i:%v j:%v\n", ni, nj)
 				//	fmt.Printf("%v\n" ,a.patternOrder[i][j])
 				//}
@@ -624,15 +628,27 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 			}
 		}
 	}
-	fmt.Printf("\t")
+	fmt.Printf("                   ")
 	var tags []int
 	for k, _ := range a.patternOrder {
 		fmt.Printf("%03d ", k)
 		tags = append(tags, k)
 	}
+	patternOccurence := make(map[int][]int)
+	for _, tag := range tags {
+		patternOccurence[tag] = make([]int, 2)
+	}
+	for key, _ := range a.patternInterval {
+		for _, tag := range tags {
+			patternOccurence[tag][0] += a.patternOccurence[key][tag]
+			if a.patternOccurence[key][tag] != 0 {
+				patternOccurence[tag][1] += 1
+			}
+		}
+	}
 	fmt.Printf("\n")
 	for _, ks := range tags {
-		fmt.Printf("%03d\t", ks)
+		fmt.Printf("%3d (%8d/%3d) ", ks, patternOccurence[ks][0], patternOccurence[ks][1])
 		for _, kd := range tags {
 			vd := a.patternOrder[ks][kd]
 			if vd == 0 {
