@@ -151,6 +151,9 @@ func newTraceEvent(ts uint64, id uint32, info *TraceInfo, syscall *Syscall) *Tra
 }
 
 func (te *TraceEvent) GetFD() (int, uint64) {
+	if te.syscall.def == nil {
+		return -1, 0
+	}
 	for i, arg := range te.syscall.def.Args {
 		if res, ok := arg.(*prog.ResourceType); ok && res.FldName == "fd" {
 			return i, binary.LittleEndian.Uint64(te.data[i*8:i*8+8])
