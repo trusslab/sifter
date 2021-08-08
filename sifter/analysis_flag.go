@@ -20,16 +20,24 @@ func (flags *FlagSet) Update(v uint64, f Flag) int {
 	return count
 }
 
-func newFlagSet() FlagSet {
-	newFlags := FlagSet{}
+func newFlagSet() *FlagSet {
+	newFlags := new(FlagSet)
 	newFlags.values = make(map[uint64]int)
 	return newFlags
 }
 
+func (flags *FlagSet) String() string {
+	s := ""
+	for flag, count := range flags.values {
+		s += fmt.Sprintf("%x(%d) ", flag, count)
+	}
+	return s
+}
+
 type FlagAnalysis struct {
-	argRanges map[*ArgMap][]FlagSet
-	regRanges map[*Syscall][]FlagSet
-	vlrRanges map[*VlrMap]map[*VlrRecord][]FlagSet
+	argFlags map[*ArgMap]map[int]*FlagSet
+	regFlags map[*Syscall]map[int]*FlagSet
+	vlrFlags map[*VlrMap]map[*VlrRecord]map[int]*FlagSet
 	moduleSyscalls map[*Syscall]bool
 }
 
@@ -38,41 +46,44 @@ func (a *FlagAnalysis) String() string {
 }
 
 func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
-	a.argRanges = make(map[*ArgMap][]FlagSet)
-	a.regRanges = make(map[*Syscall][]FlagSet)
-	a.vlrRanges = make(map[*VlrMap]map[*VlrRecord][]FlagSet)
+	a.argFlags = make(map[*ArgMap]map[int]*FlagSet)
+	a.regFlags = make(map[*Syscall]map[int]*FlagSet)
+	a.vlrFlags = make(map[*VlrMap]map[*VlrRecord]map[int]*FlagSet)
 	for _, syscalls := range *TracedSyscalls {
 		for _, syscall := range syscalls {
-			for _, arg := range syscall.def.Args {
+			a.regFlags[syscall] = make(map[int]*FlagSet)
+			for i, arg := range syscall.def.Args {
 				if _, isFlagsArg := arg.(*prog.FlagsType); isFlagsArg {
-					a.regRanges[syscall] = append(a.regRanges[syscall], newFlagSet())
+					a.regFlags[syscall][i] = newFlagSet()
 				}
 			}
 			for _, arg := range syscall.argMaps {
+				a.argFlags[arg] = make(map[int]*FlagSet)
 				if structArg, ok := arg.arg.(*prog.StructType); ok {
-					for _, field := range structArg.Fields {
+					for i, field := range structArg.Fields {
 						if _, isFlagsArg := field.(*prog.FlagsType); isFlagsArg {
-							a.argRanges[arg] = append(a.argRanges[arg], newFlagSet())
+							a.argFlags[arg][i] = newFlagSet()
 						}
 					}
 				} else {
-					a.argRanges[arg] = append(a.argRanges[arg], newFlagSet())
+					a.argFlags[arg][0] = newFlagSet()
 				}
 			}
 			for _, vlr := range syscall.vlrMaps {
-				a.vlrRanges[vlr] = make(map[*VlrRecord][]FlagSet)
+				a.vlrFlags[vlr] = make(map[*VlrRecord]map[int]*FlagSet)
 				for _, record := range vlr.records {
+					a.vlrFlags[vlr][record] = make(map[int]*FlagSet)
 					if structArg, ok := record.arg.(*prog.StructType); ok {
-						for _, f := range structArg.Fields {
+						for fi, f := range structArg.Fields {
 							if structField, ok := f.(*prog.StructType); ok {
-								for _, field := range structField.Fields {
+								for ffi, field := range structField.Fields {
 									if _, isFlagsArg := field.(*prog.FlagsType); isFlagsArg {
-										a.vlrRanges[vlr][record] = append(a.vlrRanges[vlr][record], newFlagSet())
+										a.vlrFlags[vlr][record][ffi+fi*100] = newFlagSet()
 									}
 								}
 							} else {
 								if _, isFlagsArg := f.(*prog.FlagsType); isFlagsArg {
-									a.vlrRanges[vlr][record] = append(a.vlrRanges[vlr][record], newFlagSet())
+									a.vlrFlags[vlr][record][fi*100] = newFlagSet()
 								}
 							}
 						}
@@ -105,39 +116,34 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 	msgs := make([]string, 0)
 	var offset uint64
 	for i, arg := range te.syscall.def.Args {
-		f := 0
 		if _, isFlagsArg := arg.(*prog.FlagsType); isFlagsArg {
 			_, tr := te.GetData(offset, 8)
-			if a.regRanges[te.syscall][f].Update(tr, flag) == 0 {
+			if a.regFlags[te.syscall][i].Update(tr, flag) == 0 {
 				msgs = append(msgs, fmt.Sprintf("reg[%v] new flag %x", i, tr))
 			}
 			te.tags = append(te.tags, int(tr))
-			f += 1
 		}
 		offset += 8
 	}
 	for _, arg := range te.syscall.argMaps {
-		f := 0
 		if structArg, ok := arg.arg.(*prog.StructType); ok {
-			for _, field := range structArg.Fields {
+			for fi, field := range structArg.Fields {
 				if _, isFlagsArg := field.(*prog.FlagsType); isFlagsArg {
 					_, tr := te.GetData(offset, field.Size())
-					if a.argRanges[arg][f].Update(tr, flag) == 0{
+					if a.argFlags[arg][fi].Update(tr, flag) == 0{
 						msgs = append(msgs, fmt.Sprintf("%v::%v new flag %x", arg.name, field.Name(), tr))
 					}
 					te.tags = append(te.tags, int(tr))
-					f += 1
 				}
 				offset += field.Size()
 			}
 		} else {
 			if flagArg, isFlagsArg := arg.arg.(*prog.FlagsType); isFlagsArg {
 				_, tr := te.GetData(offset, flagArg.Size())
-				if a.argRanges[arg][f].Update(tr, flag) == 0{
+				if a.argFlags[arg][0].Update(tr, flag) == 0{
 					msgs = append(msgs, fmt.Sprintf("%v new flag %x", arg.name, tr))
 				}
 				te.tags = append(te.tags, int(tr))
-				f += 1
 			}
 			offset += arg.size
 		}
@@ -147,7 +153,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 		_, start := te.GetData(56, 8)
 		offset += start
 		for {
-			_, tr := te.GetData(offset, 4)
+			_, tr := te.GetData(48+offset, 4)
 			var matchedRecord *VlrRecord
 			if offset < size+vlr.offset+48 {
 				for i, record := range vlr.records {
@@ -160,20 +166,32 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 			offset += 4
 			if matchedRecord != nil {
 				structArg, _ := matchedRecord.arg.(*prog.StructType)
-				for i, field := range structArg.Fields {
-					f := 0
-					if i == 0 {
+				for fi, f := range structArg.Fields {
+					if fi == 0 {
 						continue
 					}
-					if _, isFlagsArg := field.(*prog.FlagsType); isFlagsArg {
-						_, tr := te.GetData(offset, field.Size())
-						if a.vlrRanges[vlr][matchedRecord][f].Update(tr, flag) == 0{
-							msgs = append(msgs, fmt.Sprintf("%v new flag %x", field.Name(), tr))
+					if structField, ok := f.(*prog.StructType); ok {
+						fieldOffset := uint64(0)
+						for ffi, field := range structField.Fields {
+							if _, isFlagsArg := field.(*prog.FlagsType); isFlagsArg {
+								_, tr := te.GetData(offset+fieldOffset, field.Size())
+								if a.vlrFlags[vlr][matchedRecord][ffi+fi*100].Update(tr, flag) == 0{
+									msgs = append(msgs, fmt.Sprintf("%v::%v new flag %x", f.Name(), field.Name(), tr))
+								}
+								te.tags = append(te.tags, int(tr))
+							}
+							fieldOffset += field.Size()
 						}
-						te.tags = append(te.tags, int(tr))
-						f += 1
+					} else {
+						if _, isFlagsArg := f.(*prog.FlagsType); isFlagsArg {
+							_, tr := te.GetData(offset, f.Size())
+							if a.vlrFlags[vlr][matchedRecord][fi*100].Update(tr, flag) == 0{
+								msgs = append(msgs, fmt.Sprintf("%v new flag %x", f.Name(), tr))
+							}
+							te.tags = append(te.tags, int(tr))
+						}
 					}
-					offset += field.Size()
+					offset += f.Size()
 				}
 				continue;
 			} else {
@@ -193,21 +211,42 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 }
 
 func (a *FlagAnalysis) PrintResult(v Verbose) {
-//	for syscall, regRange := range a.regRanges {
-//		fmt.Printf("\n%v\n", syscall.name)
-//		for i := 0; i < 6; i++ {
-//			fmt.Printf("reg[%v] %v\n", i, regRange[i*2:i*2+2])
-//		}
-//		for _, arg := range syscall.argMaps {
-//			fmt.Printf("%v %v\n", arg.name, a.argRanges[arg])
-//		}
-//		for _, vlr := range syscall.vlrMaps {
-//			fmt.Printf("\n%v %v\n", vlr.name, len(vlr.records))
-//			for _, record := range vlr.records {
-//				fmt.Printf("%v %v\n", record.name, a.vlrRanges[vlr][record])
-//			}
-//		}
-//	}
+	for syscall, _ := range a.moduleSyscalls {
+		s := ""
+		for i, regFlag := range a.regFlags[syscall] {
+			s += fmt.Sprintf("reg[%v]: %v\n", i, regFlag)
+		}
+		for _, argMap := range syscall.argMaps {
+			arg := argMap.arg
+			if structArg, ok := arg.(*prog.StructType); ok {
+				for i, argFlag := range a.argFlags[argMap] {
+					s += fmt.Sprintf("%v::%v: %v\n", argMap.name, structArg.Fields[i].Name(), argFlag)
+				}
+			} else {
+				s += fmt.Sprintf("%v %v\n", argMap.name, a.argFlags[argMap][0])
+			}
+		}
+		for _, vlrMap := range syscall.vlrMaps {
+			fmt.Printf("\nvlr %v %v\n", vlrMap.name, len(vlrMap.records))
+			for _, vlrRecord := range vlrMap.records {
+				for i, vlrFlag := range a.vlrFlags[vlrMap][vlrRecord] {
+					structArg, _ := vlrRecord.arg.(*prog.StructType)
+					fi := i / 100
+					ffi := i % 100
+					if ffi == 0 {
+						s += fmt.Sprintf("%v::%v: %v\n", vlrRecord.name, structArg.Fields[fi].Name(), vlrFlag)
+					} else {
+						structField, _ := structArg.Fields[fi].(*prog.StructType)
+						s += fmt.Sprintf("%v::%v::%v: %v\n", vlrRecord.name, structArg.Fields[fi].Name(), structField.Fields[ffi], vlrFlag)
+					}
+				}
+			}
+		}
+		if len(s) != 0 {
+			fmt.Print("--------------------------------------------------------------------------------\n")
+			fmt.Printf("%v\n%s", syscall.name, s)
+		}
+	}
 }
 
 
