@@ -1,7 +1,6 @@
 package sifter
 
 import (
-	"encoding/binary"
 	"fmt"
 )
 
@@ -67,12 +66,12 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 	for i, vlr := range te.syscall.vlrMaps {
 		offset := vlr.offset
 		node := a.vlrSequenceRoot[i]
-		size := uint64(binary.LittleEndian.Uint32(te.data[48:56]))
-		start := uint64(binary.LittleEndian.Uint32(te.data[56:64]))
+		_, size := te.GetData(48, 8)
+		_, start := te.GetData(56, 8)
 		offset += start
 
 		for {
-			tr := uint64(binary.LittleEndian.Uint32(te.data[48+offset:48+offset+4]))
+			_, tr := te.GetData(offset, 4)
 			var matchedRecord *VlrRecord
 			if offset < vlr.offset + size {
 				for j, record := range vlr.records {

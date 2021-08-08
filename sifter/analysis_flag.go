@@ -1,9 +1,7 @@
 package sifter
 
 import (
-	"encoding/binary"
 	"fmt"
-//	"math"
 
 	"github.com/google/syzkaller/prog"
 )
@@ -13,7 +11,7 @@ type FlagSet struct {
 }
 
 func (flags *FlagSet) Update(v uint64, f Flag) int {
-	count, ok := flags.values[v]
+	count, _ := flags.values[v]
 
 	if f == TrainFlag {
 		flags.values[v] += 1
@@ -145,11 +143,11 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 		}
 	}
 	for _, vlr := range te.syscall.vlrMaps {
-		size := uint64(binary.LittleEndian.Uint32(te.data[48:56]))
-		start := uint64(binary.LittleEndian.Uint32(te.data[56:64]))
+		_, size := te.GetData(48, 8)
+		_, start := te.GetData(56, 8)
 		offset += start
 		for {
-			tr := uint64(binary.LittleEndian.Uint32(te.data[offset:offset+4]))
+			_, tr := te.GetData(offset, 4)
 			var matchedRecord *VlrRecord
 			if offset < size+vlr.offset+48 {
 				for i, record := range vlr.records {

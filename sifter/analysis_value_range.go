@@ -1,7 +1,6 @@
 package sifter
 
 import (
-	"encoding/binary"
 	"fmt"
 	"math"
 
@@ -85,7 +84,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (strin
 	var offset uint64
 	for i := 0; i < 6; i++ {
 		if i < 1 {
-		tr := binary.LittleEndian.Uint64(te.data[offset:offset+8])
+		_, tr := te.GetData(offset, 8)
 		if (a.regRanges[te.syscall][i*2+0] > tr) {
 			if flag == TrainFlag {
 				a.regRanges[te.syscall][i*2+0] = tr
@@ -105,12 +104,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (strin
 		if structArg, ok := arg.arg.(*prog.StructType); ok {
 			for i, field := range structArg.Fields {
 				if _, isPtrArg := field.(*prog.PtrType); !isPtrArg && field.FieldName() != "ptr" {
-					var tr uint64
-					if (field.Size() == 4) {
-						tr = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+field.Size()]))
-					} else {
-						tr = binary.LittleEndian.Uint64(te.data[offset:offset+field.Size()])
-					}
+					_, tr := te.GetData(offset, field.Size())
 					if (a.argRanges[arg][2*i+0] > tr) {
 						if flag == TrainFlag {
 							a.argRanges[arg][2*i+0] = tr
@@ -128,12 +122,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (strin
 			}
 		} else {
 			if _, isPtrArg := arg.arg.(*prog.PtrType); !isPtrArg && arg.arg.FieldName() != "ptr" {
-				var tr uint64
-				if (arg.arg.Size() == 4) {
-					tr = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+arg.size]))
-				} else {
-					tr = binary.LittleEndian.Uint64(te.data[offset:offset+arg.size])
-				}
+				_, tr := te.GetData(offset, arg.arg.Size())
 				if (a.argRanges[arg][0] > tr) {
 					if flag == TrainFlag {
 						a.argRanges[arg][0] = tr
@@ -151,11 +140,11 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (strin
 		}
 	}
 	for _, vlr := range te.syscall.vlrMaps {
-		size := uint64(binary.LittleEndian.Uint32(te.data[48:56]))
-		start := uint64(binary.LittleEndian.Uint32(te.data[56:64]))
+		_, size := te.GetData(48, 8)
+		_, start := te.GetData(56, 8)
 		offset += start
 		for {
-			tr := uint64(binary.LittleEndian.Uint32(te.data[offset:offset+4]))
+			_, tr := te.GetData(offset, 4)
 			var matchedRecord *VlrRecord
 			if offset < size+vlr.offset+48 {
 				for i, record := range vlr.records {
@@ -173,11 +162,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (strin
 						continue
 					}
 					if _, isPtrArg := field.(*prog.PtrType); !isPtrArg && field.FieldName() != "ptr" && field.FieldName() != "cookie" && field.FieldName() != "ref" {
-						if (field.Size() == 4) {
-							tr = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+field.Size()]))
-						} else {
-							tr = binary.LittleEndian.Uint64(te.data[offset:offset+field.Size()])
-						}
+						_, tr = te.GetData(offset, field.Size())
 						if (a.vlrRanges[vlr][matchedRecord][2*i+0] > tr) {
 							if flag == TrainFlag {
 								a.vlrRanges[vlr][matchedRecord][2*i+0] = tr
