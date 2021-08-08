@@ -162,3 +162,22 @@ func (te *TraceEvent) GetFD() (int, uint64) {
 	return -1, 0
 }
 
+func (te *TraceEvent) GetData(offset uint64, size uint64) (bool, uint64) {
+	ok := false
+	var data uint64
+
+	if offset > 0 && offset+size < uint64(len(te.data)) {
+		switch size {
+		case 1:
+			data = uint64(te.data[offset])
+		case 2:
+			data = uint64(binary.LittleEndian.Uint16(te.data[offset:offset+size]))
+		case 4:
+			data = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+size]))
+		case 8:
+			data = binary.LittleEndian.Uint64(te.data[offset:offset+size])
+		}
+	}
+
+	return ok, data
+}
