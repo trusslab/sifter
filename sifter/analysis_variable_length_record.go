@@ -57,7 +57,7 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 	}
 
 	if len(te.tags) != 0 {
-		fmt.Printf("error\n");
+		fmt.Printf("error\n")
 	}
 
 	updateMsg := ""
@@ -71,7 +71,7 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 		offset += start
 
 		for {
-			_, tr := te.GetData(offset, 4)
+			_, tr := te.GetData(48+offset, 4)
 			var matchedRecord *VlrRecord
 			if offset < vlr.offset + size {
 				for j, record := range vlr.records {
