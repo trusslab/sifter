@@ -23,6 +23,23 @@ func NewTaggedSyscall(s *Syscall, t []int) *TaggedSyscall {
 	return newTaggedSyscall
 }
 
+func (a *TaggedSyscall) Equal(b *TaggedSyscall) bool {
+	if a.syscall != b.syscall {
+		return false
+	}
+
+	if len(a.tags) != len(b.tags) {
+		return false
+	}
+
+	for i, _ := range a.tags {
+		if a.tags[i] != b.tags[i] {
+			return false
+		}
+	}
+	return true
+}
+
 type TaggedSyscallNode struct {
 	next    []*TaggedSyscallNode
 	syscall *TaggedSyscall
@@ -50,6 +67,28 @@ func NewTaggedSyscallEndNode(flag Flag, tag int) *TaggedSyscallNode {
 	newEndNode.counts[flag] += 1
 	newEndNode.tag = tag
 	return newEndNode
+}
+
+func (n *TaggedSyscallNode) findChild(s *TaggedSyscall) int {
+	for i, next := range n.next {
+		if next.syscall.Equal(s) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (n *TaggedSyscallNode) findEndChild() int {
+	for i, next := range n.next {
+		if next.syscall.syscall == nil {
+			return i
+		}
+	}
+	return -1
+}
+
+func (n *TaggedSyscallNode) isLeaf() bool {
+	return len(n.next) == 1 && n.findEndChild() >= 0
 }
 
 type ProcFDKey struct {
@@ -121,23 +160,6 @@ func (a *PatternAnalysis) toBreakDown(te *TraceEvent) bool {
 	return breakDownSeq
 }
 
-func (a *TaggedSyscall) Equal(b *TaggedSyscall) bool {
-	if a.syscall != b.syscall {
-		return false
-	}
-
-	if len(a.tags) != len(b.tags) {
-		return false
-	}
-
-	for i, _ := range a.tags {
-		if a.tags[i] != b.tags[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 	if (te.id & 0x80000000) == 0 {
 		if _, ok := a.firstAndLastOfPid[te.id]; !ok {
@@ -192,16 +214,10 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			a.lastNodeOfPid[te.id] = a.seqTreeRoot
 		}
 
-		nextExist := false
-		for _, next := range a.lastNodeOfPid[te.id].next {
-			if next.syscall.Equal(NewTaggedSyscall(te.syscall, te.tags)) {
-				next.counts[TrainFlag] += 1
-				a.lastNodeOfPid[te.id] = next
-				nextExist = true
-			}
-		}
-
-		if !nextExist {
+		if idx := a.lastNodeOfPid[te.id].findChild(NewTaggedSyscall(te.syscall, te.tags)); idx != -1 {
+			a.lastNodeOfPid[te.id].next[idx].counts[TrainFlag] += 1
+			a.lastNodeOfPid[te.id] = a.lastNodeOfPid[te.id].next[idx]
+		} else {
 			newNextNode := new(TaggedSyscallNode)
 			newNextNode.syscall = NewTaggedSyscall(te.syscall, te.tags)
 			newNextNode.flag = TrainFlag
@@ -299,44 +315,14 @@ func (a *PatternAnalysis) MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallN
 	dst.events = append(dst.events, src.events...)
 	dst.pt = 0
 	for _, srcNext := range src.next {
-		isInDst := false
-		var dstNext *TaggedSyscallNode
-		for _, dstNext = range dst.next {
-			if dstNext.syscall.Equal(srcNext.syscall) {
-				isInDst = true
-				break
-			}
-		}
-		if isInDst {
-			if dst.findEndChild() < 0 {
-				a.MergeTrees(dstNext, srcNext)
+		if idx := dst.findChild(srcNext.syscall); idx != -1 {
+			if dst.findEndChild() == -1 {
+				a.MergeTrees(dst.next[idx], srcNext)
 			}
 		} else {
 			dst.next = append(dst.next, srcNext)
 		}
 	}
-}
-
-func (n *TaggedSyscallNode) findChild(s *TaggedSyscall) int {
-	for i, next := range n.next {
-		if next.syscall.Equal(s) {
-			return i
-		}
-	}
-	return -1
-}
-
-func (n *TaggedSyscallNode) findEndChild() int {
-	for i, next := range n.next {
-		if next.syscall.syscall == nil {
-			return i
-		}
-	}
-	return -1
-}
-
-func (n *TaggedSyscallNode) isLeaf() bool {
-	return len(n.next) == 1 && n.findEndChild() >= 0
 }
 
 func (a *PatternAnalysis) getPatternEnd(sn *TaggedSyscallNode, pn *TaggedSyscallNode) *TaggedSyscallNode {
@@ -398,13 +384,7 @@ func (a *PatternAnalysis) CheckNewIndependentNode() bool {
 	hasIndependentNode := false
 	for _, n := range a.seqTreeRoot.next {
 		if n.findEndChild() >= 0 {
-			notInPurgedList := true
-			for _, pn := range a.patTreeRoot.next {
-				if n.syscall.Equal(pn.syscall) {
-					notInPurgedList = false
-				}
-			}
-			if notInPurgedList {
+			if a.patTreeRoot.findChild(n.syscall) == -1 {
 				a.patTreeRoot.next = append(a.patTreeRoot.next, n)
 				hasIndependentNode = true
 			}
