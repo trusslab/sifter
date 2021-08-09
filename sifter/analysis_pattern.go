@@ -628,7 +628,7 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 			}
 		}
 	}
-	fmt.Printf("                   ")
+	fmt.Printf("                     ")
 	var tags []int
 	for k, _ := range a.patternOrder {
 		fmt.Printf("%03d ", k)
@@ -636,7 +636,7 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 	}
 	patternOccurence := make(map[int][]int)
 	for _, tag := range tags {
-		patternOccurence[tag] = make([]int, 2)
+		patternOccurence[tag] = make([]int, 3)
 	}
 	for key, _ := range a.patternInterval {
 		for _, tag := range tags {
@@ -644,11 +644,19 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 			if a.patternOccurence[key][tag] != 0 {
 				patternOccurence[tag][1] += 1
 			}
+			if a.patternOccurence[key][tag] > 1 {
+				patternOccurence[tag][2] = 1
+			}
 		}
 	}
 	fmt.Printf("\n")
 	for _, ks := range tags {
 		fmt.Printf("%3d (%8d/%3d) ", ks, patternOccurence[ks][0], patternOccurence[ks][1])
+		if patternOccurence[ks][2] == 0 {
+			fmt.Printf("u ")
+		} else {
+			fmt.Printf("  ")
+		}
 		for _, kd := range tags {
 			vd := a.patternOrder[ks][kd]
 			if vd == 0 {
