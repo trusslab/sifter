@@ -554,7 +554,7 @@ func findRangeOfTrace(n *TaggedSyscallNode, key ProcFDKey) (int, uint64, uint64)
 }
 
 func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
-	if idx := n.findEndChild(); idx != -1 {
+	if idx := n.findEndChild(); idx != -1 && n != a.seqTreeRoot {
 		tag := n.next[idx].tag
 		for key, _ := range a.patternInterval {
 			if found, first, last := findRangeOfTrace(n, key); found >= 0 {
@@ -564,7 +564,6 @@ func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
 			}
 		}
 	}
-
 	for _, next := range n.next {
 		a.GetPatternTimeInterval(next)
 	}
