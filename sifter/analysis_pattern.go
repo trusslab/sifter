@@ -258,7 +258,9 @@ func (a *PatternAnalysis) testSeqTreeModel(te *TraceEvent) (string, int) {
 
 		if idx := a.lastNodeOfPid[te.id].findEndChild(); a.lastNodeOfPid[te.id] != a.seqTreeRoot && idx != -1 {
 			a.lastNodeOfPid[te.id] = a.seqTreeRoot
-		} else if idx := a.lastNodeOfPid[te.id].findChild(NewTaggedSyscall(te.syscall, te.tags)); idx != -1 {
+		}
+
+		if idx := a.lastNodeOfPid[te.id].findChild(NewTaggedSyscall(te.syscall, te.tags)); idx != -1 {
 			a.lastNodeOfPid[te.id] = a.lastNodeOfPid[te.id].next[idx]
 		} else {
 			last := ""
@@ -267,7 +269,17 @@ func (a *PatternAnalysis) testSeqTreeModel(te *TraceEvent) (string, int) {
 			} else {
 				last += fmt.Sprintf("%v%v", a.lastNodeOfPid[te.id].syscall.syscall.name, a.lastNodeOfPid[te.id].syscall.tags)
 			}
-			return fmt.Sprintf("r3 %v->%v%v no matching pattern", last, te.syscall.name, te.tags), 1
+			err := ""
+			err += fmt.Sprintf("%v->%v%v no matching pattern", last, te.syscall.name, te.tags)
+			err += fmt.Sprintf(" valid next(")
+			for i, nn := range a.lastNodeOfPid[te.id].next {
+				err += fmt.Sprintf("%v%v", nn.syscall.syscall.name, nn.syscall.tags)
+				if i != len(a.lastNodeOfPid[te.id].next)-1 {
+					err += fmt.Sprintf(", ")
+				}
+			}
+			err += fmt.Sprintf(")")
+			return err, 1
 		}
 	}
 	return "", 0
