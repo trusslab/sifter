@@ -132,6 +132,7 @@ type TraceEvent struct {
 	info    *TraceInfo
 	data    []byte
 	tags    []int
+	typ     int
 }
 
 func newTraceEvent(ts uint64, id uint32, info *TraceInfo, syscall *Syscall) *TraceEvent {
@@ -142,10 +143,13 @@ func newTraceEvent(ts uint64, id uint32, info *TraceInfo, syscall *Syscall) *Tra
 	traceEvent.syscall = syscall
 	if (id & 0x80000000 != 0) {
 		traceEvent.data = make([]byte, (id & 0x0000ffff))
+		traceEvent.typ = 0
 	} else if syscall == nil {
 		traceEvent.data = make([]byte, 48)
+		traceEvent.typ = 2
 	} else {
 		traceEvent.data = make([]byte, 48 + syscall.size)
+		traceEvent.typ = 1
 	}
 	return traceEvent
 }
