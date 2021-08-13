@@ -6,6 +6,83 @@ import (
 
 type Grouping int
 
+type GroupingMethod interface {
+	setThreshold(th uint64)
+	toBreakDown(te *TraceEvent) bool
+	update(te *TraceEvent)
+	reset()
+}
+
+type TimeGroupingMethod struct {
+	threshold uint64
+	ts        map[uint32]uint64
+}
+
+func newTimeGroupingMethod() *TimeGroupingMethod {
+	tg := new(TimeGroupingMethod)
+	tg.ts = make(map[uint32]uint64)
+	return tg
+}
+
+func (tg *TimeGroupingMethod) setThreshold(th uint64) {
+	tg.threshold = th
+}
+
+func (tg *TimeGroupingMethod) toBreakDown(te *TraceEvent) bool {
+	return te.ts - tg.ts[te.id] > tg.threshold
+}
+
+func (tg *TimeGroupingMethod) update(te *TraceEvent) {
+	switch te.typ {
+	case 0:
+		for pid, _ := range tg.ts {
+			tg.ts[pid] = 0
+		}
+	case 1:
+		tg.ts[te.id] = te.ts
+	}
+}
+
+func (tg *TimeGroupingMethod) reset() {
+	tg.ts = make(map[uint32]uint64)
+}
+
+type SyscallGroupingMethod struct {
+	threshold uint64
+	counter   map[uint32]uint64
+}
+
+func newSyscallGroupingMethod() *SyscallGroupingMethod {
+	sg := new(SyscallGroupingMethod)
+	sg.counter = make(map[uint32]uint64)
+	return sg
+}
+
+func (sg *SyscallGroupingMethod) setThreshold(th uint64) {
+	sg.threshold = th
+}
+
+func (sg *SyscallGroupingMethod) toBreakDown(te *TraceEvent) bool {
+	return sg.counter[te.id] > sg.threshold
+}
+
+func (sg *SyscallGroupingMethod) update(te *TraceEvent) {
+	switch te.typ {
+	case 0:
+		for pid, _ := range sg.counter {
+			sg.counter[pid] = sg.threshold + 1
+		}
+	case 1:
+		sg.counter[te.id] = 0
+	case 2:
+		sg.counter[te.id] += 1
+	}
+}
+
+func (sg *SyscallGroupingMethod) reset() {
+	sg.counter = make(map[uint32]uint64)
+}
+
 const (
 	TimeGrouping Grouping = iota
 	SyscallGrouping
@@ -91,21 +168,27 @@ func (n *TaggedSyscallNode) isLeaf() bool {
 	return len(n.next) == 1 && n.findEndChild() >= 0
 }
 
+func (n *TaggedSyscallNode) String() string {
+	if n.syscall.syscall == nil {
+		return "*"
+	} else {
+		return fmt.Sprintf("%v%v", n.syscall.syscall.name, n.syscall.tags)
+	}
+}
+
 type ProcFDKey struct {
 	info *TraceInfo
 	fd   uint64
 }
 
 type PatternAnalysis struct {
-	groupingThreshold map[Grouping]uint64
+	groupingMethods   map[Grouping]GroupingMethod
 	lastNodeOfPid     map[uint32]*TaggedSyscallNode
-	lastEventOfPid    map[uint32]*TraceEvent
 	firstAndLastOfPid map[uint32][]*TraceEvent
-	eventCounterOfPid map[uint32]uint64
 	seqTreeRoot       *TaggedSyscallNode
 	patTreeRoot       *TaggedSyscallNode
 	tagCounter        int
-	moduleSyscalls    map[*Syscall]bool
+//	moduleSyscalls    map[*Syscall]bool
 	patternInterval   map[ProcFDKey]map[int][]uint64
 	patternOccurence  map[ProcFDKey]map[int]int
 	patternOrder      map[int]map[int]int
@@ -117,51 +200,52 @@ func (a *PatternAnalysis) String() string {
 
 func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.lastNodeOfPid = make(map[uint32]*TaggedSyscallNode)
-	a.lastEventOfPid = make(map[uint32]*TraceEvent)
 	a.firstAndLastOfPid = make(map[uint32][]*TraceEvent)
-	a.eventCounterOfPid = make(map[uint32]uint64)
 	a.seqTreeRoot = new(TaggedSyscallNode)
 	a.seqTreeRoot.syscall = new(TaggedSyscall)
 	a.patTreeRoot = new(TaggedSyscallNode)
 	a.patTreeRoot.syscall = new(TaggedSyscall)
-	a.moduleSyscalls = make(map[*Syscall]bool)
+//	a.moduleSyscalls = make(map[*Syscall]bool)
 	a.patternInterval = make(map[ProcFDKey]map[int][]uint64)
 	a.patternOccurence = make(map[ProcFDKey]map[int]int)
 	a.patternOrder = make(map[int]map[int]int)
 
-	for _, syscalls := range *TracedSyscalls {
-		for _, syscall := range syscalls {
-			a.moduleSyscalls[syscall] = true
-		}
-	}
+//	for _, syscalls := range *TracedSyscalls {
+//		for _, syscall := range syscalls {
+//			a.moduleSyscalls[syscall] = true
+//		}
+//	}
 }
 
 func (a *PatternAnalysis) SetGroupingThreshold (g Grouping, th uint64) {
-	if a.groupingThreshold == nil {
-		a.groupingThreshold = make(map[Grouping]uint64)
+	if a.groupingMethods == nil {
+		a.groupingMethods = make(map[Grouping]GroupingMethod)
 	}
-	a.groupingThreshold[g] = th
+
+	switch g {
+	case TimeGrouping:
+		a.groupingMethods[g] = newTimeGroupingMethod()
+	case SyscallGrouping:
+		a.groupingMethods[g] = newSyscallGroupingMethod()
+	default:
+		fmt.Printf("Invalid grouping method!")
+	}
+
+	a.groupingMethods[g].setThreshold(th)
 }
 
 func (a *PatternAnalysis) toBreakDown(te *TraceEvent) bool {
-	breakDownSeq := false
-	for g, th := range a.groupingThreshold {
-		switch g {
-		case TimeGrouping:
-			if te.ts - a.lastEventOfPid[te.id].ts > th {
-				breakDownSeq = true
-			}
-		case SyscallGrouping:
-			if a.eventCounterOfPid[te.id] > th {
-				breakDownSeq = true
-			}
+	breakDown := false
+	for _, gm := range a.groupingMethods {
+		if gm.toBreakDown(te) {
+			breakDown = true
 		}
 	}
-	return breakDownSeq
+	return breakDown
 }
 
 func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
-	if (te.id & 0x80000000) == 0 {
+	if te.typ != 0 {
 		if _, ok := a.firstAndLastOfPid[te.id]; !ok {
 			a.firstAndLastOfPid[te.id] = append(a.firstAndLastOfPid[te.id], te)
 			a.firstAndLastOfPid[te.id] = append(a.firstAndLastOfPid[te.id], nil)
@@ -170,7 +254,7 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 		}
 	}
 
-	if (te.id & 0x80000000) != 0 {
+	if te.typ == 0 {
 		for pid, n := range a.lastNodeOfPid {
 			if n != a.seqTreeRoot {
 				if idx := n.findEndChild(); idx >= 0 {
@@ -182,10 +266,8 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 					a.lastNodeOfPid[pid] = a.seqTreeRoot
 				}
 			}
-			a.lastEventOfPid[pid] = te
-			a.eventCounterOfPid[pid] = 0
 		}
-	} else if _, ok := a.moduleSyscalls[te.syscall]; ok {
+	} else if te.typ == 1 {
 		regID, fd := te.GetFD()
 		if regID == -1 {
 			fmt.Printf("syscall to kernel module not associated with fd: %v\n", te.syscall.name)
@@ -195,10 +277,10 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			a.patternOccurence[ProcFDKey{te.info, fd}] = make(map[int]int)
 		}
 
-		if _, ok := a.lastEventOfPid[te.id]; ok {
+		if _, ok := a.lastNodeOfPid[te.id]; ok {
 			if a.toBreakDown(te) {
 				if a.lastNodeOfPid[te.id] != a.seqTreeRoot {
-					if idx := a.lastNodeOfPid[te.id].findEndChild(); idx >= 0 {
+					if idx := a.lastNodeOfPid[te.id].findEndChild(); idx != -1 {
 						a.lastNodeOfPid[te.id].next[idx].counts[TrainFlag] += 1
 					} else {
 						newEndNode := NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)
@@ -207,7 +289,7 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 					}
 					a.lastNodeOfPid[te.id] = a.seqTreeRoot
 				}
-			} else if idx := a.lastNodeOfPid[te.id].findEndChild(); idx >= 0 && a.lastNodeOfPid[te.id] != a.seqTreeRoot {
+			} else if a.lastNodeOfPid[te.id].findEndChild() != -1 && a.lastNodeOfPid[te.id] != a.seqTreeRoot {
 				a.lastNodeOfPid[te.id] = a.seqTreeRoot
 			}
 		} else {
@@ -229,10 +311,10 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			a.lastNodeOfPid[te.id] = newNextNode
 		}
 		a.lastNodeOfPid[te.id].events = append(a.lastNodeOfPid[te.id].events, te)
-		a.lastEventOfPid[te.id] = te
-		a.eventCounterOfPid[te.id] = 0
-	} else {
-		a.eventCounterOfPid[te.id] += 1
+	}
+
+	for _, gm := range a.groupingMethods {
+		gm.update(te)
 	}
 
 	return
@@ -240,49 +322,65 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 
 func (a *PatternAnalysis) Reset() {
 	a.lastNodeOfPid = make(map[uint32]*TaggedSyscallNode)
-	a.lastEventOfPid = make(map[uint32]*TraceEvent)
-	a.eventCounterOfPid = make(map[uint32]uint64)
+
+	for _, gm := range a.groupingMethods {
+		gm.reset()
+	}
 }
 
 func (a *PatternAnalysis) testSeqTreeModel(te *TraceEvent) (string, int) {
-	if te.id & 0x80000000 != 0 {
+	errMsg := ""
+	errNum := 0
+	if te.typ == 0 {
 		if te.id == 0x80010000 {
 			for pid, _ := range a.lastNodeOfPid {
 				a.lastNodeOfPid[pid] = a.seqTreeRoot
 			}
 		}
-	} else if _, ok := a.moduleSyscalls[te.syscall]; ok {
+	} else if te.typ == 1 {
 		if _, ok := a.lastNodeOfPid[te.id]; !ok {
 			a.lastNodeOfPid[te.id] = a.seqTreeRoot
 		}
 
-		if idx := a.lastNodeOfPid[te.id].findEndChild(); a.lastNodeOfPid[te.id] != a.seqTreeRoot && idx != -1 {
+//		if idx := a.lastNodeOfPid[te.id].findEndChild(); a.lastNodeOfPid[te.id] != a.seqTreeRoot && idx != -1 {
+//			a.lastNodeOfPid[te.id] = a.seqTreeRoot
+//		}
+
+		if _, ok := a.lastNodeOfPid[te.id]; ok {
+			if a.toBreakDown(te) {
+				if a.lastNodeOfPid[te.id].findEndChild() == -1 && a.lastNodeOfPid[te.id] != a.seqTreeRoot {
+					errMsg += fmt.Sprintf("syscall sequence ended unexpectedly. ")
+					errNum += 1
+				}
+				a.lastNodeOfPid[te.id] = a.seqTreeRoot
+			} else if a.lastNodeOfPid[te.id].findEndChild() != -1 && a.lastNodeOfPid[te.id] != a.seqTreeRoot {
+				a.lastNodeOfPid[te.id] = a.seqTreeRoot
+			}
+		} else {
 			a.lastNodeOfPid[te.id] = a.seqTreeRoot
 		}
 
 		if idx := a.lastNodeOfPid[te.id].findChild(NewTaggedSyscall(te.syscall, te.tags)); idx != -1 {
 			a.lastNodeOfPid[te.id] = a.lastNodeOfPid[te.id].next[idx]
 		} else {
-			last := ""
-			if a.lastNodeOfPid[te.id].syscall.syscall == nil {
-				last += "*"
-			} else {
-				last += fmt.Sprintf("%v%v", a.lastNodeOfPid[te.id].syscall.syscall.name, a.lastNodeOfPid[te.id].syscall.tags)
-			}
-			err := ""
-			err += fmt.Sprintf("%v->%v%v no matching pattern", last, te.syscall.name, te.tags)
-			err += fmt.Sprintf(" valid next(")
+			errMsg += fmt.Sprintf("%v->%v%v no matching pattern", a.lastNodeOfPid[te.id], te.syscall.name, te.tags)
+			errMsg += fmt.Sprintf(" valid next(")
 			for i, nn := range a.lastNodeOfPid[te.id].next {
-				err += fmt.Sprintf("%v%v", nn.syscall.syscall.name, nn.syscall.tags)
+				errMsg += fmt.Sprintf("%v", nn)
 				if i != len(a.lastNodeOfPid[te.id].next)-1 {
-					err += fmt.Sprintf(", ")
+					errMsg += fmt.Sprintf(", ")
 				}
 			}
-			err += fmt.Sprintf(")")
-			return err, 1
+			errMsg += fmt.Sprintf(")")
+			errNum += 1
 		}
 	}
-	return "", 0
+
+	for _, gm := range a.groupingMethods {
+		gm.update(te)
+	}
+
+	return errMsg, errNum
 }
 
 func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
