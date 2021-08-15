@@ -6,6 +6,11 @@ import (
 
 type Grouping int
 
+const (
+	TimeGrouping Grouping = iota
+	SyscallGrouping
+)
+
 type GroupingMethod interface {
 	setThreshold(th uint64)
 	toBreakDown(te *TraceEvent) bool
@@ -82,11 +87,6 @@ func (sg *SyscallGroupingMethod) update(te *TraceEvent) {
 func (sg *SyscallGroupingMethod) reset() {
 	sg.counter = make(map[uint32]uint64)
 }
-
-const (
-	TimeGrouping Grouping = iota
-	SyscallGrouping
-)
 
 type TaggedSyscall struct {
 	syscall *Syscall
@@ -176,9 +176,41 @@ func (n *TaggedSyscallNode) String() string {
 	}
 }
 
-type ProcFDKey struct {
+type AnalysisUnit int
+
+const (
+	ThreadLevel AnalysisUnit = iota
+	ProcessLevel
+)
+
+type AnalysisUnitKey struct {
 	info *TraceInfo
 	fd   uint64
+	pid  uint32
+}
+
+func (a *PatternAnalysis) newAnalysisUnitKey(te *TraceEvent) (bool, AnalysisUnitKey) {
+	if regID, fd := te.GetFD(); regID != -1 {
+		switch a.unitOfAnalysis {
+		case ThreadLevel:
+			return true, AnalysisUnitKey{te.info, fd, te.id}
+		case ProcessLevel:
+			return true, AnalysisUnitKey{te.info, fd, 0}
+		}
+	}
+	return false, AnalysisUnitKey{te.info, 0, 0}
+}
+
+func (a *PatternAnalysis) isTraceAssociateWithUnitKey(te *TraceEvent, key AnalysisUnitKey) bool {
+	if regID, fd := te.GetFD(); regID != -1 {
+		switch a.unitOfAnalysis {
+		case ThreadLevel:
+			return fd == key.fd && te.info == key.info && te.id == key.pid
+		case ProcessLevel:
+			return fd == key.fd && te.info == key.info
+		}
+	}
+	return false
 }
 
 type PatternAnalysis struct {
@@ -188,10 +220,10 @@ type PatternAnalysis struct {
 	seqTreeRoot       *TaggedSyscallNode
 	patTreeRoot       *TaggedSyscallNode
 	tagCounter        int
-//	moduleSyscalls    map[*Syscall]bool
-	patternInterval   map[ProcFDKey]map[int][]uint64
-	patternOccurence  map[ProcFDKey]map[int]int
+	patternInterval   map[AnalysisUnitKey]map[int][]uint64
+	patternOccurence  map[AnalysisUnitKey]map[int]int
 	patternOrder      map[int]map[int]int
+	unitOfAnalysis    AnalysisUnit
 }
 
 func (a *PatternAnalysis) String() string {
@@ -205,16 +237,13 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.seqTreeRoot.syscall = new(TaggedSyscall)
 	a.patTreeRoot = new(TaggedSyscallNode)
 	a.patTreeRoot.syscall = new(TaggedSyscall)
-//	a.moduleSyscalls = make(map[*Syscall]bool)
-	a.patternInterval = make(map[ProcFDKey]map[int][]uint64)
-	a.patternOccurence = make(map[ProcFDKey]map[int]int)
+	a.patternInterval = make(map[AnalysisUnitKey]map[int][]uint64)
+	a.patternOccurence = make(map[AnalysisUnitKey]map[int]int)
 	a.patternOrder = make(map[int]map[int]int)
+}
 
-//	for _, syscalls := range *TracedSyscalls {
-//		for _, syscall := range syscalls {
-//			a.moduleSyscalls[syscall] = true
-//		}
-//	}
+func (a *PatternAnalysis) SetUnitOfAnalysis(u AnalysisUnit) {
+	a.unitOfAnalysis = u
 }
 
 func (a *PatternAnalysis) SetGroupingThreshold (g Grouping, th uint64) {
@@ -268,14 +297,23 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			}
 		}
 	} else if te.typ == 1 {
-		regID, fd := te.GetFD()
-		if regID == -1 {
-			fmt.Printf("syscall to kernel module not associated with fd: %v\n", te.syscall.name)
+//		regID, fd := te.GetFD()
+//		if regID == -1 {
+//			fmt.Printf("syscall to kernel module not associated with fd: %v\n", te.syscall.name)
+//		}
+//		key := AnalysisUnitKey{te.info, fd, te.id}
+//		if !a.unitOfAnalysis {
+//			key.pid = 0
+//		}
+		_, key := a.newAnalysisUnitKey(te)
+		if _, ok := a.patternInterval[key]; !ok {
+			a.patternInterval[key] = make(map[int][]uint64)
+			a.patternOccurence[key] = make(map[int]int)
 		}
-		if _, ok := a.patternInterval[ProcFDKey{te.info, fd}]; !ok {
-			a.patternInterval[ProcFDKey{te.info, fd}] = make(map[int][]uint64)
-			a.patternOccurence[ProcFDKey{te.info, fd}] = make(map[int]int)
-		}
+		//if _, ok := a.patternInterval[AnalysisUnitKey{te.info, fd, te.id}]; !ok {
+		//	a.patternInterval[AnalysisUnitKey{te.info, fd, te.id}] = make(map[int][]uint64)
+		//	a.patternOccurence[AnalysisUnitKey{te.info, fd, te.id}] = make(map[int]int)
+		//}
 
 		if _, ok := a.lastNodeOfPid[te.id]; ok {
 			if a.toBreakDown(te) {
@@ -648,11 +686,12 @@ func (n *TaggedSyscallNode) Print(a *PatternAnalysis) {
 	n.print(&depth, depthsWithOtherChildren, false, a)
 }
 
-func findRangeOfTrace(n *TaggedSyscallNode, key ProcFDKey) (int, uint64, uint64) {
+func (a *PatternAnalysis) findRangeOfTrace(n *TaggedSyscallNode, key AnalysisUnitKey) (int, uint64, uint64) {
 	var first, last uint64
 	found := 0
 	for _, event := range n.events {
-		if regID, fd := event.GetFD(); regID != -1 && fd == key.fd && event.info == key.info {
+//		if regID, fd := event.GetFD(); regID != -1 && fd == key.fd && event.info == key.info && event.id == key.pid {
+		if a.isTraceAssociateWithUnitKey(event, key) {
 			if first == 0 {
 				first = event.ts
 			}
@@ -667,7 +706,7 @@ func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
 	if idx := n.findEndChild(); idx != -1 && n != a.seqTreeRoot {
 		tag := n.next[idx].tag
 		for key, _ := range a.patternInterval {
-			if found, first, last := findRangeOfTrace(n, key); found >= 0 {
+			if found, first, last := a.findRangeOfTrace(n, key); found >= 0 {
 				a.patternInterval[key][tag] = append(a.patternInterval[key][tag], first)
 				a.patternInterval[key][tag] = append(a.patternInterval[key][tag], last)
 				a.patternOccurence[key][tag] += found
