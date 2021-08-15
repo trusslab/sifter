@@ -2,6 +2,7 @@ package sifter
 
 import (
 	"fmt"
+	"sort"
 )
 
 type Grouping int
@@ -297,23 +298,11 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			}
 		}
 	} else if te.typ == 1 {
-//		regID, fd := te.GetFD()
-//		if regID == -1 {
-//			fmt.Printf("syscall to kernel module not associated with fd: %v\n", te.syscall.name)
-//		}
-//		key := AnalysisUnitKey{te.info, fd, te.id}
-//		if !a.unitOfAnalysis {
-//			key.pid = 0
-//		}
 		_, key := a.newAnalysisUnitKey(te)
 		if _, ok := a.patternInterval[key]; !ok {
 			a.patternInterval[key] = make(map[int][]uint64)
 			a.patternOccurence[key] = make(map[int]int)
 		}
-		//if _, ok := a.patternInterval[AnalysisUnitKey{te.info, fd, te.id}]; !ok {
-		//	a.patternInterval[AnalysisUnitKey{te.info, fd, te.id}] = make(map[int][]uint64)
-		//	a.patternOccurence[AnalysisUnitKey{te.info, fd, te.id}] = make(map[int]int)
-		//}
 
 		if _, ok := a.lastNodeOfPid[te.id]; ok {
 			if a.toBreakDown(te) {
@@ -756,11 +745,14 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 			}
 		}
 	}
-	fmt.Printf("                     ")
+	fmt.Printf("                      ")
 	var tags []int
 	for k, _ := range a.patternOrder {
-		fmt.Printf("%03d ", k)
 		tags = append(tags, k)
+	}
+	sort.Ints(tags)
+	for _, tag := range tags {
+		fmt.Printf("%3d ", tag)
 	}
 	patternOccurence := make(map[int][]int)
 	for _, tag := range tags {
@@ -779,7 +771,7 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 	}
 	fmt.Printf("\n")
 	for _, ks := range tags {
-		fmt.Printf("%3d (%8d/%3d) ", ks, patternOccurence[ks][0], patternOccurence[ks][1])
+		fmt.Printf("%3d (%8d/%4d) ", ks, patternOccurence[ks][0], patternOccurence[ks][1])
 		if patternOccurence[ks][2] == 0 {
 			fmt.Printf("u ")
 		} else {
@@ -796,7 +788,7 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 			} else if vd == 3 {
 				fmt.Printf("    ")
 			} else {
-				fmt.Printf("%03d ", vd)
+				fmt.Printf("%3d ", vd)
 			}
 		}
 		fmt.Printf("\n")
