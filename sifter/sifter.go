@@ -944,7 +944,19 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 		for _, analysis := range sifter.analyses {
 			if msg, update := analysis.ProcessTraceEvent(te, flag); update > 0 {
 				updateMsg += fmt.Sprintf("  ├ %v: %v\n", analysis, msg)
-				updateMsg += fmt.Sprintf("  ├ % x\n", te.data)
+				updateMsg += fmt.Sprintf("  ├ raw data:\n")
+				for bi, b := range te.data {
+					if bi % 64 == 0 {
+						updateMsg += fmt.Sprintf("  | %8d: ", bi)
+					}
+					if bi % 4 == 0 {
+						updateMsg += fmt.Sprintf(" ")
+					}
+					updateMsg += fmt.Sprintf("%02x ", b)
+					if bi % 64 == 63 || bi == len(te.data)-1 {
+						updateMsg += fmt.Sprintf("\n")
+					}
+				}
 				updatedTeNum += 1
 			}
 		}
@@ -1251,19 +1263,19 @@ func (sifter *Sifter) TrainAndTest() {
 	for i := 0; i < sifter.Iter(); i ++ {
 		sifter.ClearAnalysis()
 		//var vra ValueRangeAnalysis
-		var fa FlagAnalysis
+		//var fa FlagAnalysis
 		var sa SequenceAnalysis
-		//var vlra VlrAnalysis
+		var vlra VlrAnalysis
 		var pa PatternAnalysis
 		sa.SetLen(0)
 		pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 		pa.SetGroupingThreshold(SyscallGrouping, 1)
-		//pa.SetUnitOfAnalysis(ProcessLevel)
+		pa.SetUnitOfAnalysis(ProcessLevel)
 
 		//sifter.AddAnalysis(&vra)
-		sifter.AddAnalysis(&fa)
-		//sifter.AddAnalysis(&vlra)
-		//sifter.AddAnalysis(&sa)
+		//sifter.AddAnalysis(&fa)
+		sifter.AddAnalysis(&vlra)
+		sifter.AddAnalysis(&sa)
 		sifter.AddAnalysis(&pa)
 
 		var testSize, trainSize, testUpdates, trainUpdates int
