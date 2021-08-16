@@ -48,6 +48,7 @@ type VlrMap struct {
 	offset   uint64
 	records  []*VlrRecord
 	arg      prog.Type
+	lenOffset uint64
 }
 
 type Syscall struct {
@@ -92,12 +93,21 @@ func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string,
 	syscall.size += size
 }
 
-func (syscall *Syscall) AddVlrMap(arg *prog.ArrayType, argName string) {
+func (syscall *Syscall) AddVlrMap(arg *prog.ArrayType, parentArgMap *ArgMap, argName string) {
 	newVlrMap := &VlrMap {
 		arg: arg,
 		name: argName,
 		size: 512,
 		offset: syscall.size,
+	}
+	if parentStructArg, isStructArg := parentArgMap.arg.(*prog.StructType); isStructArg {
+		var offset uint64
+		for _, field := range parentStructArg.Fields {
+			offset += field.Size()
+			if lenArg, isLenArg := field.(*prog.LenType); isLenArg && parentArgMap.name+"_"+lenArg.Path[0] == argName {
+				newVlrMap.lenOffset = parentArgMap.offset + offset
+			}
+		}
 	}
 	for _, record := range arg.Type.(*prog.UnionType).Fields {
 		structArg, _ := record.(*prog.StructType)

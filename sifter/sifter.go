@@ -365,7 +365,7 @@ func typeDebugInfo(arg prog.Type) string {
 	return debugInfo
 }
 
-func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg prog.Type, srcPath string, argName string, dstPath string, depth *int) {
+func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg prog.Type, srcPath string, argName string, dstPath string, parentArgMap *ArgMap, depth *int) {
 	_, thisIsPtr := arg.(*prog.PtrType)
 	if *depth == 0 && !thisIsPtr || *depth >= sifter.depthLimit || isIgnoredArg(arg) {
 		return
@@ -383,6 +383,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, &srcPath, argType), 1))
 		fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argType), 1))
 		syscall.AddArgMap(arg, argName, srcPath, argType)
+		parentArgMap = syscall.argMaps[len(syscall.argMaps)-1]
 
 		dstPath = argName + "_p"
 		derefOp = "*"
@@ -401,18 +402,18 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 			fmt.Fprintf(s, "    %v%v = %v;\n", derefOp, dstPath, srcPath)
 		}
 		*depth += 1
-		sifter.GenerateArgTracer(s, syscall, t.Type, srcPath, argName, "", depth)
+		sifter.GenerateArgTracer(s, syscall, t.Type, srcPath, argName, "", parentArgMap, depth)
 		*depth -= 1
 	case *prog.StructType:
 		sifter.AddStruct(t)
 		for _, field := range t.Fields {
-			sifter.GenerateArgTracer(s, syscall, field, srcPath, argName, dstPath+accessOp, depth)
+			sifter.GenerateArgTracer(s, syscall, field, srcPath, argName, dstPath+accessOp, parentArgMap, depth)
 		}
 	case *prog.LenType, *prog.IntType, *prog.ConstType, *prog.FlagsType:
 		fmt.Fprintf(s, "    %v%v = %v;\n", derefOp, dstPath, srcPath)
 	case *prog.ArrayType:
 		if isVLR, _, _ := sifter.IsVarLenRecord(t); isVLR {
-			syscall.AddVlrMap(t, argName)
+			syscall.AddVlrMap(t, parentArgMap, argName)
 			fmt.Fprintf(s, "    //vlr %v%v = %v; %v\n", derefOp, dstPath, srcPath, argName)
 		} else {
 			if t.RangeBegin != t.RangeEnd {
@@ -482,7 +483,7 @@ func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 	for i, arg := range syscall.def.Args {
 		path := fmt.Sprintf("ctx->%v[%v]", sifter.ctx.syscallArgs, i)
 		offset := 0
-		sifter.GenerateArgTracer(s, syscall, arg, path, syscall.name, "", &offset)
+		sifter.GenerateArgTracer(s, syscall, arg, path, syscall.name, "", nil, &offset)
 	}
 	fmt.Fprintf(s, "    *ctr = *ctr + 1;\n")
 	fmt.Fprintf(s, "    return ret;\n")
@@ -971,6 +972,9 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 						fmt.Printf("%v", procName)
 					}
 					fmt.Printf("(%d) %v %v ", te.id, te.syscall.name, te.tags)
+					if regID, fd := te.GetFD(); regID != -1 {
+						fmt.Printf("fd(%d) ", fd)
+					}
 				}
 				if i == len(sifter.trace)-1 {
 					fmt.Printf("end of trace")
@@ -1221,12 +1225,14 @@ func (sifter *Sifter) GetTrainTestFiles() ([]os.FileInfo, []os.FileInfo) {
 }
 
 func (sifter *Sifter) AnalyzeSinlgeTrace() {
+	var fa FlagAnalysis
 	var vra ValueRangeAnalysis
 	var vlra VlrAnalysis
 	var pa PatternAnalysis
 	pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 	pa.SetGroupingThreshold(SyscallGrouping, 1)
 
+	sifter.AddAnalysis(&fa)
 	sifter.AddAnalysis(&vra)
 	sifter.AddAnalysis(&vlra)
 	sifter.AddAnalysis(&pa)
@@ -1234,6 +1240,8 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	sifter.ReadTracedPidComm(sifter.traceDir)
 	sifter.ReadSyscallTrace(sifter.traceDir)
 	sifter.DoAnalyses(TrainFlag)
+	fmt.Print("--------------------------------------------------------------------------------\n")
+	pa.AnalyzeIntraPatternOrder()
 }
 
 func (sifter *Sifter) TrainAndTest() {
@@ -1242,16 +1250,19 @@ func (sifter *Sifter) TrainAndTest() {
 	testUpdateSum := 0
 	for i := 0; i < sifter.Iter(); i ++ {
 		sifter.ClearAnalysis()
-		var vra ValueRangeAnalysis
+		//var vra ValueRangeAnalysis
+		var fa FlagAnalysis
 		var sa SequenceAnalysis
-		var vlra VlrAnalysis
+		//var vlra VlrAnalysis
 		var pa PatternAnalysis
 		sa.SetLen(0)
 		pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 		pa.SetGroupingThreshold(SyscallGrouping, 1)
+		//pa.SetUnitOfAnalysis(ProcessLevel)
 
-		sifter.AddAnalysis(&vra)
-		sifter.AddAnalysis(&vlra)
+		//sifter.AddAnalysis(&vra)
+		sifter.AddAnalysis(&fa)
+		//sifter.AddAnalysis(&vlra)
 		//sifter.AddAnalysis(&sa)
 		sifter.AddAnalysis(&pa)
 
@@ -1275,6 +1286,8 @@ func (sifter *Sifter) TrainAndTest() {
 		}
 		fmt.Printf("#training size: %v\n", trainSize)
 		fmt.Printf("#training updates: %v\n", trainUpdates)
+		fmt.Print("--------------------------------------------------------------------------------\n")
+		pa.AnalyzeIntraPatternOrder()
 
 		fmt.Printf("#testing apps:\n")
 		for i, file := range testFiles {
