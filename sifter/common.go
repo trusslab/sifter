@@ -103,10 +103,10 @@ func (syscall *Syscall) AddVlrMap(arg *prog.ArrayType, parentArgMap *ArgMap, arg
 	if parentStructArg, isStructArg := parentArgMap.arg.(*prog.StructType); isStructArg {
 		var offset uint64
 		for _, field := range parentStructArg.Fields {
-			offset += field.Size()
 			if lenArg, isLenArg := field.(*prog.LenType); isLenArg && parentArgMap.name+"_"+lenArg.Path[0] == argName {
 				newVlrMap.lenOffset = parentArgMap.offset + offset
 			}
+			offset += field.Size()
 		}
 	}
 	for _, record := range arg.Type.(*prog.UnionType).Fields {
