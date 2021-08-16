@@ -66,8 +66,8 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 	for i, vlr := range te.syscall.vlrMaps {
 		offset := vlr.offset
 		node := a.vlrSequenceRoot[i]
-		_, size := te.GetData(48, 8)
-		_, start := te.GetData(56, 8)
+		_, size := te.GetData(48+vlr.lenOffset, 8)
+		_, start := te.GetData(56, 8) // Special case for binder
 		offset += start
 
 		for {

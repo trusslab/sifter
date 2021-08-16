@@ -125,6 +125,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 		}
 		offset += 8
 	}
+	offset = 48
 	for _, arg := range te.syscall.argMaps {
 		if structArg, ok := arg.arg.(*prog.StructType); ok {
 			for fi, field := range structArg.Fields {
@@ -149,11 +150,11 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 		}
 	}
 	for _, vlr := range te.syscall.vlrMaps {
-		_, size := te.GetData(48, 8)
-		_, start := te.GetData(56, 8)
+		_, size := te.GetData(48+vlr.lenOffset, 8)
+		_, start := te.GetData(56, 8) // Special case for binder
 		offset += start
 		for {
-			_, tr := te.GetData(48+offset, 4)
+			_, tr := te.GetData(offset, 4)
 			var matchedRecord *VlrRecord
 			if offset < size+vlr.offset+48 {
 				for i, record := range vlr.records {
@@ -175,7 +176,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 						for ffi, field := range structField.Fields {
 							if _, isFlagsArg := field.(*prog.FlagsType); isFlagsArg {
 								_, tr := te.GetData(offset+fieldOffset, field.Size())
-								if a.vlrFlags[vlr][matchedRecord][ffi+fi*100].Update(tr, flag) == 0{
+								if a.vlrFlags[vlr][matchedRecord][ffi+fi*100].Update(tr, flag) == 0 {
 									msgs = append(msgs, fmt.Sprintf("%v::%v new flag %x", f.Name(), field.Name(), tr))
 								}
 								te.tags = append(te.tags, int(tr))
@@ -185,7 +186,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 					} else {
 						if _, isFlagsArg := f.(*prog.FlagsType); isFlagsArg {
 							_, tr := te.GetData(offset, f.Size())
-							if a.vlrFlags[vlr][matchedRecord][fi*100].Update(tr, flag) == 0{
+							if a.vlrFlags[vlr][matchedRecord][fi*100].Update(tr, flag) == 0 {
 								msgs = append(msgs, fmt.Sprintf("%v new flag %x", f.Name(), tr))
 							}
 							te.tags = append(te.tags, int(tr))

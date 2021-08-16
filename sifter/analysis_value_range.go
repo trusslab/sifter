@@ -140,8 +140,8 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (strin
 		}
 	}
 	for _, vlr := range te.syscall.vlrMaps {
-		_, size := te.GetData(48, 8)
-		_, start := te.GetData(56, 8)
+		_, size := te.GetData(48+vlr.lenOffset, 8)
+		_, start := te.GetData(56, 8) // Special case for binder
 		offset += start
 		for {
 			_, tr := te.GetData(offset, 4)
