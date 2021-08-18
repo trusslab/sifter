@@ -224,6 +224,7 @@ type PatternAnalysis struct {
 	patternInterval   map[AnalysisUnitKey]map[int][]uint64
 	patternOccurence  map[AnalysisUnitKey]map[int]int
 	patternOrder      map[int]map[int]int
+	patternOrderCtr   map[int]map[int]int
 	unitOfAnalysis    AnalysisUnit
 }
 
@@ -241,6 +242,7 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.patternInterval = make(map[AnalysisUnitKey]map[int][]uint64)
 	a.patternOccurence = make(map[AnalysisUnitKey]map[int]int)
 	a.patternOrder = make(map[int]map[int]int)
+	a.patternOrderCtr = make(map[int]map[int]int)
 }
 
 func (a *PatternAnalysis) SetUnitOfAnalysis(u AnalysisUnit) {
@@ -316,7 +318,8 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 					}
 					a.lastNodeOfPid[te.id] = a.seqTreeRoot
 				}
-			} else if a.lastNodeOfPid[te.id].findEndChild() != -1 && a.lastNodeOfPid[te.id] != a.seqTreeRoot {
+			} else if idx := a.lastNodeOfPid[te.id].findEndChild(); idx != -1 && a.lastNodeOfPid[te.id] != a.seqTreeRoot {
+				a.lastNodeOfPid[te.id].next[idx].counts[TrainFlag] += 1
 				a.lastNodeOfPid[te.id] = a.seqTreeRoot
 			}
 		} else {
@@ -679,7 +682,6 @@ func (a *PatternAnalysis) findRangeOfTrace(n *TaggedSyscallNode, key AnalysisUni
 	var first, last uint64
 	found := 0
 	for _, event := range n.events {
-//		if regID, fd := event.GetFD(); regID != -1 && fd == key.fd && event.info == key.info && event.id == key.pid {
 		if a.isTraceAssociateWithUnitKey(event, key) {
 			if first == 0 {
 				first = event.ts
@@ -715,10 +717,12 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 		for i, ni := range patternInterval {
 			if _, ok := a.patternOrder[i]; !ok {
 				a.patternOrder[i] = make(map[int]int)
+				a.patternOrderCtr[i] = make(map[int]int)
 			}
 			for j, nj := range patternInterval {
 				if _, ok := a.patternOrder[i][j]; !ok {
 					a.patternOrder[i][j] = 0
+					a.patternOrderCtr[i][j] = 0
 				}
 
 				//if i == 3 && j == 826 {
@@ -728,18 +732,21 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 				if i == j || (ni[0] == 0 && ni[1] == 0) || (nj[0] == 0 && nj[1] == 0) {
 					continue
 				} else if ni[1] < nj[0] {
+					a.patternOrderCtr[i][j] += 1
 					if a.patternOrder[i][j] == 0 || a.patternOrder[i][j] == 1 {
 						a.patternOrder[i][j] = 1
 					} else {
 						a.patternOrder[i][j] = 3
 					}
 				} else if ni[0] > nj[1] {
+					a.patternOrderCtr[i][j] += 1
 					if a.patternOrder[i][j] == 0 || a.patternOrder[i][j] == 2 {
 						a.patternOrder[i][j] = 2
 					} else {
 						a.patternOrder[i][j] = 3
 					}
 				} else {
+					a.patternOrderCtr[i][j] += 1
 					a.patternOrder[i][j] = 3
 				}
 			}
@@ -792,6 +799,16 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 			}
 		}
 		fmt.Printf("\n")
+//		fmt.Printf("                      ")
+//		for _, kd := range tags {
+//			vd := a.patternOrderCtr[ks][kd]
+//			if vd < 1000 {
+//				fmt.Printf("%3d ", vd)
+//			} else {
+//				fmt.Printf("1k+ ")
+//			}
+//		}
+//		fmt.Printf("\n")
 	}
 }
 
