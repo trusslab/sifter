@@ -172,7 +172,7 @@ func (te *TraceEvent) GetFD() (int, uint64) {
 	for i, arg := range te.syscall.def.Args {
 		//if res, ok := arg.(*prog.ResourceType); ok && res.FldName == "fd" {
 		if _, ok := arg.(*prog.ResourceType); ok {
-			return i, binary.LittleEndian.Uint64(te.data[i*8:i*8+8])
+			return i, uint64(binary.LittleEndian.Uint32(te.data[i*8+4:i*8+8]))
 		}
 	}
 	return -1, 0
@@ -191,7 +191,11 @@ func (te *TraceEvent) GetData(offset uint64, size uint64) (bool, uint64) {
 		case 4:
 			data = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+size]))
 		case 8:
-			data = binary.LittleEndian.Uint64(te.data[offset:offset+size])
+			if offset <= 40 {
+				data = uint64(binary.LittleEndian.Uint32(te.data[offset+4:offset+size]))
+			} else {
+				data = binary.LittleEndian.Uint64(te.data[offset:offset+size])
+			}
 		}
 	}
 
