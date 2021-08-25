@@ -24,6 +24,7 @@ func main() {
 	flag.StringVar(&flags.Out,    "out", "", "output file base name")
 	flag.IntVar(&flags.Unroll,    "unroll", 5, "loop unroll times")
 	flag.IntVar(&flags.Iter,      "iter", 10, "training-testing iterations")
+	flag.IntVar(&flags.TraceNum,  "n", 0, "number of traces to be used")
 	flag.Float64Var(&flags.Split, "split", 4, "train-test split ratio (train set size/test set size)")
 	flag.IntVar(&flags.Verbose,   "v", 0, "verbosity")
 	flag.Parse()

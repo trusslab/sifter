@@ -20,18 +20,19 @@ import (
 )
 
 type Flags struct {
-	Mode    string
-	Trace   string
-	Config  string
-	Fd      string
-	Dev     string
-	Entry   string
-	Outdir  string
-	Out     string
-	Unroll  int
-	Iter    int
-	Split   float64
-	Verbose int
+	Mode     string
+	Trace    string
+	Config   string
+	Fd       string
+	Dev      string
+	Entry    string
+	Outdir   string
+	Out      string
+	Unroll   int
+	Iter     int
+	TraceNum int
+	Split    float64
+	Verbose  int
 }
 
 type Context struct {
@@ -73,6 +74,7 @@ type Sifter struct {
 	devName       string
 	loopUnroll    int
 	depthLimit    int
+	traceNum      int
 	ctx           Context
 }
 
@@ -116,6 +118,7 @@ func NewSifter(f Flags) (*Sifter, error) {
 	s.verbose = Verbose(f.Verbose)
 	s.trainTestSplit = f.Split
 	s.trainTestIter = f.Iter
+	s.traceNum = f.TraceNum
 
 	if f.Mode == "tracer" {
 		s.mode = TracerMode
@@ -1237,6 +1240,31 @@ func (sifter *Sifter) GetTrainTestFiles() ([]os.FileInfo, []os.FileInfo) {
 			trainFiles = append(trainFiles, sifter.traceFiles[i])
 		}
 	}
+
+
+	if sifter.traceNum != 0 && len(sifter.traceFiles) != sifter.traceNum {
+		trainRatio := sifter.trainTestSplit / (1 + sifter.trainTestSplit)
+		trainFileNum := int(float64(sifter.traceNum) * trainRatio)
+		testFileNum := sifter.traceNum - trainFileNum
+		for {
+			if trainFileNum == len(trainFiles) {
+				break
+			} else {
+				dropIdx := rand.Int31n(int32(len(trainFiles)))
+				trainFiles = append(trainFiles[:dropIdx], trainFiles[dropIdx+1:]...)
+			}
+		}
+
+		for {
+			if testFileNum == len(testFiles) {
+				break
+			} else {
+				dropIdx := rand.Int31n(int32(len(testFiles)))
+				testFiles = append(testFiles[:dropIdx], testFiles[dropIdx+1:]...)
+			}
+		}
+	}
+
 	return trainFiles, testFiles
 }
 
