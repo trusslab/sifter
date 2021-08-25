@@ -1109,6 +1109,10 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
 			} else {
 				newSyscall := new(Syscall)
 				newSyscall.name = fmt.Sprintf("syscall_%v", nr)
+				newSyscall.def = new(prog.Syscall)
+				newSyscall.def.NR = uint64(nr)
+				newSyscall.def.Name = fmt.Sprintf("syscall_%v", nr)
+				newSyscall.def.CallName = fmt.Sprintf("syscall_%v", nr)
 				traceEvent.syscall = newSyscall
 				sifter.otherSyscalls[uint64(nr)] = newSyscall
 			}
@@ -1253,7 +1257,7 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	sifter.ReadSyscallTrace(sifter.traceDir)
 	sifter.DoAnalyses(TrainFlag)
 	fmt.Print("--------------------------------------------------------------------------------\n")
-	pa.AnalyzeIntraPatternOrder()
+	pa.AnalyzeIntraPatternOrder(sifter.verbose)
 }
 
 func (sifter *Sifter) TrainAndTest() {
@@ -1263,19 +1267,19 @@ func (sifter *Sifter) TrainAndTest() {
 	for i := 0; i < sifter.Iter(); i ++ {
 		sifter.ClearAnalysis()
 		//var vra ValueRangeAnalysis
-		//var fa FlagAnalysis
-		var sa SequenceAnalysis
+		var fa FlagAnalysis
+		//var sa SequenceAnalysis
 		var vlra VlrAnalysis
 		var pa PatternAnalysis
-		sa.SetLen(0)
+		//sa.SetLen(0)
 		pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 		pa.SetGroupingThreshold(SyscallGrouping, 1)
-		pa.SetUnitOfAnalysis(ProcessLevel)
+		//pa.SetUnitOfAnalysis(ProcessLevel)
 
 		//sifter.AddAnalysis(&vra)
-		//sifter.AddAnalysis(&fa)
+		sifter.AddAnalysis(&fa)
 		sifter.AddAnalysis(&vlra)
-		sifter.AddAnalysis(&sa)
+		//sifter.AddAnalysis(&sa)
 		sifter.AddAnalysis(&pa)
 
 		var testSize, trainSize, testUpdates, trainUpdates int
@@ -1299,7 +1303,7 @@ func (sifter *Sifter) TrainAndTest() {
 		fmt.Printf("#training size: %v\n", trainSize)
 		fmt.Printf("#training updates: %v\n", trainUpdates)
 		fmt.Print("--------------------------------------------------------------------------------\n")
-		pa.AnalyzeIntraPatternOrder()
+		pa.AnalyzeIntraPatternOrder(sifter.verbose)
 
 		fmt.Printf("#testing apps:\n")
 		for i, file := range testFiles {

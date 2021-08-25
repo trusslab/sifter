@@ -143,6 +143,7 @@ type TraceEvent struct {
 	data    []byte
 	tags    []int
 	typ     int
+	ret     uint64
 }
 
 func newTraceEvent(ts uint64, id uint32, info *TraceInfo, syscall *Syscall) *TraceEvent {
@@ -169,7 +170,8 @@ func (te *TraceEvent) GetFD() (int, uint64) {
 		return -1, 0
 	}
 	for i, arg := range te.syscall.def.Args {
-		if res, ok := arg.(*prog.ResourceType); ok && res.FldName == "fd" {
+		//if res, ok := arg.(*prog.ResourceType); ok && res.FldName == "fd" {
+		if _, ok := arg.(*prog.ResourceType); ok {
 			return i, binary.LittleEndian.Uint64(te.data[i*8:i*8+8])
 		}
 	}
@@ -194,4 +196,13 @@ func (te *TraceEvent) GetData(offset uint64, size uint64) (bool, uint64) {
 	}
 
 	return ok, data
+}
+
+func (te *TraceEvent) GetNR() (bool, uint64) {
+	if te.typ == 1 || te.typ == 2 {
+		if te.syscall.def != nil {
+			return true, te.syscall.def.NR
+		}
+	}
+	return false, 0
 }
