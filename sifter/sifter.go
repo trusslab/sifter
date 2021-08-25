@@ -1267,6 +1267,7 @@ func (sifter *Sifter) TrainAndTest() {
 	for i := 0; i < sifter.Iter(); i ++ {
 		sifter.ClearAnalysis()
 		//var vra ValueRangeAnalysis
+		var la LenAnalysis
 		var fa FlagAnalysis
 		//var sa SequenceAnalysis
 		var vlra VlrAnalysis
@@ -1277,6 +1278,7 @@ func (sifter *Sifter) TrainAndTest() {
 		//pa.SetUnitOfAnalysis(ProcessLevel)
 
 		//sifter.AddAnalysis(&vra)
+		sifter.AddAnalysis(&la)
 		sifter.AddAnalysis(&fa)
 		sifter.AddAnalysis(&vlra)
 		//sifter.AddAnalysis(&sa)
