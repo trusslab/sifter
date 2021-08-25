@@ -2,6 +2,7 @@ package sifter
 
 import (
 	"fmt"
+	"math"
 	"sort"
 )
 
@@ -225,6 +226,7 @@ type PatternAnalysis struct {
 	patternOccurence  map[AnalysisUnitKey]map[int]int
 	patternOrder      map[int]map[int]int
 	patternOrderCtr   map[int]map[int]int
+	patternOrderTh    int
 	unitOfAnalysis    AnalysisUnit
 }
 
@@ -243,6 +245,10 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.patternOccurence = make(map[AnalysisUnitKey]map[int]int)
 	a.patternOrder = make(map[int]map[int]int)
 	a.patternOrderCtr = make(map[int]map[int]int)
+}
+
+func (a *PatternAnalysis) SetPatternOrderThreshold(th int) {
+	a.patternOrderTh = th
 }
 
 func (a *PatternAnalysis) SetUnitOfAnalysis(u AnalysisUnit) {
@@ -658,9 +664,9 @@ func (n *TaggedSyscallNode) print(depth *int, depthsWithChildren map[int]bool, h
 			s += "start"
 		} else {
 			if n.flag == TrainFlag {
-				s += fmt.Sprintf("[%v]end - seq%v (%v/%v)", *depth, n.tag, n.counts[TrainFlag], n.counts[TestFlag])
+				s += fmt.Sprintf("[%v]end - seq%x (%v/%v)", *depth, n.tag, n.counts[TrainFlag], n.counts[TestFlag])
 			} else if n.flag == TestFlag {
-				s += fmt.Sprintf("[%v]end - seq%v* (%v/%v)", *depth, n.tag, n.counts[TrainFlag], n.counts[TestFlag])
+				s += fmt.Sprintf("[%v]end - seq%x* (%v/%v)", *depth, n.tag, n.counts[TrainFlag], n.counts[TestFlag])
 			}
 		}
 	} else {
@@ -766,14 +772,25 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder(v Verbose) {
 			}
 		}
 	}
-	fmt.Printf("                      ")
+
 	var tags []int
+	tagMax := 0
 	for k, _ := range a.patternOrder {
 		tags = append(tags, k)
+		if k > tagMax {
+			tagMax = k
+		}
 	}
+	tagW := len(fmt.Sprintf("%x", tagMax))
+	ctrMax := int(math.Pow(10, float64(tagW))-1)
+
 	sort.Ints(tags)
-	for _, tag := range tags {
-		fmt.Printf("%3d ", tag)
+	for i, tag := range tags {
+		if i == 0 {
+			fmt.Printf("%*d ", 2*tagW+19, tag)
+		} else {
+			fmt.Printf("%*x ", tagW, tag)
+		}
 	}
 	patternOccurence := make(map[int][]int)
 	for _, tag := range tags {
@@ -792,7 +809,7 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder(v Verbose) {
 	}
 	fmt.Printf("\n")
 	for _, ks := range tags {
-		fmt.Printf("%3d (%8d/%4d) ", ks, patternOccurence[ks][0], patternOccurence[ks][1])
+		fmt.Printf("%*x (%8d/%4d) ", tagW, ks, patternOccurence[ks][0], patternOccurence[ks][1])
 		if patternOccurence[ks][2] == 0 {
 			fmt.Printf("u ")
 		} else {
@@ -801,25 +818,31 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder(v Verbose) {
 		for _, kd := range tags {
 			vd := a.patternOrder[ks][kd]
 			if vd == 0 {
-				fmt.Printf(" -  ")
+				fmt.Printf("%*s ", tagW, "-")
 			} else if vd == 1 {
-				fmt.Printf(" >  ")
+				fmt.Printf("%*s ", tagW, ">")
 			} else if vd == 2 {
-				fmt.Printf(" <  ")
+				fmt.Printf("%*s ", tagW, "<")
 			} else if vd == 3 {
-				fmt.Printf("    ")
+				fmt.Printf("%*s ", tagW, " ")
 			} else {
-				fmt.Printf("%3d ", vd)
+				fmt.Printf("%*d ", tagW, vd)
 			}
 		}
 		fmt.Printf("\n")
 		fmt.Printf("                      ")
 		for _, kd := range tags {
 			vd := a.patternOrderCtr[ks][kd]
-			if vd < 1000 {
-				fmt.Printf("%3d ", vd)
+			if a.patternOrder[ks][kd] == 1 || a.patternOrder[ks][kd] == 2 {
+				if vd < a.patternOrderTh {
+					fmt.Printf("%*dt", tagW, vd)
+				} else if vd <= ctrMax {
+					fmt.Printf("%*d ", tagW, vd)
+				} else {
+					fmt.Printf("%d+", ctrMax)
+				}
 			} else {
-				fmt.Printf("1k+ ")
+				fmt.Printf("%*s ", tagW, " ")
 			}
 		}
 		fmt.Printf("\n")
