@@ -56,10 +56,6 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 		return "", 0
 	}
 
-	if len(te.tags) != 0 {
-		fmt.Printf("error\n")
-	}
-
 	updateMsg := ""
 	updateNum := 0
 	updateFlag := 0
