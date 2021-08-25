@@ -301,7 +301,9 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 		}
 	} else if te.typ == 1 {
 		_, key := a.newAnalysisUnitKey(te)
+//		_, fd := te.GetFD()
 		if _, ok := a.patternInterval[key]; !ok {
+//			fmt.Printf("new key %v %d\n", te.info.name, fd)
 			a.patternInterval[key] = make(map[int][]uint64)
 			a.patternOccurence[key] = make(map[int]int)
 		}
@@ -323,6 +325,7 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 				a.lastNodeOfPid[te.id] = a.seqTreeRoot
 			}
 		} else {
+//			fmt.Printf("new pid %v %d\n", te.info.name, te.id)
 			a.lastNodeOfPid[te.id] = a.seqTreeRoot
 		}
 
@@ -341,6 +344,17 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			a.lastNodeOfPid[te.id] = newNextNode
 		}
 		a.lastNodeOfPid[te.id].events = append(a.lastNodeOfPid[te.id].events, te)
+//	} else if te.typ == 2 {
+//		_, nr := te.GetNR()
+//		_, key := a.newAnalysisUnitKey(te)
+//		_, fd := te.GetFD()
+//		if _, ok := a.patternInterval[key]; ok {
+//			if nr == 23 || nr == 24 {
+//				fmt.Printf("%v use dup %d %d\n", te.info.name, nr, fd)
+//			} else {
+//				fmt.Printf("%v use %d %d\n", te.info.name, nr, fd)
+//			}
+//		}
 	}
 
 	for _, gm := range a.groupingMethods {
@@ -709,7 +723,7 @@ func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
 	}
 }
 
-func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
+func (a *PatternAnalysis) AnalyzeIntraPatternOrder(v Verbose) {
 	a.GetPatternTimeInterval(a.seqTreeRoot)
 
 	for key, patternInterval := range a.patternInterval {
@@ -799,16 +813,16 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder() {
 			}
 		}
 		fmt.Printf("\n")
-//		fmt.Printf("                      ")
-//		for _, kd := range tags {
-//			vd := a.patternOrderCtr[ks][kd]
-//			if vd < 1000 {
-//				fmt.Printf("%3d ", vd)
-//			} else {
-//				fmt.Printf("1k+ ")
-//			}
-//		}
-//		fmt.Printf("\n")
+		fmt.Printf("                      ")
+		for _, kd := range tags {
+			vd := a.patternOrderCtr[ks][kd]
+			if vd < 1000 {
+				fmt.Printf("%3d ", vd)
+			} else {
+				fmt.Printf("1k+ ")
+			}
+		}
+		fmt.Printf("\n")
 	}
 }
 
