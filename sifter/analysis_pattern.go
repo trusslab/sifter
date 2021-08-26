@@ -191,6 +191,10 @@ type AnalysisUnitKey struct {
 	pid  uint32
 }
 
+func (k *AnalysisUnitKey) String() string {
+	return fmt.Sprintf("%v pid:%d fd:%d", k.info.name, k.pid, k.fd)
+}
+
 func (a *PatternAnalysis) newAnalysisUnitKey(te *TraceEvent) (bool, AnalysisUnitKey) {
 	if regID, fd := te.GetFD(); regID != -1 {
 		switch a.unitOfAnalysis {
@@ -409,14 +413,15 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 			var seqOrderViolated []int
 			for p, _ := range filterState.patternRecorded {
 				order := a.patternOrder[p][thisSeqId]
-				if order == 0 || order == 2 {
+				if p != thisSeqId && (order == 0 || order == 2) {
 					seqOrderViolated = append(seqOrderViolated, p)
 				}
 			}
 			if len(seqOrderViolated) == 0 {
 				filterState.patternRecorded[thisSeqId] = true
 			} else {
-				errMsg += fmt.Sprintf("%v violates inter-pattern order with %v", thisSeqId, seqOrderViolated)
+				errMsg += fmt.Sprintf("%seqx violates inter-pattern order with seq%x", thisSeqId, seqOrderViolated)
+				errNum += 1
 			}
 			filterState.lastNode = a.seqTreeRoot
 		}
@@ -794,8 +799,9 @@ func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
 func (a *PatternAnalysis) AnalyzeIntraPatternOrder(v Verbose) {
 	a.GetPatternTimeInterval(a.seqTreeRoot)
 
+	fmt.Printf("analysis unit keys:\n")
 	for key, patternInterval := range a.patternInterval {
-		fmt.Printf("%v %v\n", key.info.name, key.fd)
+		fmt.Printf("%v\n", key)
 		for i, ni := range patternInterval {
 			if _, ok := a.patternOrder[i]; !ok {
 				a.patternOrder[i] = make(map[int]int)
