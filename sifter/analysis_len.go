@@ -99,23 +99,6 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 			}
 
 		}
-//	for i := 0; i < 6; i++ {
-//		if i < 1 {
-//		_, tr := te.GetData(offset, 8)
-//		if (a.regRanges[te.syscall][i*2+0] > tr) {
-//			if flag == TrainFlag {
-//				a.regRanges[te.syscall][i*2+0] = tr
-//			}
-//			msgs = append(msgs, fmt.Sprintf("reg[%v]:l %x", i, tr))
-//		}
-//		if (a.regRanges[te.syscall][i*2+1] < tr) {
-//			if flag == TrainFlag {
-//				a.regRanges[te.syscall][i*2+1] = tr
-//			}
-//			msgs = append(msgs, fmt.Sprintf("reg[%v]:u %x", i, tr))
-//		}
-//		}
-//		offset += 8
 	}
 	offset = 48
 	for _, arg := range te.syscall.argMaps {
@@ -137,21 +120,6 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 					}
 
 				}
-//				if _, isPtrArg := field.(*prog.PtrType); !isPtrArg && field.FieldName() != "ptr" {
-//					_, tr := te.GetData(offset, field.Size())
-//					if (a.argRanges[arg][2*i+0] > tr) {
-//						if flag == TrainFlag {
-//							a.argRanges[arg][2*i+0] = tr
-//						}
-//						msgs = append(msgs, fmt.Sprintf("%v:l %x", arg.name, tr))
-//					}
-//					if (a.argRanges[arg][2*i+1] < tr) {
-//						if flag == TrainFlag {
-//							a.argRanges[arg][2*i+1] = tr
-//						}
-//						msgs = append(msgs, fmt.Sprintf("%v:u %x", arg.name, tr))
-//					}
-//				}
 				offset += field.Size()
 			}
 		} else {
@@ -171,21 +139,6 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 				}
 
 			}
-//			if _, isPtrArg := arg.arg.(*prog.PtrType); !isPtrArg && arg.arg.FieldName() != "ptr" {
-//				_, tr := te.GetData(offset, arg.arg.Size())
-//				if (a.argRanges[arg][0] > tr) {
-//					if flag == TrainFlag {
-//						a.argRanges[arg][0] = tr
-//					}
-//					msgs = append(msgs, fmt.Sprintf("%v:l %x", arg.name, tr))
-//				}
-//				if (a.argRanges[arg][1] < tr) {
-//					if flag == TrainFlag {
-//						a.argRanges[arg][1] = tr
-//					}
-//					msgs = append(msgs, fmt.Sprintf("%v:u %x", arg.name, tr))
-//				}
-//			}
 			offset += arg.size
 		}
 	}
@@ -214,6 +167,7 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 					if structField, isStructArg := f.(*prog.StructType); isStructArg {
 						for _, field := range structField.Fields {
 							if _, ok := field.(*prog.LenType); ok {
+								_, tr = te.GetData(offset, field.Size())
 								if (a.lenRanges[field][0] > tr) {
 									if flag == TrainFlag {
 										a.lenRanges[field][0] = tr
@@ -227,9 +181,11 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 									msgs = append(msgs, fmt.Sprintf("%v_%v_%v:u %x", matchedRecord.name, f.FieldName(), field.FieldName(), tr))
 								}
 							}
+							offset += field.Size()
 						}
 					} else {
 						if _, ok := f.(*prog.LenType); ok {
+							_, tr = te.GetData(offset, f.Size())
 							if (a.lenRanges[f][0] > tr) {
 								if flag == TrainFlag {
 									a.lenRanges[f][0] = tr
@@ -244,21 +200,6 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 							}
 						}
 					}
-//					if _, isPtrArg := field.(*prog.PtrType); !isPtrArg && field.FieldName() != "ptr" && field.FieldName() != "cookie" && field.FieldName() != "ref" {
-//						_, tr = te.GetData(offset, field.Size())
-//						if (a.vlrRanges[vlr][matchedRecord][2*i+0] > tr) {
-//							if flag == TrainFlag {
-//								a.vlrRanges[vlr][matchedRecord][2*i+0] = tr
-//							}
-//							msgs = append(msgs, fmt.Sprintf("%v_%v:l [%v]:%x", matchedRecord.name, field.FieldName(), offset, tr))
-//						}
-//						if (a.vlrRanges[vlr][matchedRecord][2*i+1] < tr) {
-//							if flag == TrainFlag {
-//								a.vlrRanges[vlr][matchedRecord][2*i+1] = tr
-//							}
-//							msgs = append(msgs, fmt.Sprintf("%v_%v:u [%v]:%x", matchedRecord.name, field.FieldName(), offset, tr))
-//						}
-//					}
 					offset += f.Size()
 				}
 				continue;
@@ -299,22 +240,26 @@ func (a *LenAnalysis) PrintResult(v Verbose) {
 				}
 			}
 		}
+		for _, vlr := range syscall.vlrMaps {
+			fmt.Printf("\n%v (%v)\n", vlr.name, len(vlr.records))
+			for _, record := range vlr.records {
+				structArg, _ := record.arg.(*prog.StructType)
+				for _, f := range structArg.Fields {
+					if structField, isStructArg := f.(*prog.StructType); isStructArg {
+						for _, field := range structField.Fields {
+							if lenRange, ok := a.lenRanges[field]; ok {
+								fmt.Printf("%v_%v_%v: %v\n", record.name, f.FieldName(), field.FieldName(), lenRange)
+							}
+						}
+					} else {
+						if lenRange, ok := a.lenRanges[f]; ok {
+							fmt.Printf("%v_%v: %v\n", record.name, f.FieldName(), lenRange)
+						}
+					}
+				}
+			}
+		}
 	}
-//	for syscall, regRange := range a.regRanges {
-//		fmt.Printf("\n%v\n", syscall.name)
-//		for i := 0; i < 6; i++ {
-//			fmt.Printf("reg[%v] %v\n", i, regRange[i*2:i*2+2])
-//		}
-//		for _, arg := range syscall.argMaps {
-//			fmt.Printf("%v %v\n", arg.name, a.argRanges[arg])
-//		}
-//		for _, vlr := range syscall.vlrMaps {
-//			fmt.Printf("\n%v %v\n", vlr.name, len(vlr.records))
-//			for _, record := range vlr.records {
-//				fmt.Printf("%v %v\n", record.name, a.vlrRanges[vlr][record])
-//			}
-//		}
-//	}
 }
 
 
