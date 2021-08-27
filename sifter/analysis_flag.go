@@ -221,10 +221,10 @@ func (a *FlagAnalysis) PrintResult(v Verbose) {
 			arg := argMap.arg
 			if structArg, ok := arg.(*prog.StructType); ok {
 				for i, argFlag := range a.argFlags[argMap] {
-					s += fmt.Sprintf("%v::%v: %v\n", argMap.name, structArg.Fields[i].Name(), argFlag)
+					s += fmt.Sprintf("%v_%v: %v\n", argMap.name, structArg.Fields[i].Name(), argFlag)
 				}
 			} else {
-				s += fmt.Sprintf("%v %v\n", argMap.name, a.argFlags[argMap][0])
+				s += fmt.Sprintf("%v: %v\n", argMap.name, a.argFlags[argMap][0])
 			}
 		}
 		for _, vlrMap := range syscall.vlrMaps {
@@ -235,10 +235,10 @@ func (a *FlagAnalysis) PrintResult(v Verbose) {
 					fi := i / 100
 					ffi := i % 100
 					if ffi == 0 {
-						s += fmt.Sprintf("%v::%v: %v\n", vlrRecord.name, structArg.Fields[fi].Name(), vlrFlag)
+						s += fmt.Sprintf("%v_%v: %v\n", vlrRecord.name, structArg.Fields[fi].Name(), vlrFlag)
 					} else {
 						structField, _ := structArg.Fields[fi].(*prog.StructType)
-						s += fmt.Sprintf("%v::%v::%v: %v\n", vlrRecord.name, structArg.Fields[fi].Name(), structField.Fields[ffi], vlrFlag)
+						s += fmt.Sprintf("%v_%v_%v: %v\n", vlrRecord.name, structArg.Fields[fi].Name(), structField.Fields[ffi], vlrFlag)
 					}
 				}
 			}
