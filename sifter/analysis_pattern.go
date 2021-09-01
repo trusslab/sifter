@@ -181,8 +181,8 @@ func (n *TaggedSyscallNode) String() string {
 type AnalysisUnit int
 
 const (
-	ThreadLevel AnalysisUnit = iota
-	ProcessLevel
+	ProcessLevel AnalysisUnit = iota
+	TraceLevel
 )
 
 type AnalysisUnitKey struct {
@@ -191,16 +191,16 @@ type AnalysisUnitKey struct {
 	pid  uint32
 }
 
-func (k *AnalysisUnitKey) String() string {
+func (k AnalysisUnitKey) String() string {
 	return fmt.Sprintf("%v pid:%d fd:%d", k.info.name, k.pid, k.fd)
 }
 
 func (a *PatternAnalysis) newAnalysisUnitKey(te *TraceEvent) (bool, AnalysisUnitKey) {
 	if regID, fd := te.GetFD(); regID != -1 {
 		switch a.unitOfAnalysis {
-		case ThreadLevel:
-			return true, AnalysisUnitKey{te.info, fd, te.id}
 		case ProcessLevel:
+			return true, AnalysisUnitKey{te.info, fd, te.id}
+		case TraceLevel:
 			return true, AnalysisUnitKey{te.info, fd, 0}
 		}
 	}
@@ -210,9 +210,9 @@ func (a *PatternAnalysis) newAnalysisUnitKey(te *TraceEvent) (bool, AnalysisUnit
 func (a *PatternAnalysis) isTraceAssociateWithUnitKey(te *TraceEvent, key AnalysisUnitKey) bool {
 	if regID, fd := te.GetFD(); regID != -1 {
 		switch a.unitOfAnalysis {
-		case ThreadLevel:
-			return fd == key.fd && te.info == key.info && te.id == key.pid
 		case ProcessLevel:
+			return fd == key.fd && te.info == key.info && te.id == key.pid
+		case TraceLevel:
 			return fd == key.fd && te.info == key.info
 		}
 	}
@@ -238,6 +238,8 @@ type PatternAnalysis struct {
 	patternOrderTh    int
 	filterStates      map[AnalysisUnitKey]*FilterState
 	unitOfAnalysis    AnalysisUnit
+
+	debugEnable       bool
 }
 
 func (a *PatternAnalysis) String() string {
@@ -256,6 +258,7 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.patternOrder = make(map[int]map[int]int)
 	a.patternOrderCtr = make(map[int]map[int]int)
 	a.filterStates = make(map[AnalysisUnitKey]*FilterState)
+	a.debugEnable = false
 }
 
 func (a *PatternAnalysis) SetPatternOrderThreshold(th int) {
@@ -329,6 +332,13 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			if a.toBreakDown(te) {
 				if a.lastNodeOfPid[te.id] != a.seqTreeRoot {
 					if idx := a.lastNodeOfPid[te.id].findEndChild(); idx != -1 {
+//						if a.lastNodeOfPid[te.id].next[idx].tag == 5 {
+//							if a.debugEnable == false {
+//								a.debugEnable = true
+//							} else {
+//								fmt.Printf("debug twice\n")
+//							}
+//						}
 						a.lastNodeOfPid[te.id].next[idx].counts[TrainFlag] += 1
 					} else {
 						newEndNode := NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)
@@ -338,6 +348,13 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 					a.lastNodeOfPid[te.id] = a.seqTreeRoot
 				}
 			} else if idx := a.lastNodeOfPid[te.id].findEndChild(); idx != -1 && a.lastNodeOfPid[te.id] != a.seqTreeRoot {
+//				if a.lastNodeOfPid[te.id].next[idx].tag == 5 {
+//					if a.debugEnable == false {
+//						a.debugEnable = true
+//					} else {
+//						fmt.Printf("init twice\n")
+//					}
+//				}
 				a.lastNodeOfPid[te.id].next[idx].counts[TrainFlag] += 1
 				a.lastNodeOfPid[te.id] = a.seqTreeRoot
 			}
@@ -384,6 +401,7 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 func (a *PatternAnalysis) Reset() {
 	a.lastNodeOfPid = make(map[uint32]*TaggedSyscallNode)
 	a.filterStates = make(map[AnalysisUnitKey]*FilterState)
+	a.debugEnable = false
 
 	for _, gm := range a.groupingMethods {
 		gm.reset()
@@ -411,16 +429,19 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 		if idx := filterState.lastNode.findEndChild(); idx != -1 && filterState.lastNode != a.seqTreeRoot {
 			thisSeqId := filterState.lastNode.next[idx].tag
 			var seqOrderViolated []int
+			var seqOrderViolatedPolicy []int
 			for p, _ := range filterState.patternRecorded {
 				order := a.patternOrder[p][thisSeqId]
-				if p != thisSeqId && (order == 0 || order == 2) {
+				//if p != thisSeqId && (order == 0 || order == 2) {
+				if p != thisSeqId && order == 2 {
 					seqOrderViolated = append(seqOrderViolated, p)
+					seqOrderViolatedPolicy = append(seqOrderViolatedPolicy, order)
 				}
 			}
 			if len(seqOrderViolated) == 0 {
 				filterState.patternRecorded[thisSeqId] = true
 			} else {
-				errMsg += fmt.Sprintf("%seqx violates inter-pattern order with seq%x", thisSeqId, seqOrderViolated)
+				errMsg += fmt.Sprintf("seq%x violates inter-pattern order with seq%x %v", thisSeqId, seqOrderViolated, seqOrderViolatedPolicy)
 				errNum += 1
 			}
 			filterState.lastNode = a.seqTreeRoot
@@ -919,6 +940,14 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder(v Verbose) {
 }
 
 func (a *PatternAnalysis) PrintResult(v Verbose) {
+	for pid, n := range a.lastNodeOfPid {
+		if n.findEndChild() == -1 {
+			newEndNode := NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)
+			n.next = append(n.next, newEndNode)
+			a.tagCounter += 1
+			a.lastNodeOfPid[pid] = a.seqTreeRoot
+		}
+	}
 	fmt.Print("sequence tree before purging\n")
 	a.seqTreeRoot.Print(a)
 	i := 0
