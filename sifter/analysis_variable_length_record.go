@@ -17,6 +17,7 @@ type VlrAnalysis struct {
 	vlrSequenceRoot []*VlrSequenceNode
 	tagCounter      int
 	moduleSyscalls  map[*Syscall]bool
+	check           int // 0: header; 1: seq; 2: seq and tag
 }
 
 func (a VlrAnalysis) String() string {
@@ -81,7 +82,12 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 			if matchedRecord != nil {
 				updateMsg += matchedRecord.name
 			} else {
-				updateMsg += "end"
+				if offset < vlr.offset + size && a.check >= 0 {
+					updateMsg += fmt.Sprintf("unknown vlr header (%x) at offset:%d", tr, offset+48)
+					updateNum += 1
+				} else {
+					updateMsg += "end"
+				}
 			}
 
 			nextVlrRecordIdx := -1
@@ -107,8 +113,10 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 					node.flag = TestFlag
 					updateFlag = 1
 				}
-				updateNum += 1
-				updateMsg += "*"
+				if a.check >= 1 {
+					updateNum += 1
+					updateMsg += "*"
+				}
 			}
 
 			node.counts[flag] += 1
@@ -124,7 +132,9 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 					node.tag = a.tagCounter
 				}
 				node.events = append(node.events, te)
-				te.tags = append(te.tags, node.tag)
+				if a.check >= 2 {
+					te.tags = append(te.tags, node.tag)
+				}
 				break
 			}
 		}
