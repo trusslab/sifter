@@ -63,9 +63,9 @@ func (a *ValueRangeAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 func (a *ValueRangeAnalysis) Reset() {
 }
 
-func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
+func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
 	if te.typ != 1 {
-		return "", 0
+		return "", 0, 0
 	}
 
 	msgs := make([]string, 0)
@@ -180,7 +180,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (strin
 			updatedRangesMsg += ", "
 		}
 	}
-	return updatedRangesMsg, updatedRangesLen
+	return updatedRangesMsg, updatedRangesLen, 0
 }
 
 func (a *ValueRangeAnalysis) PrintResult(v Verbose) {

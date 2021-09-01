@@ -8,12 +8,14 @@ import (
 )
 
 type LenRange struct {
+	values  map[uint64]int
 	upper   uint64
 	lower   uint64
 }
 
 func newLenRange() *LenRange {
 	lenRange := new(LenRange)
+	lenRange.values = make(map[uint64]int)
 	lenRange.lower = math.MaxInt64
 	lenRange.upper = 0
 	return lenRange
@@ -23,7 +25,7 @@ func (r *LenRange) String() string {
 	if r.lower == math.MaxInt64 && r.upper == 0 {
 		return ""
 	} else {
-		return fmt.Sprintf("[%v, %v]", r.lower, r.upper)
+		return fmt.Sprintf("[%v, %v] %v", r.lower, r.upper, r.values)
 	}
 }
 
@@ -42,6 +44,7 @@ func (r *LenRange) Update(v uint64, flag Flag) (bool, bool) {
 		}
 		updateUpper = true
 	}
+	r.values[v] += 1
 	return updateLower, updateUpper
 }
 
@@ -112,9 +115,9 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 func (a *LenAnalysis) Reset() {
 }
 
-func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
+func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
 	if te.typ != 1 {
-		return "", 0
+		return "", 0, 0
 	}
 
 	a.lenContainingSyscall[te.syscall] = true
@@ -227,7 +230,7 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 			updatedRangesMsg += ", "
 		}
 	}
-	return updatedRangesMsg, updatedRangesLen
+	return updatedRangesMsg, updatedRangesLen, 0
 }
 
 func (a *LenAnalysis) PrintResult(v Verbose) {

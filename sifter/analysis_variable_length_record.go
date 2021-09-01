@@ -36,9 +36,9 @@ func (a *VlrAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 func (a *VlrAnalysis) Reset() {
 }
 
-func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
+func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
 	if te.typ != 1 || te.syscall.vlrMaps == nil {
-		return "", 0
+		return "", 0, 0
 	}
 
 	updateMsg := ""
@@ -123,7 +123,7 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int)
 			}
 		}
 	}
-	return updateMsg, updateNum
+	return updateMsg, updateNum, 0
 }
 
 func (n *VlrSequenceNode) _Print(depth *int, depthsWithChildren map[int]bool, hasNext bool) {

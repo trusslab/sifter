@@ -945,7 +945,7 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 
 		updateMsg := ""
 		for _, analysis := range sifter.analyses {
-			if msg, update := analysis.ProcessTraceEvent(te, flag); update > 0 {
+			if msg, update, _ := analysis.ProcessTraceEvent(te, flag); update > 0 {
 				updateMsg += fmt.Sprintf("  ├ %v: %v\n", analysis, msg)
 				updateMsg += fmt.Sprintf("  ├ raw data:\n")
 				for bi, b := range te.data {

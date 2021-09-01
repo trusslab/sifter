@@ -104,9 +104,9 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 func (a *FlagAnalysis) Reset() {
 }
 
-func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
+func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
 	if te.typ != 1 {
-		return "", 0
+		return "", 0, 0
 	}
 
 	msgs := make([]string, 0)
@@ -204,7 +204,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 			updatedRangesMsg += ", "
 		}
 	}
-	return updatedRangesMsg, updatedRangesLen
+	return updatedRangesMsg, updatedRangesLen, 0
 }
 
 func (a *FlagAnalysis) PrintResult(v Verbose) {

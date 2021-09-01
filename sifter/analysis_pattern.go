@@ -520,7 +520,7 @@ func (a *PatternAnalysis) testSeqTreeModel(te *TraceEvent) (string, int) {
 	return errMsg, errNum
 }
 
-func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
+func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
 	msg := ""
 	update := 0
 
@@ -530,7 +530,7 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 		//msg, update = a.testSeqTreeModel(te)
 		msg, update = a.testFilterPolicy(te)
 	}
-	return msg, update
+	return msg, update, 0
 }
 
 //func (a *PatternAnalysis) MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallNode) {

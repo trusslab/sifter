@@ -66,9 +66,9 @@ func (a *SequenceAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 func (a *SequenceAnalysis) Reset() {
 }
 
-func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
+func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
 	if te.typ != 1 {
-		return "", 0
+		return "", 0, 0
 	}
 
 	updateMsg := ""
@@ -125,7 +125,7 @@ func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string,
 
 	a.prevs = a.prevs[1:]
 	a.prevs = append(a.prevs, nextNode)
-	return updateMsg, updateNum
+	return updateMsg, updateNum, 0
 }
 
 func (a *SequenceAnalysis) PrintResult(v Verbose) {
