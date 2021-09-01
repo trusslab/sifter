@@ -973,7 +973,7 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 
 			if sifter.verbose >= AllTraceV || updateMsg != "" {
 				fmt.Printf("[%v] %d ", toSecString(te.ts), updatedTeNum)
-				if te.id & 0x80000000 != 0 {
+				if te.typ == 0 {
 					switch (te.id & 0x0fff0000) >> 16 {
 					case 1:
 						fmt.Printf("start ")
@@ -1099,7 +1099,7 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
 		}
 
 		traceEvent = newTraceEvent(ts, id, info, nil)
-		if id & 0x80000000 == 0 {
+		if traceEvent.typ != 0 {
 			if _, err = io.ReadFull(traceReader, traceEvent.data); err != nil {
 				goto endUnexpectedly
 			}
@@ -1303,7 +1303,8 @@ func (sifter *Sifter) TrainAndTest() {
 		//sa.SetLen(0)
 		pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 		pa.SetGroupingThreshold(SyscallGrouping, 1)
-		//pa.SetUnitOfAnalysis(ProcessLevel)
+		pa.SetPatternOrderThreshold(10)
+		pa.SetUnitOfAnalysis(TraceLevel)
 
 		//sifter.AddAnalysis(&vra)
 		sifter.AddAnalysis(&la)
@@ -1315,7 +1316,7 @@ func (sifter *Sifter) TrainAndTest() {
 		var testSize, trainSize, testUpdates, trainUpdates int
 		trainFiles, testFiles := sifter.GetTrainTestFiles()
 
-		fmt.Printf("Run %v\n", i)
+		fmt.Printf("#Run %v\n", i)
 		fmt.Printf("#training apps:\n")
 		for i, file := range trainFiles {
 			if i != len(trainFiles) - 1 {
@@ -1325,6 +1326,7 @@ func (sifter *Sifter) TrainAndTest() {
 			}
 		}
 		for _, file := range trainFiles {
+			fmt.Printf("#training app: %v\n", file.Name())
 			sifter.ClearTrace()
 			sifter.ReadTracedPidComm(sifter.traceDir+"/"+file.Name())
 			trainSize += sifter.ReadSyscallTrace(sifter.traceDir+"/"+file.Name())
@@ -1344,6 +1346,7 @@ func (sifter *Sifter) TrainAndTest() {
 			}
 		}
 		for _, file := range testFiles {
+			fmt.Printf("#testing app: %v\n", file.Name())
 			sifter.ClearTrace()
 			sifter.ReadTracedPidComm(sifter.traceDir+"/"+file.Name())
 			testSize += sifter.ReadSyscallTrace(sifter.traceDir+"/"+file.Name())

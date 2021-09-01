@@ -67,7 +67,7 @@ func (a *SequenceAnalysis) Reset() {
 }
 
 func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
-	if (te.id & 0x80000000) != 0 {
+	if te.typ != 1 {
 		return "", 0
 	}
 

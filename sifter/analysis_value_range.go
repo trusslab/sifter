@@ -11,7 +11,6 @@ type ValueRangeAnalysis struct {
 	argRanges map[*ArgMap][]uint64
 	regRanges map[*Syscall][]uint64
 	vlrRanges map[*VlrMap]map[*VlrRecord][]uint64
-	moduleSyscalls map[*Syscall]bool
 }
 
 func (a *ValueRangeAnalysis) String() string {
@@ -59,24 +58,13 @@ func (a *ValueRangeAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 			}
 		}
 	}
-
-	a.moduleSyscalls = make(map[*Syscall]bool)
-	for _, syscalls := range *TracedSyscalls {
-		for _, syscall := range syscalls {
-			a.moduleSyscalls[syscall] = true
-		}
-	}
 }
 
 func (a *ValueRangeAnalysis) Reset() {
 }
 
 func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
-	if (te.id & 0x80000000) != 0 {
-		return "", 0
-	}
-
-	if _, ok := a.moduleSyscalls[te.syscall]; !ok {
+	if te.typ != 1 {
 		return "", 0
 	}
 

@@ -105,11 +105,7 @@ func (a *FlagAnalysis) Reset() {
 }
 
 func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int) {
-	if (te.id & 0x80000000) != 0 {
-		return "", 0
-	}
-
-	if _, ok := a.moduleSyscalls[te.syscall]; !ok {
+	if te.typ != 1 {
 		return "", 0
 	}
 
