@@ -12,6 +12,7 @@ type Analysis interface {
 	Init(TracedSyscalls *map[string][]*Syscall)
 	Reset()
 	ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int)
+	PostProcess(flag Flag)
 	PrintResult(v Verbose)
 }
 

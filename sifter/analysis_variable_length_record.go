@@ -175,6 +175,9 @@ func (n *VlrSequenceNode) Print() {
 	n._Print(&depth, depthsWithOtherChildren, false)
 }
 
+func (a *VlrAnalysis) PostProcess(flag Flag) {
+}
+
 func (a *VlrAnalysis) PrintResult(v Verbose) {
 	for i, _ := range a.vlrSequenceRoot {
 		a.vlrSequenceRoot[i].Print()

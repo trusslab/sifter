@@ -233,6 +233,9 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 	return updatedRangesMsg, updatedRangesLen, 0
 }
 
+func (a *LenAnalysis) PostProcess(flag Flag) {
+}
+
 func (a *LenAnalysis) PrintResult(v Verbose) {
 	for syscall, _ := range a.lenContainingSyscall {
 		s := ""

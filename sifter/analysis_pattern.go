@@ -939,7 +939,7 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder(v Verbose) {
 	}
 }
 
-func (a *PatternAnalysis) PrintResult(v Verbose) {
+func (a *PatternAnalysis) PostProcess(flag Flag) {
 	for pid, n := range a.lastNodeOfPid {
 		if n.findEndChild() == -1 {
 			newEndNode := NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)
@@ -950,7 +950,7 @@ func (a *PatternAnalysis) PrintResult(v Verbose) {
 	}
 	fmt.Print("sequence tree before purging\n")
 	a.seqTreeRoot.Print(a)
-	i := 0
+	//i := 0
 	/*
 	for {
 		if !a.CheckNewIndependentNode() {
@@ -973,20 +973,21 @@ func (a *PatternAnalysis) PrintResult(v Verbose) {
 	}
 	*/
 	for {
-		i += 1
 		extracted := a.extractPattern(a.seqTreeRoot, a.patTreeRoot)
 		purged := a.PurgeTree2(a.seqTreeRoot, a.patTreeRoot)
 
-		if v >= DebugV {
-			fmt.Print("--------------------------------------------------------------------------------\n")
-			fmt.Printf("purging #%v purged=%v extracted=%v\n", i, purged, extracted)
-			a.seqTreeRoot.Print(a)
-		}
+		//i += 1
+		//fmt.Print("--------------------------------------------------------------------------------\n")
+		//fmt.Printf("purging #%v purged=%v extracted=%v\n", i, purged, extracted)
+		//a.seqTreeRoot.Print(a)
 
 		if !purged && !extracted {
 			break
 		}
 	}
+}
+
+func (a *PatternAnalysis) PrintResult(v Verbose) {
 	fmt.Print("--------------------------------------------------------------------------------\n")
 	fmt.Print("pattern tree\n")
 	a.patTreeRoot.Print(a)

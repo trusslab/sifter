@@ -932,16 +932,21 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 	updatedTeNum := 0
 	for i, _ := range sifter.trace {
 		te := sifter.trace[i]
-		allZero := true
-		for _, e := range te.data {
-			if e != 0 {
-				allZero = false
-				break
-			}
-		}
-		if allZero {
-			continue
-		}
+//		allZero := true
+//		for _, e := range te.data {
+//			if e != 0 {
+//				allZero = false
+//				break
+//			}
+//		}
+//		if allZero {
+//			if te.syscall != nil {
+//				fmt.Printf("AZ %d %x %v\n", te.typ, te.id, te.syscall.name)
+//			} else {
+//				fmt.Printf("AZ %d %x nil\n", te.typ, te.id)
+//			}
+//			continue
+//		}
 
 		updateMsg := ""
 		for _, analysis := range sifter.analyses {
@@ -999,6 +1004,10 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 
 			fmt.Printf("%v", updateMsg)
 		}
+	}
+
+	for _, analysis := range sifter.analyses {
+		analysis.PostProcess(flag)
 	}
 
 	if sifter.verbose >= ResultV {

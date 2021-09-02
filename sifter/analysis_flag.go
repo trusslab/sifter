@@ -207,6 +207,9 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 	return updatedRangesMsg, updatedRangesLen, 0
 }
 
+func (a *FlagAnalysis) PostProcess(flag Flag) {
+}
+
 func (a *FlagAnalysis) PrintResult(v Verbose) {
 	for syscall, _ := range a.moduleSyscalls {
 		s := ""
