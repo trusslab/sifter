@@ -3,49 +3,199 @@ package sifter
 import (
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/google/syzkaller/prog"
 )
 
 type LenRange struct {
-	values  map[uint64]int
+	values  map[uint64][]*TraceEvent
 	upper   uint64
 	lower   uint64
+	upperOL uint64
+	lowerOL uint64
 }
 
 func newLenRange() *LenRange {
 	lenRange := new(LenRange)
-	lenRange.values = make(map[uint64]int)
+	lenRange.values = make(map[uint64][]*TraceEvent)
 	lenRange.lower = math.MaxInt64
 	lenRange.upper = 0
 	return lenRange
 }
 
 func (r *LenRange) String() string {
-	if r.lower == math.MaxInt64 && r.upper == 0 {
-		return ""
-	} else {
-		return fmt.Sprintf("[%v, %v] %v", r.lower, r.upper, r.values)
+	s := ""
+	if len(r.values) != 0 {
+		s += fmt.Sprintf("[%v, %v] [", r.lower, r.upper)
+		for v, tes := range r.values {
+			s += fmt.Sprintf("%v,%v ", v, len(tes))
+		}
+		s += "]"
 	}
+	return s
 }
 
-func (r *LenRange) Update(v uint64, flag Flag) (bool, bool) {
+func (r *LenRange) Update(v uint64, te *TraceEvent, flag Flag) (bool, bool, bool, bool) {
 	updateLower := false
 	updateUpper := false
-	if (r.lower > v) {
+	updateLowerOL := false
+	updateUpperOL := false
+
+	if r.lower > v {
 		if flag == TrainFlag {
 			r.lower = v
+		} else if flag == TestFlag && r.lowerOL > v {
+			updateLowerOL = true
 		}
 		updateLower = true
 	}
-	if (r.upper < v) {
+	if r.upper < v {
 		if flag == TrainFlag {
 			r.upper = v
+		} else if flag == TestFlag && r.upperOL < v {
+			updateUpperOL = true
 		}
 		updateUpper = true
 	}
-	r.values[v] += 1
-	return updateLower, updateUpper
+	if flag == TrainFlag {
+		r.values[v] = append(r.values[v], te)
+	}
+
+	return updateLower, updateUpper, updateLowerOL, updateUpperOL
+}
+
+func mean(vMap map[uint64][]*TraceEvent, vKeys []uint64) float64 {
+	var vProductSum float64
+	teNum := 0
+	for v, teAry := range vMap {
+		vProductSum += float64(v) * float64(len(teAry))
+		teNum += len(teAry)
+	}
+	return vProductSum / float64(teNum)
+}
+
+func median(vMap map[uint64][]*TraceEvent, vKeys []uint64) uint64 {
+	var median uint64
+	teNum := 0
+	for _, teAry := range vMap {
+		teNum += len(teAry)
+	}
+
+	teAcc := 0
+	for _, vKey := range vKeys {
+		if teAcc + len(vMap[vKey]) > teNum / 2 {
+			median = vKey
+			break
+		}
+		teAcc += len(vMap[vKey])
+	}
+	return median
+}
+
+func diff(a uint64, b uint64) uint64 {
+	if a > b {
+		return a - b
+	} else {
+		return b - a
+	}
+}
+
+func meanAbsDev(vMap map[uint64][]*TraceEvent, mean float64) float64 {
+	teSum := 0
+	var vDiffProductSum float64
+	for v, teAry := range vMap {
+		vDiffProductSum += math.Abs(float64(v) - mean) * float64(len(teAry))
+		teSum += len(teAry)
+	}
+	return vDiffProductSum / float64(teSum)
+}
+
+func medianAbsDev(vMap map[uint64][]*TraceEvent, median uint64) uint64 {
+	var mad uint64
+	vDevMap := make(map[uint64]int)
+	for v, teAry := range vMap {
+		absDev := diff(v, median)
+		vDevMap[absDev] += len(teAry)
+	}
+
+	devNum := 0
+	var vDevKeys []uint64
+	for vDevKey, vDevNum := range vDevMap {
+		vDevKeys = append(vDevKeys, vDevKey)
+		devNum += vDevNum
+	}
+	sort.Slice(vDevKeys, func(i, j int) bool {return vDevKeys[i] < vDevKeys[j]})
+
+	devAcc := 0
+	for _, vDevKey := range vDevKeys {
+		if devAcc + vDevMap[vDevKey] > devNum / 2 {
+			mad = vDevKey
+			break
+		}
+	}
+	return mad
+}
+
+func (r *LenRange) RemoveOutlier() bool {
+	if len(r.values) == 0 {
+		return false
+	}
+
+	var vKeys []uint64
+	for v, _ := range r.values {
+		vKeys = append(vKeys, v)
+	}
+	sort.Slice(vKeys, func(i, j int) bool {return vKeys[i] < vKeys[j]})
+
+	mean := mean(r.values, vKeys)
+	meanAbsDev := meanAbsDev(r.values, mean)
+	median := median(r.values, vKeys)
+	medianAbsDev := medianAbsDev(r.values, median)
+	fmt.Printf("median: %v mad: %v mean: %v mad: %v\n", median, medianAbsDev, mean, meanAbsDev)
+
+	devThreshold := 10000.0
+	update := false
+	if meanAbsDev != 0 {
+		fmt.Printf("len outliers:\n")
+		lower := uint64(math.MaxInt64)
+		upper := uint64(0)
+		for _, v := range vKeys {
+			tes := r.values[v]
+			//z := 0.6745 * float64(diff(v, mean) / medianAbsDev)
+			z := math.Abs(float64(v) - mean) / meanAbsDev
+			if z > devThreshold {
+				for _, te := range tes {
+					fmt.Printf("%v %v %v\n", te.info.name, v, z)
+				}
+			} else {
+				if lower > v {
+					lower = v
+				}
+				if upper < v {
+					upper = v
+				}
+			}
+		}
+		if r.lower != lower || r.upper != upper {
+			r.lower = lower
+			r.upper = upper
+			update = true
+		}
+		signedLowerOL := mean - (devThreshold * meanAbsDev)
+		if signedLowerOL < 0 {
+			r.lowerOL = 0
+		} else {
+			r.lowerOL = uint64(signedLowerOL)
+		}
+		if math.MaxUint64 - uint64(devThreshold * meanAbsDev) > uint64(mean) {
+			r.upperOL = uint64(mean + (devThreshold * meanAbsDev))
+		} else {
+			r.upperOL = math.MaxUint64
+		}
+		fmt.Printf("new lower:%d upper:%d lowerOL:%d upperOL:%d\n", lower, upper, r.lowerOL, r.upperOL)
+	}
+	return update
 }
 
 type LenAnalysis struct {
@@ -122,17 +272,20 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 
 	a.lenContainingSyscall[te.syscall] = true
 
+	var ol []bool
 	msgs := make([]string, 0)
 	var offset uint64
 	for i, arg := range te.syscall.def.Args {
 		if _, ok := arg.(*prog.LenType); ok {
 			_, tr := te.GetData(uint64(i*8), arg.Size())
-			updateLower, updateUpper := a.regLenRanges[te.syscall][arg].Update(tr, flag)
+			updateLower, updateUpper, lowerOL, upperOL := a.regLenRanges[te.syscall][arg].Update(tr, te, flag)
 			if updateLower {
 				msgs = append(msgs, fmt.Sprintf("reg[%v]:l %x", i, tr))
+				ol = append(ol, lowerOL)
 			}
 			if updateUpper {
 				msgs = append(msgs, fmt.Sprintf("reg[%v]:u %x", i, tr))
+				ol = append(ol, upperOL)
 			}
 		}
 	}
@@ -142,12 +295,14 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 			for _, field := range structArg.Fields {
 				if _, ok := field.(*prog.LenType); ok {
 					_, tr := te.GetData(offset, field.Size())
-					updateLower, updateUpper := a.argLenRanges[argMap][field].Update(tr, flag)
+					updateLower, updateUpper, lowerOL, upperOL := a.argLenRanges[argMap][field].Update(tr, te, flag)
 					if updateLower {
 						msgs = append(msgs, fmt.Sprintf("%v_%v:l %x", argMap.name, field.FieldName(), tr))
+						ol = append(ol, lowerOL)
 					}
 					if updateUpper {
 						msgs = append(msgs, fmt.Sprintf("%v_%v:u %x", argMap.name, field.FieldName(), tr))
+						ol = append(ol, upperOL)
 					}
 				}
 				offset += field.Size()
@@ -155,12 +310,14 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 		} else {
 			if _, ok := argMap.arg.(*prog.LenType); ok {
 				_, tr := te.GetData(offset, argMap.arg.Size())
-				updateLower, updateUpper := a.argLenRanges[argMap][argMap.arg].Update(tr, flag)
+				updateLower, updateUpper, lowerOL, upperOL := a.argLenRanges[argMap][argMap.arg].Update(tr, te, flag)
 				if updateLower {
 					msgs = append(msgs, fmt.Sprintf("%v:l %x", argMap.name, tr))
+					ol = append(ol, lowerOL)
 				}
 				if updateUpper {
 					msgs = append(msgs, fmt.Sprintf("%v:u %x", argMap.name, tr))
+					ol = append(ol, upperOL)
 				}
 			}
 			offset += argMap.size
@@ -192,12 +349,14 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 						for _, ff := range structField.Fields {
 							if _, ok := ff.(*prog.LenType); ok {
 								_, tr = te.GetData(offset, ff.Size())
-								updateLower, updateUpper := a.vlrLenRanges[vlrMap][vlrRecord][ff].Update(tr, flag)
+								updateLower, updateUpper, lowerOL, upperOL := a.vlrLenRanges[vlrMap][vlrRecord][ff].Update(tr, te, flag)
 								if updateLower {
 									msgs = append(msgs, fmt.Sprintf("%v_%v_%v:l %x", vlrRecord.name, f.FieldName(), ff.FieldName(), tr))
+									ol = append(ol, lowerOL)
 								}
 								if updateUpper {
 									msgs = append(msgs, fmt.Sprintf("%v_%v_%v:u %x", vlrRecord.name, f.FieldName(), ff.FieldName(), tr))
+									ol = append(ol, upperOL)
 								}
 							}
 							offset += ff.Size()
@@ -205,12 +364,14 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 					} else {
 						if _, ok := f.(*prog.LenType); ok {
 							_, tr = te.GetData(offset, f.Size())
-							updateLower, updateUpper := a.vlrLenRanges[vlrMap][vlrRecord][f].Update(tr, flag)
+							updateLower, updateUpper, lowerOL, upperOL := a.vlrLenRanges[vlrMap][vlrRecord][f].Update(tr, te, flag)
 							if updateLower {
 								msgs = append(msgs, fmt.Sprintf("%v_%v:l %x", vlrRecord.name, f.FieldName(), tr))
+								ol = append(ol, lowerOL)
 							}
 							if updateUpper {
 								msgs = append(msgs, fmt.Sprintf("%v_%v:u %x", vlrRecord.name, f.FieldName(), tr))
+								ol = append(ol, upperOL)
 							}
 						}
 					}
@@ -222,18 +383,79 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 			}
 		}
 	}
-	updatedRangesLen := len(msgs)
-	updatedRangesMsg := ""
+	updateMsg := ""
+	updateFP := 0
+	updateFN := 0
 	for i, msg := range msgs {
-		updatedRangesMsg += msg
-		if i != updatedRangesLen-1 {
-			updatedRangesMsg += ", "
+		updateMsg += msg
+		if ol[i] {
+			updateMsg += " outlier"
+			updateFN += 1
+		} else {
+			updateFP += 1
+		}
+		if i != len(msg)-1 {
+			updateMsg += ", "
 		}
 	}
-	return updatedRangesMsg, updatedRangesLen, 0
+	return updateMsg, updateFP, updateFN
 }
 
 func (a *LenAnalysis) PostProcess(flag Flag) {
+
+}
+
+func (a *LenAnalysis) RemoveOutliers() {
+	fmt.Printf("removing outlier len:\n")
+	for syscall, _ := range a.lenContainingSyscall {
+		for i, arg := range syscall.def.Args {
+			if lenRange, ok := a.regLenRanges[syscall][arg]; ok {
+				if lenRange.RemoveOutlier() {
+					fmt.Printf("reg[%v]: %v\n", i, lenRange)
+				}
+			}
+		}
+		for _, argMap := range syscall.argMaps {
+			if structField, ok := argMap.arg.(*prog.StructType); ok {
+				for _, field := range structField.Fields {
+					if lenRange, ok := a.argLenRanges[argMap][field]; ok {
+						if lenRange.RemoveOutlier() {
+							fmt.Printf("%v_%v: %v\n", argMap.name, field.FieldName(), lenRange)
+						}
+					}
+				}
+			} else {
+				if lenRange, ok := a.argLenRanges[argMap][argMap.arg]; ok {
+					if lenRange.RemoveOutlier() {
+						fmt.Printf("%v: %v\n", argMap.name, lenRange)
+					}
+				}
+			}
+		}
+		for _, vlrMap := range syscall.vlrMaps {
+			fmt.Printf("\n%v (%v)\n", vlrMap.name, len(vlrMap.records))
+			for _, vlrRecord := range vlrMap.records {
+				structArg, _ := vlrRecord.arg.(*prog.StructType)
+				for _, f := range structArg.Fields {
+					if structField, isStructArg := f.(*prog.StructType); isStructArg {
+						for _, ff := range structField.Fields {
+							if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][ff]; ok {
+								if lenRange.RemoveOutlier() {
+									fmt.Printf("%v_%v_%v: %v\n", vlrRecord.name, f.FieldName(), ff.FieldName(), lenRange)
+								}
+							}
+						}
+					} else {
+						if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][f]; ok {
+							if lenRange.RemoveOutlier() {
+									fmt.Printf("%v_%v: %v\n", vlrRecord.name, f.FieldName(), lenRange)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func (a *LenAnalysis) PrintResult(v Verbose) {
@@ -282,5 +504,4 @@ func (a *LenAnalysis) PrintResult(v Verbose) {
 		}
 	}
 }
-
 

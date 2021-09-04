@@ -926,10 +926,11 @@ func toSecString(ns uint64) string {
 	return fmt.Sprintf("%v.%09d", ns/1000000000, ns%1000000000)
 }
 
-func (sifter *Sifter) DoAnalyses(flag Flag) int {
+func (sifter *Sifter) DoAnalyses(flag Flag) (int, int) {
 
 	lastUpdatedTeIdx := 0
 	updatedTeNum := 0
+	updatedTeOLNum := 0
 	for i, _ := range sifter.trace {
 		te := sifter.trace[i]
 //		allZero := true
@@ -950,7 +951,7 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 
 		updateMsg := ""
 		for _, analysis := range sifter.analyses {
-			if msg, update, _ := analysis.ProcessTraceEvent(te, flag); update > 0 {
+			if msg, update, updateOL := analysis.ProcessTraceEvent(te, flag); update > 0 || updateOL > 0 {
 				updateMsg += fmt.Sprintf("  ├ %v: %v\n", analysis, msg)
 				updateMsg += fmt.Sprintf("  ├ raw data:\n")
 				for bi, b := range te.data {
@@ -965,7 +966,11 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 						updateMsg += fmt.Sprintf("\n")
 					}
 				}
-				updatedTeNum += 1
+				if updateOL > 0 {
+					updatedTeOLNum += 1
+				} else {
+					updatedTeNum += 1
+				}
 			}
 		}
 
@@ -977,7 +982,7 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 			}
 
 			if sifter.verbose >= AllTraceV || updateMsg != "" {
-				fmt.Printf("[%v] %d ", toSecString(te.ts), updatedTeNum)
+				fmt.Printf("[%v] update:(%d/%d) ", toSecString(te.ts), updatedTeNum, updatedTeOLNum)
 				if te.typ == 0 {
 					switch (te.id & 0x0fff0000) >> 16 {
 					case 1:
@@ -1020,7 +1025,7 @@ func (sifter *Sifter) DoAnalyses(flag Flag) int {
 	for _, analysis := range sifter.analyses {
 		analysis.Reset()
 	}
-	return updatedTeNum
+	return updatedTeNum, updatedTeOLNum
 }
 
 func (sifter *Sifter) ReadTracedPidComm(dirPath string) {
@@ -1301,6 +1306,7 @@ func (sifter *Sifter) TrainAndTest() {
 	sifter.ReadTraceDir(sifter.traceDir)
 
 	testUpdateSum := 0
+	testUpdateOLSum := 0
 	for i := 0; i < sifter.Iter(); i ++ {
 		sifter.ClearAnalysis()
 		//var vra ValueRangeAnalysis
@@ -1322,7 +1328,7 @@ func (sifter *Sifter) TrainAndTest() {
 		//sifter.AddAnalysis(&sa)
 		sifter.AddAnalysis(&pa)
 
-		var testSize, trainSize, testUpdates, trainUpdates int
+		var testSize, trainSize, testUpdates, trainUpdates, testUpdatesOL, trainUpdatesOL int
 		trainFiles, testFiles := sifter.GetTrainTestFiles()
 
 		fmt.Printf("#Run %v\n", i)
@@ -1339,12 +1345,15 @@ func (sifter *Sifter) TrainAndTest() {
 			sifter.ClearTrace()
 			sifter.ReadTracedPidComm(sifter.traceDir+"/"+file.Name())
 			trainSize += sifter.ReadSyscallTrace(sifter.traceDir+"/"+file.Name())
-			trainUpdates += sifter.DoAnalyses(TrainFlag)
+			update, updateOL := sifter.DoAnalyses(TrainFlag)
+			trainUpdates += update
+			trainUpdatesOL += updateOL
 		}
 		fmt.Printf("#training size: %v\n", trainSize)
-		fmt.Printf("#training updates: %v\n", trainUpdates)
+		fmt.Printf("#training updates: %v/%v\n", trainUpdates, trainUpdatesOL)
 		fmt.Print("--------------------------------------------------------------------------------\n")
 		pa.AnalyzeIntraPatternOrder(sifter.verbose)
+		la.RemoveOutliers()
 
 		fmt.Printf("#testing apps:\n")
 		for i, file := range testFiles {
@@ -1359,11 +1368,17 @@ func (sifter *Sifter) TrainAndTest() {
 			sifter.ClearTrace()
 			sifter.ReadTracedPidComm(sifter.traceDir+"/"+file.Name())
 			testSize += sifter.ReadSyscallTrace(sifter.traceDir+"/"+file.Name())
-			testUpdates += sifter.DoAnalyses(TestFlag)
+			update, updateOL := sifter.DoAnalyses(TestFlag)
+			testUpdates += update
+			testUpdatesOL += updateOL
 		}
 		testUpdateSum += testUpdates
+		testUpdateOLSum += testUpdatesOL
 		fmt.Printf("#testing size: %v\n", testSize)
-		fmt.Printf("#testing updates: %v\n", testUpdates)
+		fmt.Printf("#testing updates: %v/%v\n", testUpdates, testUpdatesOL)
 	}
-	fmt.Printf("#Avg testing error: %.3f\n", float64(testUpdateSum)/float64(sifter.Iter()))
+	fmt.Print("================================================================================\n")
+	fmt.Printf("#Testing error:\n")
+	fmt.Printf("#FP:%d FN:%d\n", testUpdateSum, testUpdateOLSum)
+	fmt.Printf("#Avg: %.3f\n", float64(testUpdateSum)/float64(sifter.Iter()))
 }
