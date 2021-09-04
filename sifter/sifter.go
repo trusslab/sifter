@@ -131,6 +131,15 @@ func NewSifter(f Flags) (*Sifter, error) {
 			errorRetVal:    "1",
 		}
 	} else if f.Mode == "filter" {
+		s.mode = FilterMode
+		s.ctx = Context{
+			name: "struct seccomp_data",
+			syscallNum: "nr",
+			syscallArgs: "args",
+			defaultRetType: "int",
+			defaultRetVal: "SECCOMP_RET_ALLOW",
+			errorRetVal: "SECCOMP_RET_ERRNO",
+		}
 	} else if f.Mode == "analyzer" {
 		s.mode = AnalyzerMode
 		s.ctx = Context{
@@ -649,6 +658,13 @@ func (sifter *Sifter) GenerateProgSection() {
 //		fmt.Fprintf(s, "    update_syscall_seq(pid, (uint16_t)-1);\n")
 //		fmt.Fprintf(s, "    return 0;\n")
 //		fmt.Fprintf(s, "}\n")
+	}
+	if sifter.mode == FilterMode {
+		s := sifter.GetSection("main")
+		fmt.Fprintf(s, "SEC(\"seccomp\")\n")
+		fmt.Fprintf(s, "int filter(struct seccomp_data *ctx)\n")
+		fmt.Fprintf(s, "{\n")
+		fmt.Fprintf(s, "}\n")
 	}
 }
 
