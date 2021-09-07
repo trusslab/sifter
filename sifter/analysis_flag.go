@@ -8,6 +8,7 @@ import (
 
 type FlagSet struct {
 	values map[uint64]int
+	idx    int
 }
 
 func (flags *FlagSet) Update(v uint64, f Flag) int {
@@ -20,9 +21,10 @@ func (flags *FlagSet) Update(v uint64, f Flag) int {
 	return count
 }
 
-func newFlagSet() *FlagSet {
+func newFlagSet(idx int) *FlagSet {
 	newFlags := new(FlagSet)
 	newFlags.values = make(map[uint64]int)
+	newFlags.idx = idx
 	return newFlags
 }
 
@@ -51,10 +53,17 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.vlrFlags = make(map[*VlrMap]map[*VlrRecord]map[prog.Type]*FlagSet)
 	for _, syscalls := range *TracedSyscalls {
 		for _, syscall := range syscalls {
+			idx := 0
 			a.regFlags[syscall] = make(map[prog.Type]*FlagSet)
-			for _, arg := range syscall.def.Args {
+			for i, arg := range syscall.def.Args {
+				if syscall.def.CallName == "ioctl" && i == 1 {
+					a.regFlags[syscall][arg] = newFlagSet(idx)
+					idx += 1
+				}
+
 				if _, isFlagsArg := arg.(*prog.FlagsType); isFlagsArg {
-					a.regFlags[syscall][arg] = newFlagSet()
+					a.regFlags[syscall][arg] = newFlagSet(idx)
+					idx += 1
 				}
 			}
 			for _, argMap := range syscall.argMaps {
@@ -62,11 +71,13 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 				if structArg, ok := argMap.arg.(*prog.StructType); ok {
 					for _, field := range structArg.Fields {
 						if _, isFlagsArg := field.(*prog.FlagsType); isFlagsArg {
-							a.argFlags[argMap][field] = newFlagSet()
+							a.argFlags[argMap][field] = newFlagSet(idx)
+							idx += 1
 						}
 					}
 				} else {
-					a.argFlags[argMap][argMap.arg] = newFlagSet()
+					a.argFlags[argMap][argMap.arg] = newFlagSet(idx)
+					idx += 1
 				}
 			}
 			for _, vlr := range syscall.vlrMaps {
@@ -78,12 +89,14 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 							if structField, ok := f.(*prog.StructType); ok {
 								for _, ff := range structField.Fields {
 									if _, isFlagsArg := ff.(*prog.FlagsType); isFlagsArg {
-										a.vlrFlags[vlr][record][ff] = newFlagSet()
+										a.vlrFlags[vlr][record][ff] = newFlagSet(idx)
+										idx += 1
 									}
 								}
 							} else {
 								if _, isFlagsArg := f.(*prog.FlagsType); isFlagsArg {
-									a.vlrFlags[vlr][record][f] = newFlagSet()
+									a.vlrFlags[vlr][record][f] = newFlagSet(idx)
+									idx += 1
 								}
 							}
 						}
@@ -112,6 +125,12 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 	msgs := make([]string, 0)
 	var offset uint64
 	for i, arg := range te.syscall.def.Args {
+		if te.syscall.def.CallName == "ioctl" && i == 1 {
+			_, tr := te.GetData(offset, 8)
+			if a.regFlags[te.syscall][arg].Update(tr, flag) == 0 {
+				msgs = append(msgs, fmt.Sprintf("reg[%v] new flag %x", i, tr))
+			}
+		}
 		if _, isFlagsArg := arg.(*prog.FlagsType); isFlagsArg {
 			_, tr := te.GetData(offset, 8)
 			if a.regFlags[te.syscall][arg].Update(tr, flag) == 0 {
@@ -214,6 +233,11 @@ func (a *FlagAnalysis) PrintResult(v Verbose) {
 	for syscall, _ := range a.moduleSyscalls {
 		s := ""
 		for i, arg := range syscall.def.Args {
+			if syscall.def.CallName == "ioctl" && i == 1 {
+				if flags, ok := a.regFlags[syscall][arg]; ok {
+					s += fmt.Sprintf("reg[%v]: %x", i, flags)
+				}
+			}
 			if flags, ok := a.regFlags[syscall][arg]; ok {
 				s += fmt.Sprintf("reg[%v]: %v\n", i, flags)
 			}
@@ -258,26 +282,41 @@ func (a *FlagAnalysis) PrintResult(v Verbose) {
 }
 
 func (a *FlagAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {
-	var constraint *ValuesConstraint
+	var constraint *TaggingConstraint
 	if depth == 0 {
 		if f, ok := a.regFlags[syscall][arg]; ok {
-			fmt.Printf("add values constraint to %v %v\n", syscall.name, arg.FieldName())
-			constraint = new(ValuesConstraint)
-			for v, _ := range f.values {
-				constraint.values = append(constraint.values, v)
-			}
+			fmt.Printf("add tagging constraint to %v %v\n", syscall.name, arg.FieldName())
+			constraint = new(TaggingConstraint)
+			constraint.idx = f.idx
 			return constraint
 		}
 	} else {
 		if f, ok := a.argFlags[argMap][arg]; ok {
-			fmt.Printf("add values constraint to %v %v\n", syscall.name, arg.FieldName())
-			constraint = new(ValuesConstraint)
-			for v, _ := range f.values {
-				constraint.values = append(constraint.values, v)
-			}
-			return constraint
+			fmt.Printf("add tagging constraint to %v %v\n", syscall.name, arg.FieldName())
+			constraint = new(TaggingConstraint)
+			constraint.idx = f.idx
 		}
 	}
+//	var constraint *ValuesConstraint
+//	if depth == 0 {
+//		if f, ok := a.regFlags[syscall][arg]; ok {
+//			fmt.Printf("add values constraint to %v %v\n", syscall.name, arg.FieldName())
+//			constraint = new(ValuesConstraint)
+//			for v, _ := range f.values {
+//				constraint.values = append(constraint.values, v)
+//			}
+//			return constraint
+//		}
+//	} else {
+//		if f, ok := a.argFlags[argMap][arg]; ok {
+//			fmt.Printf("add values constraint to %v %v\n", syscall.name, arg.FieldName())
+//			constraint = new(ValuesConstraint)
+//			for v, _ := range f.values {
+//				constraint.values = append(constraint.values, v)
+//			}
+//			return constraint
+//		}
+//	}
 	return nil
 }
 

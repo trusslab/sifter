@@ -254,3 +254,13 @@ func (vc *ValuesConstraint) String(argName string, retName string, allowValue st
 	return s
 }
 
+type TaggingConstraint struct {
+	idx int
+}
+
+func (tc *TaggingConstraint) String(argName string, retName string, allowValue string, rejectValue string) string {
+	s := ""
+	s += fmt.Sprintf("id_key.tag[%v] = %v;\n", tc.idx, argName)
+	return s
+}
+
