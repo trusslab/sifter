@@ -466,7 +466,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 
 func (sifter *Sifter) GenerateOtherSyscallsTracer() {
 	s := sifter.GetSection("level2_tracing")
-	fmt.Fprintf(s, "%v __always_inline trace_other_syscalls(%v *ctx, int pid) {\n", sifter.ctx.defaultRetType, sifter.ctx.name)
+	fmt.Fprintf(s, "%v __always_inline trace_other_syscalls(%v *ctx, uint32_t pid) {\n", sifter.ctx.defaultRetType, sifter.ctx.name)
 	fmt.Fprintf(s, "    %v ret = %v;\n", sifter.ctx.defaultRetType, sifter.ctx.defaultRetVal)
 	if sifter.mode == TracerMode {
 		fmt.Fprintf(s, "    int i = 0;\n")
@@ -500,7 +500,7 @@ func (sifter *Sifter) GenerateOtherSyscallsTracer() {
 
 func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 	s := sifter.GetSection("level2_tracing")
-	fmt.Fprintf(s, "%v __always_inline trace_%v(%v *ctx, int pid) {\n", sifter.ctx.defaultRetType, syscall.name, sifter.ctx.name)
+	fmt.Fprintf(s, "%v __always_inline trace_%v(%v *ctx, uint32_t pid) {\n", sifter.ctx.defaultRetType, syscall.name, sifter.ctx.name)
 	fmt.Fprintf(s, "    %v ret = %v;\n", sifter.ctx.defaultRetType, sifter.ctx.defaultRetVal)
 	if sifter.mode == TracerMode {
 		fmt.Fprintf(s, "    int i = 0;\n")
@@ -529,7 +529,7 @@ func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 	}
 	if sifter.mode == FilterMode {
 		fmt.Fprintf(s, "    struct syscall_id_key id_key;\n")
-		fmt.Fprintf(s, "    id_key.nr = nr;\n")
+		fmt.Fprintf(s, "    id_key.nr = ctx->nr;\n")
 		fmt.Fprintf(s, "    id_key.tag[0] = 0;\n")
 		fmt.Fprintf(s, "    id_key.tag[1] = 0;\n")
 		fmt.Fprintf(s, "    id_key.tag[2] = 0;\n")
@@ -552,7 +552,7 @@ func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 
 func (sifter *Sifter) GenerateIoctlTracer(syscalls []*Syscall) {
 	s := sifter.GetSection("level1_tracing")
-	fmt.Fprintf(s, "%v __always_inline trace_ioctl(%v *ctx, int pid) {\n", sifter.ctx.defaultRetType, sifter.ctx.name)
+	fmt.Fprintf(s, "%v __always_inline trace_ioctl(%v *ctx, uint32_t pid) {\n", sifter.ctx.defaultRetType, sifter.ctx.name)
 	fmt.Fprintf(s, "    %v ret = %v;\n", sifter.ctx.defaultRetType, sifter.ctx.defaultRetVal)
 	fmt.Fprintf(s, "    uint64_t ioctl_cmd = ctx->%v[1];\n", sifter.ctx.syscallArgs)
 	fmt.Fprintf(s, "    switch (ioctl_cmd) {\n")
@@ -634,7 +634,7 @@ func (sifter *Sifter) GenerateProgSection() {
 
 	if sifter.mode == TracerMode {
 		s := sifter.GetSection("main")
-		fmt.Fprintf(s, "void __always_inline trace_syscalls(sys_enter_args *ctx, int pid) {\n")
+		fmt.Fprintf(s, "void __always_inline trace_syscalls(sys_enter_args *ctx, uint32_t pid) {\n")
 		fmt.Fprintf(s, "    int nr = ctx->id;\n")
 		fmt.Fprintf(s, "    int fd_is_dev = 0;\n")
 		fmt.Fprintf(s, "    char dev [] = \"%v\";\n", sifter.devName)
@@ -666,7 +666,7 @@ func (sifter *Sifter) GenerateProgSection() {
 		fmt.Fprintf(s, "\n")
 		fmt.Fprintf(s, "SEC(\"tracepoint/raw_syscalls/sys_enter\")\n")
 		fmt.Fprintf(s, "int sys_enter_prog(sys_enter_args *ctx) {\n")
-		fmt.Fprintf(s, "    int pid = is_current_pid_traced();\n")
+		fmt.Fprintf(s, "    uint32_t pid = is_current_pid_traced();\n")
 		fmt.Fprintf(s, "    if (pid == 0)\n")
 		fmt.Fprintf(s, "        return 0;\n")
 		fmt.Fprintf(s, "\n")
@@ -713,7 +713,7 @@ func (sifter *Sifter) GenerateProgSection() {
 		fmt.Fprintf(s, "int filter(struct seccomp_data *ctx)\n")
 		fmt.Fprintf(s, "{\n")
 		fmt.Fprintf(s, "    uint32_t nr = ctx->nr;\n")
-		fmt.Fprintf(s, "    uint32_t pid = bpf_get_current_pid_tgid();\n")
+		fmt.Fprintf(s, "    uint32_t pid = bpf_get_current_pid_tgid() >> 32;\n")
 		fmt.Fprintf(s, "    int ret = SECCOMP_RET_ALLOW;\n")
 		fmt.Fprintf(s, "    if (nr == %v) {\n", sifter.SyscallNumber("openat"))
 		fmt.Fprintf(s, "        check_dev_open(ctx);\n")
@@ -734,7 +734,7 @@ func (sifter *Sifter) GenerateProgSection() {
 		fmt.Fprintf(s, "                ret = SECCOMP_RET_ERRNO;\n")
 		fmt.Fprintf(s, "            }\n")
 		fmt.Fprintf(s, "        }\n")
-		fmt.Fprintf(s, "        bpf_syscall_id_curr_delete_elem(&ip);\n")
+		fmt.Fprintf(s, "        bpf_syscall_id_curr_delete_elem(&pid);\n")
 		fmt.Fprintf(s, "    }\n")
 		fmt.Fprintf(s, "    return ret;\n")
 		fmt.Fprintf(s, "}\n")
@@ -766,7 +766,7 @@ func (sifter *Sifter) GenerateMapSection() {
 		fmt.Fprintf(s, "#define SC_ID_MAX 8\n")
 		fmt.Fprintf(s, "#define SC_SEQ_MAX 7\n")
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_id_map, HASH, struct syscall_id_key, uint8_t, SC_ID_MAX);\n")
-		fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_id_curr, HASH, uint64_t, struct syscall_id_key, 128);\n")
+		fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_id_curr, HASH, uint32_t, struct syscall_id_key, 128);\n")
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_seq_tree, ARRAY, int, struct syscall_seq, SC_SEQ_MAX);\n")
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_seq_curr, ARRAY, int, struct syscall_seq_curr, 1);\n")
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(init_map, ARRAY, int, int, 1);\n")
@@ -892,10 +892,16 @@ func (sifter *Sifter) GenerateStructSection() {
 
 func (sifter *Sifter) GenerateHelperSection() {
 	s := sifter.GetSection("helper")
+	fmt.Fprintf(s, "#define bpf_printk(fmt, ...)                                   \\\n")
+	fmt.Fprintf(s, "({                                                             \\\n")
+	fmt.Fprintf(s, "    char ____fmt[] = fmt;                                      \\\n")
+	fmt.Fprintf(s, "    bpf_trace_printk(____fmt, sizeof(____fmt), ##__VA_ARGS__); \\\n")
+	fmt.Fprintf(s, "})\n")
+	fmt.Fprintf(s, "\n")
 	if sifter.mode == TracerMode {
 		fmt.Fprintf(s, "int __always_inline get_current_pid() {\n")
 		fmt.Fprintf(s, "    uint64_t current_pid_tgid = bpf_get_current_pid_tgid();\n")
-		fmt.Fprintf(s, "    int pid = current_pid_tgid & 0x00000000ffffffff;\n")
+		fmt.Fprintf(s, "    uint32_t pid = current_pid_tgid & 0x00000000ffffffff;\n")
 		fmt.Fprintf(s, "    return pid;\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "\n")
@@ -919,7 +925,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 		fmt.Fprintf(s, "	return (bpf_target_prog_comm_map_lookup_elem(&comm) != NULL);\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "\n")
-		fmt.Fprintf(s, "int __always_inline is_current_pid_traced() {\n")
+		fmt.Fprintf(s, "uint32_t __always_inline is_current_pid_traced() {\n")
 		fmt.Fprintf(s, "    uint32_t current_pid = get_current_pid();\n")
 		fmt.Fprintf(s, "    if (bpf_traced_pid_map_lookup_elem(&current_pid) != NULL) {\n")
 		fmt.Fprintf(s, "        return current_pid;\n")
@@ -946,7 +952,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 		fmt.Fprintf(s, "\n")
 	}
 	if sifter.mode == FilterMode {
-		fmt.Fprintf(s, "bool __always_inline check_seq(uint64_t pid) {\n")
+		fmt.Fprintf(s, "bool __always_inline check_seq(uint32_t pid) {\n")
 		fmt.Fprintf(s, "    int i = 0;\n")
 		fmt.Fprintf(s, "    struct syscall_id_key *id_key_ptr = bpf_syscall_id_curr_lookup_elem(&pid);\n")
 		fmt.Fprintf(s, "    if (!id_key_ptr) {\n")
@@ -959,7 +965,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 		fmt.Fprintf(s, "    id_key.tag[2] = id_key_ptr->tag[2];\n")
 		fmt.Fprintf(s, "    uint8_t *this_id = bpf_syscall_id_map_lookup_elem(&id_key);\n")
 		fmt.Fprintf(s, "    if (!this_id) {\n")
-		fmt.Fprintf(s, "        bpf_printk(\"id lookup failed nr = %d\\n\", id_key.nr);\n")
+		fmt.Fprintf(s, "        bpf_printk(\"id lookup failed nr = %%d\\n\", id_key.nr);\n")
 		fmt.Fprintf(s, "        bpf_printk(\"id lookup failed %%x %%x %%x\\n\", id_key.tag[0], id_key.tag[1], id_key.tag[2]);\n")
 		fmt.Fprintf(s, "        goto error;\n")
 		fmt.Fprintf(s, "    }\n")
@@ -973,9 +979,10 @@ func (sifter *Sifter) GenerateHelperSection() {
 		fmt.Fprintf(s, "    int u = -1;\n")
 		fmt.Fprintf(s, "    bool end = false;\n")
 		fmt.Fprintf(s, "    int seq_id;\n")
+		fmt.Fprintf(s, "    struct syscall_seq *seq;\n")
 		for i := 0; i < 7; i++ { //SC_SEQ_MAX
 			fmt.Fprintf(s, "    seq_id = %v;\n", i)
-			fmt.Fprintf(s, "    struct syscall_seq *seq = bpf_syscall_seq_tree_lookup_elem(&seq_id);\n")
+			fmt.Fprintf(s, "    seq = bpf_syscall_seq_tree_lookup_elem(&seq_id);\n")
 			fmt.Fprintf(s, "    if (seq) {\n")
 			fmt.Fprintf(s, "        if (seq_curr->idx >= 0 && seq_curr->idx < 9 && this_id) {\n")
 			fmt.Fprintf(s, "            if (seq->id[seq_curr->idx] == *this_id) {\n")
@@ -1026,6 +1033,22 @@ func (sifter *Sifter) GenerateHelperSection() {
 		fmt.Fprintf(s, "        seq_curr->u = SC_SEQ_MAX - 1;\n")
 		fmt.Fprintf(s, "        seq_curr->idx = 0;\n")
 		fmt.Fprintf(s, "    }\n")
+		fmt.Fprintf(s, "}\n")
+		fmt.Fprintf(s, "\n")
+		fmt.Fprintf(s, "void __always_inline init_syscall_id_map() {\n")
+		fmt.Fprintf(s, "	struct syscall_id_key key;\n")
+		fmt.Fprintf(s, "	uint8_t id = 0;\n")
+		fmt.Fprintf(s, "	id = 1;	key.nr = 29; key.tag[0] = 0xc0046209; key.tag[1] = 0; key.tag[2] = 0;\n")
+		fmt.Fprintf(s, "	bpf_syscall_id_map_update_elem(&key, &id, BPF_ANY);\n")
+		fmt.Fprintf(s, "}\n")
+		fmt.Fprintf(s, "\n")
+		fmt.Fprintf(s, "void __always_inline init_syscall_seq_tree() {\n")
+		fmt.Fprintf(s, "    int id = 0;\n")
+		fmt.Fprintf(s, "    struct syscall_seq seqs;\n")
+		fmt.Fprintf(s, "    id = 0;\n")
+		fmt.Fprintf(s, "    seqs.id[0] = 3; seqs.id[1] = 0; seqs.id[2] = 0; seqs.id[3] = 0; seqs.id[4] = 0;\n")
+		fmt.Fprintf(s, "    seqs.id[5] = 0; seqs.id[6] = 0; seqs.id[7] = 0; seqs.id[8] = 0; seqs.id[9] = 0;\n")
+		fmt.Fprintf(s, "    bpf_syscall_seq_tree_update_elem(&id, &seqs, BPF_ANY);\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "\n")
 		fmt.Fprintf(s, "int __always_inline check_dev_path(char *path)\n")
