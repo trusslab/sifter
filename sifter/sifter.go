@@ -721,7 +721,7 @@ func (sifter *Sifter) GenerateProgSection() {
 		fmt.Fprintf(s, "        if (nr == %v) {\n", sifter.SyscallNumber("ioctl"))
 		fmt.Fprintf(s, "            trace_ioctl(ctx, pid);\n")
 		for key, syscalls := range sifter.moduleSyscalls {
-			if key != "ioctl" || key != "close" {
+			if key != "ioctl" && key != "close" {
 				fmt.Fprintf(s, "        } else if (nr == %v) {\n", sifter.SyscallNumber(key))
 				fmt.Fprintf(s, "            trace_%v(ctx, pid);\n", syscalls[0].name)
 			}
