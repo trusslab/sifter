@@ -1029,6 +1029,23 @@ func (a *PatternAnalysis) PostProcess(flag Flag) {
 	}
 }
 
+func (a *PatternAnalysis) GenPatternList() {
+	fmt.Print("--------------------------------------------------------------------------------\n")
+	nodeStack := make([]*TaggedSyscallNode, 0)
+	a.genPatternList(a.patTreeRoot, nodeStack)
+	a.genUniqueNodeList(a.patTreeRoot)
+	for _, p := range a.patternList {
+		for _, s := range p {
+			fmt.Print("%v ", s)
+		}
+		fmt.Print("\n")
+	}
+	for i, s := range a.uniqueSyscallList {
+		fmt.Print("%d %v\n", i, s)
+	}
+	fmt.Print("--------------------------------------------------------------------------------\n")
+}
+
 func (a *PatternAnalysis) PrintResult(v Verbose) {
 	fmt.Print("--------------------------------------------------------------------------------\n")
 	fmt.Print("pattern tree\n")
@@ -1038,21 +1055,6 @@ func (a *PatternAnalysis) PrintResult(v Verbose) {
 	a.seqTreeRoot.Print(a)
 	//fmt.Print("--------------------------------------------------------------------------------\n")
 	//a.AnalyzeIntraPatternOrder()
-
-	//fmt.Print("--------------------------------------------------------------------------------\n")
-	//fmtnodeStack := make([]*TaggedSyscallNode, 0)
-	//fmta.genPatternList(a.patTreeRoot, nodeStack)
-	//fmta.genUniqueNodeList(a.patTreeRoot)
-	//fmtfor _, p := range a.patternList {
-	//fmt	for _, s := range p {
-	//fmt		fmt.Print("%v ", s)
-	//fmt	}
-	//fmt	fmt.Print("\n")
-	//fmt}
-	//fmtfor i, s := range a.uniqueSyscallList {
-	//fmt	fmt.Print("%d %v\n", i, s)
-	//fmt}
-	//fmtfmt.Print("--------------------------------------------------------------------------------\n")
 }
 
 func (a *PatternAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {

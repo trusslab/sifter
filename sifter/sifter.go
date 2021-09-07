@@ -1046,6 +1046,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 		fmt.Fprintf(s, "\n")
 		if a := sifter.GetAnalysis("pattern analysis"); a != nil {
 			pa, _ := a.(*PatternAnalysis)
+			pa.GenPatternList()
 			fmt.Fprintf(s, "void __always_inline init_syscall_id_map() {\n")
 			fmt.Fprintf(s, "    struct syscall_id_key key;\n")
 			fmt.Fprintf(s, "    uint8_t id = 0;\n")
