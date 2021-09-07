@@ -265,6 +265,15 @@ func (sifter *Sifter) ClearTrace() {
 	sifter.trace = nil
 }
 
+func (sifter *Sifter) GetAnalysis(name string) Analysis {
+	for _, a := range sifter.analyses {
+		if a.String() == name {
+			return a
+		}
+	}
+	return nil
+}
+
 func (sifter *Sifter) GetSection(name string) *bytes.Buffer {
 	var s *bytes.Buffer
 	if section, ok := sifter.sections[name]; ok {
@@ -1035,22 +1044,48 @@ func (sifter *Sifter) GenerateHelperSection() {
 		fmt.Fprintf(s, "    }\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "\n")
-		fmt.Fprintf(s, "void __always_inline init_syscall_id_map() {\n")
-		fmt.Fprintf(s, "	struct syscall_id_key key;\n")
-		fmt.Fprintf(s, "	uint8_t id = 0;\n")
-		fmt.Fprintf(s, "	id = 1;	key.nr = 29; key.tag[0] = 0xc0046209; key.tag[1] = 0; key.tag[2] = 0;\n")
-		fmt.Fprintf(s, "	bpf_syscall_id_map_update_elem(&key, &id, BPF_ANY);\n")
-		fmt.Fprintf(s, "}\n")
-		fmt.Fprintf(s, "\n")
-		fmt.Fprintf(s, "void __always_inline init_syscall_seq_tree() {\n")
-		fmt.Fprintf(s, "    int id = 0;\n")
-		fmt.Fprintf(s, "    struct syscall_seq seqs;\n")
-		fmt.Fprintf(s, "    id = 0;\n")
-		fmt.Fprintf(s, "    seqs.id[0] = 3; seqs.id[1] = 0; seqs.id[2] = 0; seqs.id[3] = 0; seqs.id[4] = 0;\n")
-		fmt.Fprintf(s, "    seqs.id[5] = 0; seqs.id[6] = 0; seqs.id[7] = 0; seqs.id[8] = 0; seqs.id[9] = 0;\n")
-		fmt.Fprintf(s, "    bpf_syscall_seq_tree_update_elem(&id, &seqs, BPF_ANY);\n")
-		fmt.Fprintf(s, "}\n")
-		fmt.Fprintf(s, "\n")
+		if a := sifter.GetAnalysis("pattern analysis"); a != nil {
+			pa, _ := a.(*PatternAnalysis)
+			fmt.Fprintf(s, "void __always_inline init_syscall_id_map() {\n")
+			fmt.Fprintf(s, "    struct syscall_id_key key;\n")
+			fmt.Fprintf(s, "    uint8_t id = 0;\n")
+			for i, syscall := range pa.uniqueSyscallList {
+				fmt.Fprintf(s, "    id = %d; key.nr = %d; ", i+1, syscall.syscall.def.NR)
+				for ti, t := range syscall.tags {
+					fmt.Fprintf(s, "key.tag[%d] = 0x%x; ", ti, t)
+				}
+				for ti := len(syscall.tags); ti < 3; ti++ {
+					fmt.Fprintf(s, "key.tag[%d] = 0 ;", ti)
+				}
+				fmt.Fprintf(s, "\n")
+				fmt.Fprintf(s, "    bpf_syscall_id_map_update_elem(&key, &id, BPF_ANY);\n")
+			}
+			fmt.Fprintf(s, "}\n")
+			fmt.Fprintf(s, "\n")
+			fmt.Fprintf(s, "void __always_inline init_syscall_seq_tree() {\n")
+			fmt.Fprintf(s, "    int id = 0;\n")
+			fmt.Fprintf(s, "    struct syscall_seq seqs;\n")
+			for pi, pattern := range pa.patternList {
+				fmt.Fprintf(s, "    id = %d; ", pi)
+				for psi, ps := range pattern {
+					idx := 0
+					for usi, us := range pa.uniqueSyscallList {
+						if us.Equal(ps.syscall) {
+							idx = usi
+							break
+						}
+					}
+					fmt.Fprintf(s, "seqs.id[%d] = %d; ", psi, idx+1)
+				}
+				for psi := len(pattern); psi < 10; psi++ {
+					fmt.Fprintf(s, "seqs.id[%d] = 0; ", psi)
+				}
+				fmt.Fprintf(s, "\n")
+				fmt.Fprintf(s, "    bpf_syscall_seq_tree_update_elem(&id, &seqs, BPF_ANY);\n")
+			}
+			fmt.Fprintf(s, "}\n")
+			fmt.Fprintf(s, "\n")
+		}
 		fmt.Fprintf(s, "int __always_inline check_dev_path(char *path)\n")
 		fmt.Fprintf(s, "{\n")
 		fmt.Fprintf(s, "    char dev_path[] = \"/dev/binder\";\n")

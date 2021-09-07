@@ -130,6 +130,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 			if a.regFlags[te.syscall][arg].Update(tr, flag) == 0 {
 				msgs = append(msgs, fmt.Sprintf("reg[%v] new flag %x", i, tr))
 			}
+			te.tags = append(te.tags, int(tr))
 		}
 		if _, isFlagsArg := arg.(*prog.FlagsType); isFlagsArg {
 			_, tr := te.GetData(offset, 8)

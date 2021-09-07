@@ -241,6 +241,9 @@ type PatternAnalysis struct {
 	filterStates      map[AnalysisUnitKey]*FilterState
 	unitOfAnalysis    AnalysisUnit
 
+	patternList       [][]*TaggedSyscallNode
+	uniqueSyscallList []*TaggedSyscall
+
 	debugEnable       bool
 }
 
@@ -260,6 +263,8 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.patternOrder = make(map[int]map[int]int)
 	a.patternOrderCtr = make(map[int]map[int]int)
 	a.filterStates = make(map[AnalysisUnitKey]*FilterState)
+	a.patternList = make([][]*TaggedSyscallNode, 0)
+	a.uniqueSyscallList = make([]*TaggedSyscall, 0)
 	a.debugEnable = false
 }
 
@@ -788,6 +793,41 @@ func (n *TaggedSyscallNode) Print(a *PatternAnalysis) {
 	n.print(&depth, depthsWithOtherChildren, false, a)
 }
 
+func (a *PatternAnalysis) genPatternList(node *TaggedSyscallNode, nodeStack []*TaggedSyscallNode) {
+	nodeStack = append(nodeStack, node)
+	if idx := node.findEndChild(); idx != -1 && node != a.patTreeRoot {
+		var pattern []*TaggedSyscallNode
+		for i, n := range nodeStack {
+			if i != 0 {
+				pattern = append(pattern, n)
+			}
+		}
+		a.patternList = append(a.patternList, pattern)
+		return
+	}
+	for _, next := range node.next {
+		a.genPatternList(next, nodeStack)
+	}
+	nodeStack = nodeStack[:len(nodeStack)-1]
+}
+
+func (a *PatternAnalysis) genUniqueNodeList(node *TaggedSyscallNode) {
+	if node.syscall.syscall != nil {
+		found := false
+		for _, syscall := range a.uniqueSyscallList {
+			if syscall.Equal(node.syscall) {
+				found = true
+			}
+		}
+		if !found {
+			a.uniqueSyscallList = append(a.uniqueSyscallList, node.syscall)
+		}
+	}
+	for _, next := range node.next {
+		a.genUniqueNodeList(next)
+	}
+}
+
 func (a *PatternAnalysis) findRangeOfTrace(n *TaggedSyscallNode, key AnalysisUnitKey) (int, uint64, uint64) {
 	var first, last uint64
 	found := 0
@@ -999,6 +1039,20 @@ func (a *PatternAnalysis) PrintResult(v Verbose) {
 	//fmt.Print("--------------------------------------------------------------------------------\n")
 	//a.AnalyzeIntraPatternOrder()
 
+	//fmt.Print("--------------------------------------------------------------------------------\n")
+	//fmtnodeStack := make([]*TaggedSyscallNode, 0)
+	//fmta.genPatternList(a.patTreeRoot, nodeStack)
+	//fmta.genUniqueNodeList(a.patTreeRoot)
+	//fmtfor _, p := range a.patternList {
+	//fmt	for _, s := range p {
+	//fmt		fmt.Print("%v ", s)
+	//fmt	}
+	//fmt	fmt.Print("\n")
+	//fmt}
+	//fmtfor i, s := range a.uniqueSyscallList {
+	//fmt	fmt.Print("%d %v\n", i, s)
+	//fmt}
+	//fmtfmt.Print("--------------------------------------------------------------------------------\n")
 }
 
 func (a *PatternAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {
