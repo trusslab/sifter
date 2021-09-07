@@ -715,16 +715,20 @@ func (sifter *Sifter) GenerateProgSection() {
 		fmt.Fprintf(s, "    uint32_t nr = ctx->nr;\n")
 		fmt.Fprintf(s, "    uint32_t pid = bpf_get_current_pid_tgid();\n")
 		fmt.Fprintf(s, "    int ret = SECCOMP_RET_ALLOW;\n")
-		fmt.Fprintf(s, "    if (nr == 56) {\n")
+		fmt.Fprintf(s, "    if (nr == %v) {\n", sifter.SyscallNumber("openat"))
 		fmt.Fprintf(s, "        check_dev_open(ctx);\n")
-		fmt.Fprintf(s, "    } else if (nr != 57 && check_syscall_fd(ctx)) {\n")
-		fmt.Fprintf(s, "        if (nr == 29) {\n")
-		fmt.Fprintf(s, "            ret = trace_ioctl(ctx);\n")
-		fmt.Fprintf(s, "        } else if (nr == 222) {\n")
-		fmt.Fprintf(s, "            ret = trace_mmap(ctx);\n")
+		fmt.Fprintf(s, "    } else if (nr != %v && check_syscall_fd(ctx)) {\n", sifter.SyscallNumber("close"))
+		fmt.Fprintf(s, "        if (nr == %v) {\n", sifter.SyscallNumber("ioctl"))
+		fmt.Fprintf(s, "            trace_ioctl(ctx, pid);\n")
+		for key, syscalls := range sifter.moduleSyscalls {
+			if key != "ioctl" || key != "close" {
+				fmt.Fprintf(s, "        } else if (nr == %v) {\n", sifter.SyscallNumber(key))
+				fmt.Fprintf(s, "            trace_%v(ctx, pid);\n", syscalls[0].name)
+			}
+		}
 		fmt.Fprintf(s, "        }\n")
 		fmt.Fprintf(s, "        if (ret == SECCOMP_RET_ALLOW) {\n")
-		fmt.Fprintf(s, "            if (check_seq(ip)) {\n")
+		fmt.Fprintf(s, "            if (check_seq(pid)) {\n")
 		fmt.Fprintf(s, "                ret = SECCOMP_RET_ALLOW;\n")
 		fmt.Fprintf(s, "            } else {\n")
 		fmt.Fprintf(s, "                ret = SECCOMP_RET_ERRNO;\n")
