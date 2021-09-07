@@ -509,7 +509,7 @@ func (a *LenAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *
 	var constraint *RangeConstraint
 	if depth == 0 {
 		if r, ok := a.regLenRanges[syscall][arg]; ok {
-			fmt.Printf("add constraint to %v %v", syscall.name, arg.FieldName())
+			fmt.Printf("add constraint to %v %v\n", syscall.name, arg.FieldName())
 			constraint = new(RangeConstraint)
 			constraint.l = r.lower
 			constraint.u = r.upper
@@ -517,7 +517,7 @@ func (a *LenAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *
 		}
 	} else {
 		if r, ok := a.argLenRanges[argMap][arg]; ok {
-			fmt.Printf("add constraint to %v %v %v", syscall.name, argMap.name, arg.FieldName())
+			fmt.Printf("add constraint to %v %v %v\n", syscall.name, argMap.name, arg.FieldName())
 			constraint = new(RangeConstraint)
 			constraint.l = r.lower
 			constraint.u = r.upper
