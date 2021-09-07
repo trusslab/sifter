@@ -204,4 +204,6 @@ func (a *ValueRangeAnalysis) PrintResult(v Verbose) {
 	}
 }
 
-
+func (a *ValueRangeAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {
+	return nil
+}

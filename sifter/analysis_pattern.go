@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"sort"
+
+	"github.com/google/syzkaller/prog"
 )
 
 type Grouping int
@@ -999,4 +1001,6 @@ func (a *PatternAnalysis) PrintResult(v Verbose) {
 
 }
 
-
+func (a *PatternAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {
+	return nil
+}

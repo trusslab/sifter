@@ -42,6 +42,9 @@ func main() {
 		s.TrainAndTest()
 		//s.AnalyzeSinlgeTrace()
 	} else if s.Mode() == sifter.FilterMode {
+		s.TrainAndTest()
+		s.CleanSections()
+		s.GenerateSource()
 		s.WriteSourceFile()
 	}
 }

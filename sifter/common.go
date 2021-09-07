@@ -3,6 +3,7 @@ package sifter
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"os"
 	"github.com/google/syzkaller/prog"
@@ -75,6 +76,11 @@ func (syscall *Syscall) TraceSize() int {
 }
 
 func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string, argType string) {
+	for _, argMap := range syscall.argMaps {
+		if argMap.name == argName {
+			return
+		}
+	}
 	var size uint64
 	if arg.Varlen() {
 		return
@@ -210,3 +216,41 @@ func (te *TraceEvent) GetNR() (bool, uint64) {
 	}
 	return false, 0
 }
+
+type ArgConstraint interface {
+	String(argName string, retName string, allowValue string, rejectValue string) string
+}
+
+type RangeConstraint struct {
+	l uint64
+	u uint64
+}
+
+func (rc *RangeConstraint) String(argName string, retName string, allowValue string, rejectValue string) string {
+	s := ""
+	s += fmt.Sprintf("if (%v < 0x%x || %v > 0x%x) {\n", argName, rc.l, argName, rc.u)
+	s += fmt.Sprintf("    %v = %v;\n", retName, rejectValue)
+	s += fmt.Sprintf("}\n")
+	return s
+}
+
+type ValuesConstraint struct {
+	values []uint64
+}
+
+func (vc *ValuesConstraint) String(argName string, retName string, allowValue string, rejectValue string) string {
+	s := ""
+	s += fmt.Sprintf("if (")
+	for i, v := range vc.values {
+		s += fmt.Sprintf("%v != 0x%x\n", argName, v)
+		if i != len(vc.values) - 1 {
+			s += fmt.Sprintf(" && ")
+		} else {
+			s += fmt.Sprintf("{\n")
+		}
+	}
+	s += fmt.Sprintf("    %v = %v;\n", retName, rejectValue)
+	s += fmt.Sprintf("}\n")
+	return s
+}
+

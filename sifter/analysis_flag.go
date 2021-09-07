@@ -249,4 +249,12 @@ func (a *FlagAnalysis) PrintResult(v Verbose) {
 	}
 }
 
+func (a *FlagAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {
+//	var constraint *ValuesConstraint
+//	if depth == 0 {
+//	} else {
+//	}
+//	return constraint
+	return nil
+}
 

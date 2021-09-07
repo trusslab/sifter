@@ -505,3 +505,25 @@ func (a *LenAnalysis) PrintResult(v Verbose) {
 	}
 }
 
+func (a *LenAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {
+	var constraint *RangeConstraint
+	if depth == 0 {
+		if r, ok := a.regLenRanges[syscall][arg]; ok {
+			fmt.Printf("add constraint to %v %v", syscall.name, arg.FieldName())
+			constraint = new(RangeConstraint)
+			constraint.l = r.lower
+			constraint.u = r.upper
+			return constraint
+		}
+	} else {
+		if r, ok := a.argLenRanges[argMap][arg]; ok {
+			fmt.Printf("add constraint to %v %v %v", syscall.name, argMap.name, arg.FieldName())
+			constraint = new(RangeConstraint)
+			constraint.l = r.lower
+			constraint.u = r.upper
+			return constraint
+		}
+	}
+	return nil
+}
+

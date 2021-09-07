@@ -2,6 +2,8 @@ package sifter
 
 import (
 	"fmt"
+
+	"github.com/google/syzkaller/prog"
 )
 
 type VlrSequenceNode struct {
@@ -184,3 +186,6 @@ func (a *VlrAnalysis) PrintResult(v Verbose) {
 	}
 }
 
+func (a *VlrAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {
+	return nil
+}

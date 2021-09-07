@@ -1,5 +1,9 @@
 package sifter
 
+import (
+	"github.com/google/syzkaller/prog"
+)
+
 type Flag int
 
 const (
@@ -14,5 +18,6 @@ type Analysis interface {
 	ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int)
 	PostProcess(flag Flag)
 	PrintResult(v Verbose)
+	GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint
 }
 

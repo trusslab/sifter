@@ -377,6 +377,16 @@ func typeDebugInfo(arg prog.Type) string {
 	return debugInfo
 }
 
+func (sifter *Sifter) CheckArgConstraints(syscall *Syscall, arg prog.Type, parentArgMap *ArgMap, depth int) []ArgConstraint {
+	var constraints []ArgConstraint
+	for _, analysis := range sifter.analyses {
+		if c := analysis.GetArgConstraint(syscall, arg, parentArgMap, depth); c != nil {
+			constraints = append(constraints, c)
+		}
+	}
+	return constraints
+}
+
 func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg prog.Type, srcPath string, argName string, dstPath string, parentArgMap *ArgMap, depth *int) {
 	_, thisIsPtr := arg.(*prog.PtrType)
 	if *depth == 0 && !thisIsPtr || *depth >= sifter.depthLimit || isIgnoredArg(arg) {
@@ -397,7 +407,12 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 			fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argType), 1))
 		}
 		syscall.AddArgMap(arg, argName, srcPath, argType)
-		parentArgMap = syscall.argMaps[len(syscall.argMaps)-1]
+		for _, argMap := range syscall.argMaps {
+			if argMap.name == argName {
+				parentArgMap = argMap
+			}
+		}
+		//parentArgMap = syscall.argMaps[len(syscall.argMaps)-1]
 
 		dstPath = argName + "_p"
 		derefOp = "*"
@@ -424,7 +439,15 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 			sifter.GenerateArgTracer(s, syscall, field, srcPath, argName, dstPath+accessOp, parentArgMap, depth)
 		}
 	case *prog.LenType, *prog.IntType, *prog.ConstType, *prog.FlagsType:
-		fmt.Fprintf(s, "    %v%v = %v;\n", derefOp, dstPath, srcPath)
+		if sifter.mode == TracerMode {
+			fmt.Fprintf(s, "    %v%v = %v;\n", derefOp, dstPath, srcPath)
+		}
+		if sifter.mode == FilterMode {
+			constraints := sifter.CheckArgConstraints(syscall, arg, parentArgMap, *depth)
+			for _, c := range constraints {
+				fmt.Fprintf(s, "    %v", indent(c.String(srcPath, "ret", sifter.ctx.defaultRetVal, sifter.ctx.errorRetVal), 1))
+			}
+		}
 	case *prog.ArrayType:
 		if isVLR, _, _ := sifter.IsVarLenRecord(t); isVLR {
 			syscall.AddVlrMap(t, parentArgMap, argName)
@@ -503,6 +526,25 @@ func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 			sifter.GenerateArgTracer(s, syscall, arg, path, syscall.name, "", nil, &offset)
 		}
 		fmt.Fprintf(s, "    *ctr = *ctr + 1;\n")
+	}
+	if sifter.mode == FilterMode {
+		fmt.Fprintf(s, "    struct syscall_id_key id_key;\n")
+		fmt.Fprintf(s, "    id_key.nr = nr;\n")
+		fmt.Fprintf(s, "    id_key.tag[0] = 0;\n")
+		fmt.Fprintf(s, "    id_key.tag[1] = 0;\n")
+		fmt.Fprintf(s, "    id_key.tag[2] = 0;\n")
+		for i, arg := range syscall.def.Args {
+			path := fmt.Sprintf("ctx->%v[%v]", sifter.ctx.syscallArgs, i)
+			offset := 0
+			sifter.GenerateArgTracer(s, syscall, arg, path, syscall.name, "", nil, &offset)
+			if sifter.mode == FilterMode {
+				constraints := sifter.CheckArgConstraints(syscall, arg, nil, 0)
+				for _, c := range constraints {
+					fmt.Fprintf(s, "    %v", indent(c.String(path, "ret", sifter.ctx.defaultRetVal, sifter.ctx.errorRetVal), 1))
+				}
+			}
+		}
+	    fmt.Fprintf(s, "    bpf_syscall_id_curr_update_elem(&pid, &id_key, BPF_ANY);\n")
 	}
 	fmt.Fprintf(s, "    return ret;\n")
 	fmt.Fprintf(s, "}\n\n")
@@ -1079,6 +1121,10 @@ func (sifter *Sifter) WriteSourceFile() {
 	outf.Write(sifter.sections["level1_tracing"].Bytes())
 	outf.Write(sifter.sections["main"].Bytes())
 	outf.Write(sifter.sections["license"].Bytes())
+}
+
+func (sifter *Sifter) CleanSections() {
+	sifter.sections = make(map[string]*bytes.Buffer)
 }
 
 func (sifter *Sifter) IsVarLenRecord(arg *prog.ArrayType) (bool, int, []uint64) {
