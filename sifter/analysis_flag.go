@@ -21,6 +21,26 @@ func (flags *FlagSet) Update(v uint64, f Flag) int {
 	return count
 }
 
+func (flags *FlagSet) RemoveOutlier() bool {
+	sum := 0
+	for _, c := range flags.values {
+		sum += c
+	}
+	freqThreshold := 0.0001
+	absThreshold := 50
+	fmt.Printf("flags outliers:\n")
+	hasOutliers := false
+	for v, c := range flags.values {
+		if float64(c) / float64(sum) < freqThreshold && c < absThreshold {
+			fmt.Printf("%v ", v)
+			hasOutliers = true
+			delete(flags.values, v)
+		}
+		fmt.Printf("\n")
+	}
+	return hasOutliers
+}
+
 func newFlagSet(idx int) *FlagSet {
 	newFlags := new(FlagSet)
 	newFlags.values = make(map[uint64]int)
@@ -228,6 +248,63 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 }
 
 func (a *FlagAnalysis) PostProcess(flag Flag) {
+}
+
+func (a *FlagAnalysis) RemoveOutliers() {
+	for syscall, _ := range a.moduleSyscalls {
+		s := ""
+		for i, arg := range syscall.def.Args {
+			if flags, ok := a.regFlags[syscall][arg]; ok {
+				if flags.RemoveOutlier() {
+					s += fmt.Sprintf("reg[%v]: %v\n", i, flags)
+				}
+			}
+		}
+		for _, argMap := range syscall.argMaps {
+			if structArg, ok := argMap.arg.(*prog.StructType); ok {
+				for _, field := range structArg.Fields {
+					if flags, ok := a.argFlags[argMap][field]; ok {
+						if flags.RemoveOutlier() {
+							 s += fmt.Sprintf("%v_%v: %v\n", argMap.name, field.FieldName(), flags)
+						}
+					}
+				}
+			} else {
+				if flags, ok := a.argFlags[argMap][argMap.arg]; ok {
+					if flags.RemoveOutlier() {
+						s += fmt.Sprintf("%v: %v\n", argMap.name, flags)
+					}
+				}
+			}
+		}
+		for _, vlrMap := range syscall.vlrMaps {
+			fmt.Printf("\n%v (%v)\n", vlrMap.name, len(vlrMap.records))
+			for _, vlrRecord := range vlrMap.records {
+				structArg, _ := vlrRecord.arg.(*prog.StructType)
+				for _, f := range structArg.Fields {
+					if structField, isStructArg := f.(*prog.StructType); isStructArg {
+						for _, ff := range structField.Fields {
+							if flags, ok := a.vlrFlags[vlrMap][vlrRecord][ff]; ok {
+								if flags.RemoveOutlier() {
+									s += fmt.Sprintf("%v_%v_%v: %v\n", vlrRecord.name, f.FieldName(), ff.FieldName(), flags)
+								}
+							}
+						}
+					} else {
+						if flags, ok := a.vlrFlags[vlrMap][vlrRecord][f]; ok {
+							if flags.RemoveOutlier() {
+								s += fmt.Sprintf("%v_%v: %v\n", vlrRecord.name, f.FieldName(), flags)
+							}
+						}
+					}
+				}
+			}
+		}
+		if len(s) != 0 {
+			fmt.Print("--------------------------------------------------------------------------------\n")
+			fmt.Printf("%v\n%s", syscall.name, s)
+		}
+	}
 }
 
 func (a *FlagAnalysis) PrintResult(v Verbose) {
