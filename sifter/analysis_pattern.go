@@ -242,7 +242,9 @@ type PatternAnalysis struct {
 	unitOfAnalysis    AnalysisUnit
 
 	patternList       [][]*TaggedSyscallNode
+	patternListTag    []int
 	uniqueSyscallList []*TaggedSyscall
+	patternOrderList  map[int]uint64
 
 	debugEnable       bool
 }
@@ -263,8 +265,11 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.patternOrder = make(map[int]map[int]int)
 	a.patternOrderCtr = make(map[int]map[int]int)
 	a.filterStates = make(map[AnalysisUnitKey]*FilterState)
+
 	a.patternList = make([][]*TaggedSyscallNode, 0)
 	a.uniqueSyscallList = make([]*TaggedSyscall, 0)
+	a.patternOrderList = make(map[int]uint64)
+
 	a.debugEnable = false
 }
 
@@ -795,7 +800,7 @@ func (n *TaggedSyscallNode) Print(a *PatternAnalysis) {
 
 func (a *PatternAnalysis) genPatternList(node *TaggedSyscallNode, nodeStack []*TaggedSyscallNode) {
 	nodeStack = append(nodeStack, node)
-	if idx := node.findEndChild(); idx != -1 && node != a.patTreeRoot {
+	if idx := node.findEndChild(); idx != -1 && node != a.seqTreeRoot {
 		var pattern []*TaggedSyscallNode
 		for i, n := range nodeStack {
 			if i != 0 {
@@ -803,10 +808,11 @@ func (a *PatternAnalysis) genPatternList(node *TaggedSyscallNode, nodeStack []*T
 			}
 		}
 		a.patternList = append(a.patternList, pattern)
-		return
-	}
-	for _, next := range node.next {
-		a.genPatternList(next, nodeStack)
+		a.patternListTag = append(a.patternListTag, node.next[idx].tag)
+	} else {
+		for _, next := range node.next {
+			a.genPatternList(next, nodeStack)
+		}
 	}
 	nodeStack = nodeStack[:len(nodeStack)-1]
 }
@@ -825,6 +831,39 @@ func (a *PatternAnalysis) genUniqueNodeList(node *TaggedSyscallNode) {
 	}
 	for _, next := range node.next {
 		a.genUniqueNodeList(next)
+	}
+}
+
+func (a *PatternAnalysis) genPatternOrderList() {
+	patternOccurence := make(map[int][]int)
+	for _, tag := range a.patternListTag {
+		patternOccurence[tag] = make([]int, 3)
+	}
+	for key, _ := range a.patternInterval {
+		for _, tag := range a.patternListTag {
+			patternOccurence[tag][0] += a.patternOccurence[key][tag]
+			if a.patternOccurence[key][tag] != 0 {
+				patternOccurence[tag][1] += 1
+			}
+			if a.patternOccurence[key][tag] > 1 {
+				patternOccurence[tag][2] = 1
+			}
+		}
+	}
+	for i, iTag := range a.patternListTag {
+		var order uint64
+		for j, jTag := range a.patternListTag {
+			if i == j {
+				if a.patternOccurence[tag][2] == 0 {
+					order = order | (1 << j)
+				}
+			} else {
+				if a.patternOrder[iTag][jTag] == 1 {
+					order = order | (1 << j)
+				}
+			}
+		}
+		a.patternOrderList[i] = order
 	}
 }
 
@@ -1032,8 +1071,9 @@ func (a *PatternAnalysis) PostProcess(flag Flag) {
 func (a *PatternAnalysis) GenPatternList() {
 	fmt.Print("--------------------------------------------------------------------------------\n")
 	nodeStack := make([]*TaggedSyscallNode, 0)
-	a.genPatternList(a.patTreeRoot, nodeStack)
-	a.genUniqueNodeList(a.patTreeRoot)
+	a.genPatternList(a.seqTreeRoot, nodeStack)
+	a.genUniqueNodeList(a.seqTreeRoot)
+	a.genPatternOrderList()
 	for _, p := range a.patternList {
 		for _, s := range p {
 			fmt.Print("%v ", s)
