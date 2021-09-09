@@ -766,7 +766,7 @@ func (n *TaggedSyscallNode) print(depth *int, depthsWithChildren map[int]bool, h
 		}
 	} else {
 		s += fmt.Sprintf("[%v]%v%v", *depth, n.syscall.syscall.name, n.syscall.tags)
-		s += fmt.Sprintf("%v", a.getPhaseString(n))
+//		s += fmt.Sprintf("%v", a.getPhaseString(n))
 		s += fmt.Sprintf("%v", getPidsUniqueString(n))
 	}
 
