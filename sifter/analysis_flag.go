@@ -311,11 +311,6 @@ func (a *FlagAnalysis) PrintResult(v Verbose) {
 	for syscall, _ := range a.moduleSyscalls {
 		s := ""
 		for i, arg := range syscall.def.Args {
-			if syscall.def.CallName == "ioctl" && i == 1 {
-				if flags, ok := a.regFlags[syscall][arg]; ok {
-					s += fmt.Sprintf("reg[%v]: %x", i, flags)
-				}
-			}
 			if flags, ok := a.regFlags[syscall][arg]; ok {
 				s += fmt.Sprintf("reg[%v]: %v\n", i, flags)
 			}
