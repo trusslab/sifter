@@ -854,7 +854,7 @@ func (a *PatternAnalysis) genPatternOrderList() {
 		var order uint64
 		for j, jTag := range a.patternListTag {
 			if i == j {
-				if a.patternOccurence[tag][2] == 0 {
+				if patternOccurence[jTag][2] == 0 {
 					order = order | (1 << j)
 				}
 			} else {
