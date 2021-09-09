@@ -43,6 +43,7 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 		return "", 0, 0
 	}
 
+	updateOL := 0
 	updateMsg := ""
 	updateNum := 0
 	updateFlag := 0
@@ -70,7 +71,7 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 			} else {
 				if offset < vlr.offset + size && a.check >= 0 {
 					updateMsg += fmt.Sprintf("unknown vlr header (%x) at offset:%d", tr, offset+48)
-					updateNum += 1
+					updateOL = 1
 				} else {
 					updateMsg += "end"
 				}
@@ -125,7 +126,7 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 			}
 		}
 	}
-	return updateMsg, updateNum, 0
+	return updateMsg, updateNum, updateOL
 }
 
 func (n *VlrSequenceNode) _Print(depth *int, depthsWithChildren map[int]bool, hasNext bool) {
