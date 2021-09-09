@@ -421,7 +421,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 				parentArgMap = argMap
 			}
 		}
-		//parentArgMap = syscall.argMaps[len(syscall.argMaps)-1]
+		parentArgMap = syscall.argMaps[len(syscall.argMaps)-1]
 
 		dstPath = argName + "_p"
 		derefOp = "*"
@@ -433,6 +433,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		dstPath = dstPath + arg.FieldName()
 		accessOp = "."
 	}
+	fmt.Printf("%v %v\n", syscall.name, argName)
 
 	switch t := arg.(type) {
 	case *prog.PtrType:
@@ -1371,7 +1372,9 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
 					break
 				}
 
-				sifter.trace = append(sifter.trace, traceEvent)
+				if traceEvent.ts != 0 {
+					sifter.trace = append(sifter.trace, traceEvent)
+				}
 			}
 		}
 	}
@@ -1428,7 +1431,9 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
 			}
 		}
 
-		sifter.trace = append(sifter.trace, traceEvent)
+		if traceEvent.ts != 0 {
+			sifter.trace = append(sifter.trace, traceEvent)
+		}
 		continue
 
 endUnexpectedly:
@@ -1641,8 +1646,9 @@ func (sifter *Sifter) TrainAndTest() {
 		fmt.Printf("#training size: %v\n", trainSize)
 		fmt.Printf("#training updates: %v/%v\n", trainUpdates, trainUpdatesOL)
 		fmt.Print("--------------------------------------------------------------------------------\n")
-		pa.AnalyzeIntraPatternOrder(sifter.verbose)
 		la.RemoveOutliers()
+		fa.RemoveOutliers()
+		pa.AnalyzeIntraPatternOrder(sifter.verbose)
 
 		fmt.Printf("#testing apps:\n")
 		for i, file := range testFiles {
