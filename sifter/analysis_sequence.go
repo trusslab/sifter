@@ -12,6 +12,10 @@ type Node struct {
 	flag    Flag
 }
 
+func (n *Node) String() string {
+	return fmt.Sprintf("%v%v", n.syscall.name, n.tags)
+}
+
 type Edge struct {
 	next    *Node
 	prevs   []*Node
@@ -19,9 +23,21 @@ type Edge struct {
 	counts  map[Flag]uint64
 }
 
+func (e *Edge) String() string {
+	s := fmt.Sprintf("->n[%v] prevs(", e.next)
+	for i, n := range e.prevs {
+		s += fmt.Sprintf("%v", n)
+		if i != len(e.prevs)-1 {
+			s += fmt.Sprintf("->")
+		}
+	}
+	s += fmt.Sprintf(") (%v/%v)", e.counts[TrainFlag], e.counts[TestFlag])
+	return s
+}
+
 type SequenceAnalysis struct {
 	seqLen   int
-	nodes    []Node
+	nodes    []*Node
 	prevs    []*Node
 	seqGraph map[*Node][]*Edge
 }
@@ -68,6 +84,50 @@ func (a *SequenceAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 func (a *SequenceAnalysis) Reset() {
 }
 
+func (a *SequenceAnalysis) lastNode() *Node {
+	return a.prevs[a.seqLen]
+}
+
+func (a *SequenceAnalysis) findEdge(te *TraceEvent, nextNode *Node, flag Flag) (bool, *Edge) {
+	lastNode := a.lastNode()
+
+	newEdge := new(Edge)
+	newEdge.next = nextNode
+	newEdge.prevs = a.prevs[0:a.seqLen]
+	newEdge.flag = flag
+	newEdge.counts = make(map[Flag]uint64)
+	newEdge.counts[flag] = 1
+
+	for _, edge := range a.seqGraph[lastNode] {
+		if a.edgesEqual(newEdge, edge) {
+			edge.counts[flag] += 1
+			if flag == TestFlag && edge.flag == TestFlag {
+				return true, edge
+			} else {
+				return false, edge
+			}
+		}
+	}
+	a.seqGraph[lastNode] = append(a.seqGraph[lastNode], newEdge)
+	return true, newEdge
+}
+
+func (a *SequenceAnalysis) findNode(te *TraceEvent, flag Flag) (bool, *Node) {
+	for i, node := range a.nodes {
+		if te.syscall == node.syscall && tagsEqual(te.tags, node.tags) {
+			if flag == TestFlag && node.flag == TestFlag {
+				return true, a.nodes[i]
+			} else {
+				return false, a.nodes[i]
+			}
+		}
+	}
+	a.nodes = append(a.nodes, &Node{te.syscall, te.tags, flag})
+	newNode := a.nodes[len(a.nodes)-1]
+	a.seqGraph[newNode] = make([]*Edge, 0)
+	return true, newNode
+}
+
 func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
 	if te.typ != 1 {
 		return "", 0, 0
@@ -76,51 +136,16 @@ func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string,
 	updateMsg := ""
 	updateNum := 0
 
-	currNode := a.prevs[a.seqLen]
-	var nextNode *Node
-	for i, node := range a.nodes {
-		if te.syscall == node.syscall && tagsEqual(te.tags, node.tags) {
-			nextNode = &a.nodes[i]
-		}
-	}
-	if nextNode == nil {
-		a.nodes = append(a.nodes, Node{te.syscall, te.tags, flag})
-		nextNode = &a.nodes[len(a.nodes)-1]
-	}
-
-	if nextNode == nil || nextNode.flag == TestFlag {
-		updateMsg += fmt.Sprintf("new n[%v %v] ", te.syscall.name, te.tags)
+	updateNode, nextNode := a.findNode(te, flag)
+	if updateNode {
+		updateMsg += fmt.Sprintf("new n[%v] ", nextNode)
 		updateNum += 1
 	}
 
 	if a.prevs[0] != nil {
-		newEdge := new(Edge)
-		newEdge.next = nextNode
-		newEdge.prevs = a.prevs[0:a.seqLen]
-		newEdge.flag = flag
-		newEdge.counts = make(map[Flag]uint64)
-		newEdge.counts[flag] = 1
-		var existedEdge *Edge
-		if edges, ok := a.seqGraph[currNode]; ok {
-			for i, edge := range edges {
-				if a.edgesEqual(newEdge, edge) {
-					existedEdge = edges[i]
-					existedEdge.counts[flag] += 1
-				}
-			}
-		} else {
-			a.seqGraph[currNode] = make([]*Edge, 0)
-		}
-		if existedEdge == nil {
-			a.seqGraph[currNode] = append(a.seqGraph[currNode], newEdge)
-		}
-
-		if existedEdge == nil || existedEdge.flag == TestFlag {
-			updateMsg += fmt.Sprintf("new e:n[%v %v]->n[%v %v] prevs(", currNode.syscall.name, currNode.tags, nextNode.syscall.name, nextNode.tags)
-			for _, n := range newEdge.prevs {
-				updateMsg += fmt.Sprintf("%v %v->", n.syscall.name, n.tags)
-			}
-			updateMsg += fmt.Sprintf(")")
+		updateEdge, edge := a.findEdge(te, nextNode, flag)
+		if updateEdge {
+			updateMsg += fmt.Sprintf("new e:n[%v]%v", a.lastNode(), edge)
 			updateNum += 1
 		}
 	}
@@ -135,16 +160,9 @@ func (a *SequenceAnalysis) PostProcess(flag Flag) {
 
 func (a *SequenceAnalysis) PrintResult(v Verbose) {
 	for node, edges := range a.seqGraph {
-		fmt.Printf("%v %v\n", node.syscall.name, node.tags)
+		fmt.Printf("%v\n", node)
 		for _, edge := range edges {
-			fmt.Printf("  ->%v %v (", edge.next.syscall.name, edge.next.tags)
-			for i, prevNode := range edge.prevs {
-				fmt.Printf("%v %v", prevNode.syscall.name, prevNode.tags)
-				if i != len(edge.prevs)-1 {
-					fmt.Printf(", ")
-				}
-			}
-			fmt.Printf(") (%v/%v)\n", edge.counts[TrainFlag], edge.counts[TestFlag])
+			fmt.Printf("  %v\n", edge)
 		}
 	}
 }
