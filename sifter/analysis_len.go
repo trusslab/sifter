@@ -148,53 +148,69 @@ func (r *LenRange) RemoveOutlier() bool {
 	}
 	sort.Slice(vKeys, func(i, j int) bool {return vKeys[i] < vKeys[j]})
 
-	mean := mean(r.values, vKeys)
-	meanAbsDev := meanAbsDev(r.values, mean)
-	median := median(r.values, vKeys)
-	medianAbsDev := medianAbsDev(r.values, median)
-	fmt.Printf("median: %v mad: %v mean: %v mad: %v\n", median, medianAbsDev, mean, meanAbsDev)
+	mean0 := mean(r.values, vKeys)
+	meanAbsDev0 := meanAbsDev(r.values, mean0)
+	median0 := median(r.values, vKeys)
+	medianAbsDev0 := medianAbsDev(r.values, median0)
+	fmt.Printf("0 median: %v mad: %v mean: %v mad: %v\n", median0, medianAbsDev0, mean0, meanAbsDev0)
 
 	devThreshold := 10000.0
 	update := false
-	if meanAbsDev != 0 {
+	if meanAbsDev0 != 0 {
 		fmt.Printf("len outliers:\n")
-		lower := uint64(math.MaxInt64)
-		upper := uint64(0)
 		for _, v := range vKeys {
 			tes := r.values[v]
 			//z := 0.6745 * float64(diff(v, mean) / medianAbsDev)
-			z := math.Abs(float64(v) - mean) / meanAbsDev
+			z := math.Abs(float64(v) - mean0) / meanAbsDev0
 			if z > devThreshold {
 				for _, te := range tes {
 					fmt.Printf("%v %v %v\n", te.info.name, v, z)
 				}
-			} else {
-				if lower > v {
-					lower = v
-				}
-				if upper < v {
-					upper = v
-				}
+				delete(r.values, v)
+				update = true
 			}
 		}
-		if r.lower != lower || r.upper != upper {
-			r.lower = lower
-			r.upper = upper
-			update = true
-		}
-		signedLowerOL := mean - (devThreshold * meanAbsDev)
+		signedLowerOL := mean0 - (devThreshold * meanAbsDev0)
 		if signedLowerOL < 0 {
 			r.lowerOL = 0
 		} else {
 			r.lowerOL = uint64(signedLowerOL)
 		}
-		if math.MaxUint64 - uint64(devThreshold * meanAbsDev) > uint64(mean) {
-			r.upperOL = uint64(mean + (devThreshold * meanAbsDev))
+		if math.MaxUint64 - uint64(devThreshold * meanAbsDev0) > uint64(mean0) {
+			r.upperOL = uint64(mean0 + (devThreshold * meanAbsDev0))
 		} else {
 			r.upperOL = math.MaxUint64
 		}
-		fmt.Printf("new lower:%d upper:%d lowerOL:%d upperOL:%d\n", lower, upper, r.lowerOL, r.upperOL)
 	}
+
+	vKeys = make([]uint64, 0)
+	for v, _ := range r.values {
+		vKeys = append(vKeys, v)
+	}
+	sort.Slice(vKeys, func(i, j int) bool {return vKeys[i] < vKeys[j]})
+
+	mean1 := mean(r.values, vKeys)
+	meanAbsDev1 := meanAbsDev(r.values, mean1)
+	median1 := median(r.values, vKeys)
+	medianAbsDev1 := medianAbsDev(r.values, median1)
+	fmt.Printf("1 median: %v mad: %v mean: %v mad: %v\n", median1, medianAbsDev1, mean1, meanAbsDev1)
+
+	if meanAbsDev1 != 0 {
+		signedLower := mean1 - (devThreshold * meanAbsDev1)
+		if signedLower < 0 {
+			r.lower = 0
+		} else {
+			r.lower = uint64(signedLower)
+		}
+		if math.MaxUint64 - uint64(100 * meanAbsDev1) > uint64(mean1) {
+			r.upper = uint64(mean1 + (100 * meanAbsDev1))
+		} else {
+			r.upper = math.MaxUint64
+		}
+	}
+
+	fmt.Printf("new lower:%d upper:%d lowerOL:%d upperOL:%d\n", r.lower, r.upper, r.lowerOL, r.upperOL)
+
 	return update
 }
 
@@ -410,8 +426,9 @@ func (a *LenAnalysis) RemoveOutliers() {
 	for syscall, _ := range a.lenContainingSyscall {
 		for i, arg := range syscall.def.Args {
 			if lenRange, ok := a.regLenRanges[syscall][arg]; ok {
+				fmt.Printf("reg[%v]:\n", i)
 				if lenRange.RemoveOutlier() {
-					fmt.Printf("reg[%v]: %v\n", i, lenRange)
+					fmt.Printf("%v\n", lenRange)
 				}
 			}
 		}
@@ -419,15 +436,17 @@ func (a *LenAnalysis) RemoveOutliers() {
 			if structField, ok := argMap.arg.(*prog.StructType); ok {
 				for _, field := range structField.Fields {
 					if lenRange, ok := a.argLenRanges[argMap][field]; ok {
+						fmt.Printf("%v_%v:\n", argMap.name, field.FieldName())
 						if lenRange.RemoveOutlier() {
-							fmt.Printf("%v_%v: %v\n", argMap.name, field.FieldName(), lenRange)
+							fmt.Printf("%v\n", lenRange)
 						}
 					}
 				}
 			} else {
 				if lenRange, ok := a.argLenRanges[argMap][argMap.arg]; ok {
+					fmt.Printf("%v:\n", argMap.name)
 					if lenRange.RemoveOutlier() {
-						fmt.Printf("%v: %v\n", argMap.name, lenRange)
+						fmt.Printf("%v\n", lenRange)
 					}
 				}
 			}
@@ -440,15 +459,17 @@ func (a *LenAnalysis) RemoveOutliers() {
 					if structField, isStructArg := f.(*prog.StructType); isStructArg {
 						for _, ff := range structField.Fields {
 							if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][ff]; ok {
+								fmt.Printf("%v_%v_%v:\n", vlrRecord.name, f.FieldName(), ff.FieldName())
 								if lenRange.RemoveOutlier() {
-									fmt.Printf("%v_%v_%v: %v\n", vlrRecord.name, f.FieldName(), ff.FieldName(), lenRange)
+									fmt.Printf("%v\n", lenRange)
 								}
 							}
 						}
 					} else {
 						if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][f]; ok {
+							fmt.Printf("%v_%v:\n", vlrRecord.name, f.FieldName())
 							if lenRange.RemoveOutlier() {
-									fmt.Printf("%v_%v: %v\n", vlrRecord.name, f.FieldName(), lenRange)
+								fmt.Printf("%v\n", lenRange)
 							}
 						}
 					}
