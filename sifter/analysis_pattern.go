@@ -874,8 +874,15 @@ func (a *PatternAnalysis) findRangeOfTrace(n *TaggedSyscallNode, key AnalysisUni
 		if a.isTraceAssociateWithUnitKey(event, key) {
 			if first == 0 {
 				first = event.ts
+				last = event.ts
+			} else {
+				if event.ts < first {
+					first = event.ts
+				}
+				if event.ts > last {
+					last = event.ts
+				}
 			}
-			last = event.ts
 			found += 1
 		}
 	}
@@ -915,9 +922,9 @@ func (a *PatternAnalysis) AnalyzeIntraPatternOrder(v Verbose) {
 					a.patternOrderCtr[i][j] = 0
 				}
 
-				//if i == 3 && j == 826 {
+				//if i == 5 {
 				//	fmt.Printf("i:%v j:%v\n", ni, nj)
-				//	fmt.Printf("%v\n" ,a.patternOrder[i][j])
+				//	fmt.Printf("%v\n", a.patternOrder[i][j])
 				//}
 				if i == j || (ni[0] == 0 && ni[1] == 0) || (nj[0] == 0 && nj[1] == 0) {
 					continue
