@@ -418,7 +418,7 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 }
 
 func (a *LenAnalysis) PostProcess(flag Flag) {
-
+	a.RemoveOutliers()
 }
 
 func (a *LenAnalysis) RemoveOutliers() {

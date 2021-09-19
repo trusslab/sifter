@@ -617,42 +617,6 @@ func (a *PatternAnalysis) PurgeTree2(osn *TaggedSyscallNode, opn *TaggedSyscallN
 	return purged
 }
 
-func (a *PatternAnalysis) PurgeTree(n *TaggedSyscallNode) {
-	for _, next := range n.next {
-		toBreak := false
-		for _, pn := range a.patTreeRoot.next {
-			if next.syscall.Equal(pn.syscall) && !next.isLeaf() {
-				toBreak = true
-				break
-			}
-		}
-		if toBreak {
-			a.MergeTrees(a.seqTreeRoot, next)
-			if idx := next.findEndChild(); idx >= 0 {
-				next.next = []*TaggedSyscallNode{next.next[idx]}
-			} else {
-				next.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
-				a.tagCounter += 1
-			}
-		} else {
-			a.PurgeTree(next)
-		}
-	}
-}
-
-func (a *PatternAnalysis) CheckNewIndependentNode() bool {
-	hasIndependentNode := false
-	for _, n := range a.seqTreeRoot.next {
-		if n.findEndChild() >= 0 {
-			if a.patTreeRoot.findChild(n.syscall) == -1 {
-				a.patTreeRoot.next = append(a.patTreeRoot.next, n)
-				hasIndependentNode = true
-			}
-		}
-	}
-	return hasIndependentNode
-}
-
 func (a *PatternAnalysis) extractPattern(osn *TaggedSyscallNode, opn *TaggedSyscallNode) bool {
 	extracted := false
 	for _, sn := range osn.next {
@@ -905,7 +869,7 @@ func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
 	}
 }
 
-func (a *PatternAnalysis) AnalyzeIntraPatternOrder(v Verbose) {
+func (a *PatternAnalysis) AnalyzeInterPatternOrder() {
 	a.GetPatternTimeInterval(a.seqTreeRoot)
 
 	fmt.Printf("analysis unit keys:\n")
@@ -1039,27 +1003,6 @@ func (a *PatternAnalysis) PostProcess(flag Flag) {
 	fmt.Print("sequence tree before purging\n")
 	a.seqTreeRoot.Print(a)
 	//i := 0
-	/*
-	for {
-		if !a.CheckNewIndependentNode() {
-			break
-		}
-
-		a.PurgeTree(a.seqTreeRoot)
-		if v >= DebugV {
-			fmt.Print("--------------------------------------------------------------------------------\n")
-			fmt.Printf("purging #%v.1\n", i)
-			a.seqTreeRoot.Print()
-		}
-		a.PurgeTree(a.seqTreeRoot)
-		if v >= DebugV {
-			fmt.Print("--------------------------------------------------------------------------------\n")
-			fmt.Printf("purging #%v.2\n", i)
-			a.seqTreeRoot.Print()
-		}
-		i += 1
-	}
-	*/
 	for {
 		extracted := a.extractPattern(a.seqTreeRoot, a.patTreeRoot)
 		purged := a.PurgeTree2(a.seqTreeRoot, a.patTreeRoot)
@@ -1073,6 +1016,8 @@ func (a *PatternAnalysis) PostProcess(flag Flag) {
 			break
 		}
 	}
+	a.AnalyzeInterPatternOrder()
+	a.GenPatternList()
 }
 
 func (a *PatternAnalysis) GenPatternList() {
@@ -1100,8 +1045,6 @@ func (a *PatternAnalysis) PrintResult(v Verbose) {
 	fmt.Print("--------------------------------------------------------------------------------\n")
 	fmt.Print("sequence tree after purging\n")
 	a.seqTreeRoot.Print(a)
-	//fmt.Print("--------------------------------------------------------------------------------\n")
-	//a.AnalyzeIntraPatternOrder()
 }
 
 func (a *PatternAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {

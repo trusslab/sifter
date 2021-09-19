@@ -248,6 +248,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 }
 
 func (a *FlagAnalysis) PostProcess(flag Flag) {
+	a.RemoveOutliers()
 }
 
 func (a *FlagAnalysis) RemoveOutliers() {

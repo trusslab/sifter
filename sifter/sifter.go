@@ -372,6 +372,12 @@ func argTypeName(arg prog.Type) string {
 		name = fmt.Sprintf("struct %v", t.Name())
 	case *prog.LenType, *prog.IntType, *prog.ConstType, *prog.FlagsType:
 		name = fmt.Sprintf("uint%v_t", 8*t.Size())
+	case *prog.ArrayType:
+		if isVLR, _, _ := IsVarLenRecord(t); isVLR {
+			name = "buffer_512_t"
+		} else {
+			name = "Unhandled array"
+		}
 	}
 	return name
 }
@@ -461,7 +467,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 			}
 		}
 	case *prog.ArrayType:
-		if isVLR, _, _ := sifter.IsVarLenRecord(t); isVLR {
+		if isVLR, _, _ := IsVarLenRecord(t); isVLR {
 			syscall.AddVlrMap(t, parentArgMap, argName)
 			fmt.Fprintf(s, "    //vlr %v%v = %v; %v\n", derefOp, dstPath, srcPath, argName)
 		} else {
@@ -1224,7 +1230,7 @@ func (sifter *Sifter) CleanSections() {
 	sifter.sections = make(map[string]*bytes.Buffer)
 }
 
-func (sifter *Sifter) IsVarLenRecord(arg *prog.ArrayType) (bool, int, []uint64) {
+func IsVarLenRecord(arg *prog.ArrayType) (bool, int, []uint64) {
 	headerSize := -1
 	headers := []uint64{}
 	unions, ok := arg.Type.(*prog.UnionType)
@@ -1350,10 +1356,6 @@ func (sifter *Sifter) DoAnalyses(flag Flag) (int, int) {
 
 			fmt.Printf("%v", updateMsg)
 		}
-	}
-
-	for _, analysis := range sifter.analyses {
-		analysis.PostProcess(flag)
 	}
 
 	if sifter.verbose >= ResultV {
@@ -1635,10 +1637,12 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	var vlra VlrAnalysis
 	var pa PatternAnalysis
 	sa.SetLen(0)
+	sa.SetUnitOfAnalysis(ProcessLevel)
 	pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 	pa.SetGroupingThreshold(SyscallGrouping, 1)
 	pa.SetPatternOrderThreshold(8)
-	pa.SetUnitOfAnalysis(TraceLevel)
+	//pa.SetUnitOfAnalysis(TraceLevel)
+	pa.SetUnitOfAnalysis(ProcessLevel)
 
 	sifter.AddAnalysis(&la)
 	sifter.AddAnalysis(&fa)
@@ -1651,7 +1655,10 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	sifter.ReadSyscallTrace(sifter.traceDir)
 	sifter.DoAnalyses(TrainFlag)
 	fmt.Print("--------------------------------------------------------------------------------\n")
-	pa.AnalyzeIntraPatternOrder(sifter.verbose)
+
+	for _, analysis := range sifter.analyses {
+		analysis.PostProcess(TrainFlag)
+	}
 }
 
 func (sifter *Sifter) TrainAndTest() {
@@ -1668,10 +1675,12 @@ func (sifter *Sifter) TrainAndTest() {
 		var vlra VlrAnalysis
 		var pa PatternAnalysis
 		sa.SetLen(0)
+		sa.SetUnitOfAnalysis(TraceLevel)
 		pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 		pa.SetGroupingThreshold(SyscallGrouping, 1)
 		pa.SetPatternOrderThreshold(8)
-		pa.SetUnitOfAnalysis(TraceLevel)
+		//pa.SetUnitOfAnalysis(TraceLevel)
+		pa.SetUnitOfAnalysis(ProcessLevel)
 
 		//sifter.AddAnalysis(&vra)
 		sifter.AddAnalysis(&la)
@@ -1704,10 +1713,10 @@ func (sifter *Sifter) TrainAndTest() {
 		fmt.Printf("#training size: %v\n", trainSize)
 		fmt.Printf("#training updates: %v/%v\n", trainUpdates, trainUpdatesOL)
 		fmt.Print("--------------------------------------------------------------------------------\n")
-		la.RemoveOutliers()
-		fa.RemoveOutliers()
-		pa.AnalyzeIntraPatternOrder(sifter.verbose)
-		pa.GenPatternList()
+
+		for _, analysis := range sifter.analyses {
+			analysis.PostProcess(TrainFlag)
+		}
 
 		fmt.Printf("#testing apps:\n")
 		for i, file := range testFiles {
