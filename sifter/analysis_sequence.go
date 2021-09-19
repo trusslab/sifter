@@ -88,12 +88,25 @@ func (a *SequenceAnalysis) lastNode() *Node {
 	return a.prevs[a.seqLen]
 }
 
+func (a *SequenceAnalysis) updatePreviousNodes(nextNode *Node) {
+	a.prevs = a.prevs[1:]
+	a.prevs = append(a.prevs, nextNode)
+}
+
+func (a *SequenceAnalysis) previousNodesFull() bool {
+	return a.prevs[0] != nil
+}
+
+func (a *SequenceAnalysis) previousNodes() []*Node {
+	return a.prevs[0:a.seqLen]
+}
+
 func (a *SequenceAnalysis) findEdge(te *TraceEvent, nextNode *Node, flag Flag) (bool, *Edge) {
 	lastNode := a.lastNode()
 
 	newEdge := new(Edge)
 	newEdge.next = nextNode
-	newEdge.prevs = a.prevs[0:a.seqLen]
+	newEdge.prevs = a.previousNodes()
 	newEdge.flag = flag
 	newEdge.counts = make(map[Flag]uint64)
 	newEdge.counts[flag] = 1
@@ -142,7 +155,7 @@ func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string,
 		updateNum += 1
 	}
 
-	if a.prevs[0] != nil {
+	if a.previousNodesFull() {
 		updateEdge, edge := a.findEdge(te, nextNode, flag)
 		if updateEdge {
 			updateMsg += fmt.Sprintf("new e:n[%v]%v", a.lastNode(), edge)
@@ -150,8 +163,7 @@ func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string,
 		}
 	}
 
-	a.prevs = a.prevs[1:]
-	a.prevs = append(a.prevs, nextNode)
+	a.updatePreviousNodes(nextNode)
 	return updateMsg, updateNum, 0
 }
 
