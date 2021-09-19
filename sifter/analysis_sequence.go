@@ -36,10 +36,11 @@ func (e *Edge) String() string {
 }
 
 type SequenceAnalysis struct {
-	seqLen   int
-	nodes    []*Node
-	prevs    []*Node
-	seqGraph map[*Node][]*Edge
+	seqLen         int
+	nodes          []*Node
+	prevs          map[uint32][]*Node
+	seqGraph       map[*Node][]*Edge
+	unitOfAnalysis AnalysisUnit
 }
 
 func (a SequenceAnalysis) String() string {
@@ -48,6 +49,10 @@ func (a SequenceAnalysis) String() string {
 
 func (a *SequenceAnalysis) SetLen(l int) {
 	a.seqLen = l
+}
+
+func (a *SequenceAnalysis) SetUnitOfAnalysis(u AnalysisUnit) {
+	a.unitOfAnalysis = u
 }
 
 func tagsEqual (t1 []int, t2 []int) bool {
@@ -78,35 +83,54 @@ func (a SequenceAnalysis) edgesEqual(e1 *Edge, e2 *Edge) bool {
 
 func (a *SequenceAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.seqGraph = make(map[*Node][]*Edge)
-	a.prevs = make([]*Node, a.seqLen+1)
+	a.prevs = make(map[uint32][]*Node)
 }
 
 func (a *SequenceAnalysis) Reset() {
+	a.prevs = make(map[uint32][]*Node)
 }
 
-func (a *SequenceAnalysis) lastNode() *Node {
-	return a.prevs[a.seqLen]
+func (a *SequenceAnalysis) key(te *TraceEvent) uint32 {
+	var key uint32
+	switch a.unitOfAnalysis {
+	case ProcessLevel:
+		key = te.id
+	case TraceLevel:
+		key = 0
+	}
+	return key
 }
 
-func (a *SequenceAnalysis) updatePreviousNodes(nextNode *Node) {
-	a.prevs = a.prevs[1:]
-	a.prevs = append(a.prevs, nextNode)
+func (a *SequenceAnalysis) lastNode(te *TraceEvent) *Node {
+	key := a.key(te)
+	return a.prevs[key][a.seqLen]
 }
 
-func (a *SequenceAnalysis) previousNodesFull() bool {
-	return a.prevs[0] != nil
+func (a *SequenceAnalysis) updatePreviousNodes(nextNode *Node, te *TraceEvent) {
+	key := a.key(te)
+	a.prevs[key] = a.prevs[key][1:]
+	a.prevs[key] = append(a.prevs[key], nextNode)
 }
 
-func (a *SequenceAnalysis) previousNodes() []*Node {
-	return a.prevs[0:a.seqLen]
+func (a *SequenceAnalysis) previousNodesFull(te *TraceEvent) bool {
+	key := a.key(te)
+	if _, ok := a.prevs[key]; !ok {
+		a.prevs[key] = make([]*Node, a.seqLen+1)
+	}
+	return a.prevs[key][0] != nil
+}
+
+func (a *SequenceAnalysis) previousNodes(te *TraceEvent) []*Node {
+	key := a.key(te)
+	return a.prevs[key][0:a.seqLen]
 }
 
 func (a *SequenceAnalysis) findEdge(te *TraceEvent, nextNode *Node, flag Flag) (bool, *Edge) {
-	lastNode := a.lastNode()
+	lastNode := a.lastNode(te)
 
 	newEdge := new(Edge)
 	newEdge.next = nextNode
-	newEdge.prevs = a.previousNodes()
+	newEdge.prevs = a.previousNodes(te)
 	newEdge.flag = flag
 	newEdge.counts = make(map[Flag]uint64)
 	newEdge.counts[flag] = 1
@@ -155,15 +179,15 @@ func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string,
 		updateNum += 1
 	}
 
-	if a.previousNodesFull() {
+	if a.previousNodesFull(te) {
 		updateEdge, edge := a.findEdge(te, nextNode, flag)
 		if updateEdge {
-			updateMsg += fmt.Sprintf("new e:n[%v]%v", a.lastNode(), edge)
+			updateMsg += fmt.Sprintf("new e:n[%v]%v", a.lastNode(te), edge)
 			updateNum += 1
 		}
 	}
 
-	a.updatePreviousNodes(nextNode)
+	a.updatePreviousNodes(nextNode, te)
 	return updateMsg, updateNum, 0
 }
 
