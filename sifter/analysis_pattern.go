@@ -226,6 +226,11 @@ type FilterState struct {
 	patternRecorded  map[int]bool
 }
 
+type PatternTimestamp struct {
+	tag int
+	ts  uint64
+}
+
 type PatternAnalysis struct {
 	groupingMethods   map[Grouping]GroupingMethod
 	lastNodeOfPid     map[uint32]*TaggedSyscallNode
@@ -245,6 +250,9 @@ type PatternAnalysis struct {
 	patternListTag    []int
 	uniqueSyscallList []*TaggedSyscall
 	patternOrderList  map[int]uint64
+
+	patternSequences  map[AnalysisUnitKey][]PatternTimestamp
+	patternSeqGraph   map[int]map[int]int
 
 	debugEnable       bool
 }
@@ -269,6 +277,9 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.patternList = make([][]*TaggedSyscallNode, 0)
 	a.uniqueSyscallList = make([]*TaggedSyscall, 0)
 	a.patternOrderList = make(map[int]uint64)
+
+	a.patternSequences = make(map[AnalysisUnitKey][]PatternTimestamp)
+	a.patternSeqGraph = make(map[int]map[int]int)
 
 	a.debugEnable = false
 }
@@ -991,6 +1002,54 @@ func (a *PatternAnalysis) AnalyzeInterPatternOrder() {
 	}
 }
 
+func (a *PatternAnalysis) addPatternToSequences(n *TaggedSyscallNode) {
+	if idx := n.findEndChild(); idx != -1 && n != a.seqTreeRoot {
+		tag := n.next[idx].tag
+		for _, te := range n.events {
+			_, key := a.newAnalysisUnitKey(te)
+			a.patternSequences[key] = append(a.patternSequences[key], PatternTimestamp{tag, te.ts})
+		}
+	}
+	for _, next := range n.next {
+		a.addPatternToSequences(next)
+	}
+}
+
+func (a *PatternAnalysis) AnalyzeInterPatternSequence() {
+	a.unitOfAnalysis = ProcessLevel
+	a.addPatternToSequences(a.seqTreeRoot)
+
+	for key, _ := range a.patternSequences {
+		sort.Slice(a.patternSequences[key], func(i, j int) bool {
+			return a.patternSequences[key][i].ts < a.patternSequences[key][j].ts
+		})
+	}
+
+	for _, seq := range a.patternSequences {
+		lastTag := 0
+		for _, tagTimestamp := range seq {
+			if lastTag != 0 {
+				if _, ok := a.patternSeqGraph[lastTag]; !ok {
+					a.patternSeqGraph[lastTag] = make(map[int]int)
+				}
+				a.patternSeqGraph[lastTag][tagTimestamp.tag] += 1
+			}
+			lastTag = tagTimestamp.tag
+		}
+	}
+
+	fmt.Print("--------------------------------------------------------------------------------\n")
+	fmt.Printf("pattern seq:\n")
+	for src, dsts := range a.patternSeqGraph {
+		fmt.Printf("%3x: ", src)
+		for dst, ctr := range dsts {
+			fmt.Printf("%3x(%d) ", dst, ctr)
+		}
+		fmt.Printf("\n")
+	}
+	fmt.Print("--------------------------------------------------------------------------------\n")
+}
+
 func (a *PatternAnalysis) PostProcess(flag Flag) {
 	for pid, n := range a.lastNodeOfPid {
 		if n.findEndChild() == -1 {
@@ -1016,7 +1075,14 @@ func (a *PatternAnalysis) PostProcess(flag Flag) {
 			break
 		}
 	}
+	fmt.Print("--------------------------------------------------------------------------------\n")
+	fmt.Print("pattern tree\n")
+	a.patTreeRoot.Print(a)
+	fmt.Print("--------------------------------------------------------------------------------\n")
+	fmt.Print("sequence tree after purging\n")
+	a.seqTreeRoot.Print(a)
 	a.AnalyzeInterPatternOrder()
+	a.AnalyzeInterPatternSequence()
 	a.GenPatternList()
 }
 
@@ -1040,11 +1106,14 @@ func (a *PatternAnalysis) GenPatternList() {
 
 func (a *PatternAnalysis) PrintResult(v Verbose) {
 	fmt.Print("--------------------------------------------------------------------------------\n")
-	fmt.Print("pattern tree\n")
-	a.patTreeRoot.Print(a)
-	fmt.Print("--------------------------------------------------------------------------------\n")
-	fmt.Print("sequence tree after purging\n")
+	fmt.Print("sequence tree\n")
 	a.seqTreeRoot.Print(a)
+//	fmt.Print("--------------------------------------------------------------------------------\n")
+//	fmt.Print("pattern tree\n")
+//	a.patTreeRoot.Print(a)
+//	fmt.Print("--------------------------------------------------------------------------------\n")
+//	fmt.Print("sequence tree after purging\n")
+//	a.seqTreeRoot.Print(a)
 }
 
 func (a *PatternAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {
