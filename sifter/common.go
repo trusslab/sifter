@@ -188,7 +188,7 @@ func (te *TraceEvent) GetData(offset uint64, size uint64) (bool, uint64) {
 	ok := false
 	var data uint64
 
-	if offset > 0 && offset+size < uint64(len(te.data)) {
+	if offset > 0 && offset+size <= uint64(len(te.data)) {
 		switch size {
 		case 1:
 			data = uint64(te.data[offset])
