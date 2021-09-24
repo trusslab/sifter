@@ -242,7 +242,7 @@ type PatternAnalysis struct {
 	patternOccurence  map[AnalysisUnitKey]map[int]int
 	patternOrder      map[int]map[int]int
 	patternOrderCtr   map[int]map[int]int
-	patternOrderTh    int
+	patternOrderTh    float64
 	filterStates      map[AnalysisUnitKey]*FilterState
 	unitOfAnalysis    AnalysisUnit
 
@@ -284,7 +284,7 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.debugEnable = false
 }
 
-func (a *PatternAnalysis) SetPatternOrderThreshold(th int) {
+func (a *PatternAnalysis) SetPatternOrderThreshold(th float64) {
 	a.patternOrderTh = th
 }
 
@@ -986,7 +986,13 @@ func (a *PatternAnalysis) AnalyzeInterPatternOrder() {
 		for _, kd := range tags {
 			vd := a.patternOrderCtr[ks][kd]
 			if a.patternOrder[ks][kd] == 1 || a.patternOrder[ks][kd] == 2 {
-				if vd < a.patternOrderTh {
+				n := 0
+				if patternOccurence[ks][1] < patternOccurence[kd][1] {
+					n = patternOccurence[ks][1]
+				} else {
+					n = patternOccurence[kd][1]
+				}
+				if vd < int(a.patternOrderTh * float64(n)) {
 					a.patternOrder[ks][kd] = 3
 					fmt.Printf("%*dt", tagW, vd)
 				} else if vd <= ctrMax {
