@@ -410,6 +410,44 @@ func (sifter *Sifter) CheckArgConstraints(syscall *Syscall, arg prog.Type, paren
 	return constraints
 }
 
+func (sifter *Sifter) GetArrayLen(syscall *Syscall, parentArgMap *ArgMap, depth int, arrayFieldName string) (*prog.Type, int) {
+	var arrayLen *prog.Type
+	if structArg, ok := parentArgMap.arg.(*prog.StructType); ok {
+		for i, field := range(structArg.Fields) {
+			if lenArg, ok := field.(*prog.LenType); ok && lenArg.Path[0] == arrayFieldName {
+				arrayLen = &parentArgMap.arg.(*prog.StructType).Fields[i]
+			}
+		}
+		if arrayLen != nil {
+			constraints := sifter.CheckArgConstraints(syscall, *arrayLen, parentArgMap, depth)
+			for _, c := range constraints {
+				if rangeConstraint, ok := c.(*RangeConstraint); ok {
+					return arrayLen, int(rangeConstraint.u)
+				}
+			}
+			return arrayLen, -1
+		}
+	}
+	return nil, 0
+}
+
+func minElementSize(arg prog.Type) int {
+	minSize := math.MaxInt32
+	switch t := arg.(type) {
+	case *prog.StructType:
+		minSize = int(t.Size())
+	case *prog.UnionType:
+		for _, unionField := range(t.Fields) {
+			if structField, ok := unionField.(*prog.StructType); ok {
+				if int(structField.Size()) < minSize {
+					minSize = int(structField.Size())
+				}
+			}
+		}
+	}
+	return minSize
+}
+
 func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg prog.Type, srcPath string, argName string, dstPath string, parentArgMap *ArgMap, depth *int) {
 	_, thisIsPtr := arg.(*prog.PtrType)
 	if *depth == 0 && !thisIsPtr || *depth >= sifter.depthLimit || isIgnoredArg(arg) {
@@ -501,61 +539,53 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 			}
 		}
 	case *prog.ArrayType:
-		if isVLR, _, _ := IsVarLenRecord(t); isVLR {
-			syscall.AddVlrMap(t, parentArgMap, argName)
-			fmt.Fprintf(s, "    //vlr %v%v = %v; %v\n", derefOp, dstPath, srcPath, argName)
-		} else {
-			if t.IsVarlen {
-				if sifter.mode == FilterMode {
-					var arrayLen prog.Type
-					var rangeEnd uint64
-					parentVarName := strings.Split(srcPath, ".")[0]
-					arrayFieldName := strings.Split(srcPath, ".")[1]
-					if structArg, ok := parentArgMap.arg.(*prog.StructType); ok {
-						for _, field := range(structArg.Fields) {
-							if lenArg, ok := field.(*prog.LenType); ok && lenArg.Path[0] == arrayFieldName {
-								arrayLen = field
-							}
-						}
-						constraints := sifter.CheckArgConstraints(syscall, arrayLen, parentArgMap, *depth)
-						for _, c := range constraints {
-							if rangeConstraint, ok := c.(*RangeConstraint); ok {
-								rangeEnd = rangeConstraint.u
-							}
-						}
-					}
-					arrayLenName := fmt.Sprintf("%v.%v", parentVarName, arrayLen.FieldName())
-					if !dataInStack {
-						stackVarName := ""
-						fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&stackVarName, argType), 1))
-						endLabelName := fmt.Sprintf("array_%v_end", stackVarName)
-						//newSrcPath := stackVarName
-						fmt.Fprintf(s, "    int offset = 0;\n")
-						fmt.Fprintf(s, "    int end = %v * sizeof(%v);\n", arrayLenName, stackVarName)
-						for i := 0; i < int(rangeEnd); i++ {
-							fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "offset"), 1))
-							sifter.AddStruct(t.Type.(*prog.StructType))
-							//for _, field := range t.Fields {
-							//	sifter.GenerateArgTracer(s, syscall, field, newSrcPath, argName, dstPath+accessOp, parentArgMap, depth)
-							//}
-							fmt.Fprintf(s, "    offset += sizeof(%v);\n", stackVarName)
-							fmt.Fprintf(s, "    if (offset + sizeof(%v) <= end) {\n", stackVarName)
-							fmt.Fprintf(s, "        goto %v;\n", endLabelName)
-							fmt.Fprintf(s, "    }\n")
-						}
-						fmt.Fprintf(s, "%v:\n", endLabelName)
-					}
-				}
+		if t.IsVarlen {
+			if isVLR, _, _ := IsVarLenRecord(t); isVLR {
+				syscall.AddVlrMap(t, parentArgMap, argName)
+				fmt.Fprintf(s, "    //vlr %v%v = %v; %v\n", derefOp, dstPath, srcPath, argName)
 			} else {
-				for i := 0; i < int(t.RangeBegin); i++ {
-					if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
-						fmt.Fprintf(s, "    %v%v[%v] = %v[%v];\n", derefOp, dstPath, i, srcPath, i)
+				sifter.AddStruct(t.Type.(*prog.StructType))
+			}
+			if sifter.mode == FilterMode {
+				parentVarName := strings.Split(srcPath, ".")[0]
+				arrayFieldName := strings.Split(srcPath, ".")[1]
+				arrayLen, arrayLenRangeEnd := sifter.GetArrayLen(syscall, parentArgMap, *depth, arrayFieldName)
+				arrayLenName := fmt.Sprintf("%v.%v", parentVarName, (*arrayLen).FieldName())
+				if !dataInStack {
+					stackVarName := ""
+					fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&stackVarName, argType), 1))
+					endLabelName := fmt.Sprintf("array_%v_end", stackVarName)
+					//newSrcPath := stackVarName
+					fmt.Fprintf(s, "    int offset = 0;\n")
+					if (*arrayLen).(*prog.LenType).BitSize == 0 {
+						fmt.Fprintf(s, "    int end = %v * sizeof(%v);\n", arrayLenName, stackVarName)
+					} else {
+						fmt.Fprintf(s, "    int end = %v;\n", arrayLenName)
+						arrayLenRangeEnd = arrayLenRangeEnd / minElementSize(t.Type)
 					}
-					if sifter.mode == FilterMode {
-						constraints := sifter.CheckArgConstraints(syscall, arg, parentArgMap, *depth)
-						for _, c := range constraints {
-							fmt.Fprintf(s, "    %v", indent(c.String(fmt.Sprintf("%v[%v]", srcPath, i), "ret", sifter.ctx.defaultRetVal, sifter.ctx.errorRetVal), 1))
-						}
+					for i := 0; i < arrayLenRangeEnd; i++ {
+						fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "offset"), 1))
+						//sifter.AddStruct(t.Type.(*prog.StructType))
+						//for _, field := range t.Fields {
+						//	sifter.GenerateArgTracer(s, syscall, field, newSrcPath, argName, dstPath+accessOp, parentArgMap, depth)
+						//}
+						fmt.Fprintf(s, "    offset += sizeof(%v);\n", stackVarName)
+						fmt.Fprintf(s, "    if (offset + sizeof(%v) <= end) {\n", stackVarName)
+						fmt.Fprintf(s, "        goto %v;\n", endLabelName)
+						fmt.Fprintf(s, "    }\n")
+					}
+					fmt.Fprintf(s, "%v:\n", endLabelName)
+				}
+			}
+		} else {
+			for i := 0; i < int(t.RangeBegin); i++ {
+				if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
+					fmt.Fprintf(s, "    %v%v[%v] = %v[%v];\n", derefOp, dstPath, i, srcPath, i)
+				}
+				if sifter.mode == FilterMode {
+					constraints := sifter.CheckArgConstraints(syscall, arg, parentArgMap, *depth)
+					for _, c := range constraints {
+						fmt.Fprintf(s, "    %v", indent(c.String(fmt.Sprintf("%v[%v]", srcPath, i), "ret", sifter.ctx.defaultRetVal, sifter.ctx.errorRetVal), 1))
 					}
 				}
 			}
