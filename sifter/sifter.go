@@ -386,6 +386,8 @@ func argTypeName(arg prog.Type) string {
 				name = "Unhandled array"
 			}
 		}
+	case *prog.ResourceType:
+		name = fmt.Sprintf("uint%v_t", 8*t.Size())
 	}
 	return name
 }
@@ -540,9 +542,10 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		}
 	case *prog.ArrayType:
 		if t.IsVarlen {
-			if isVLR, _, _ := IsVarLenRecord(t); isVLR {
+			isVLR := false
+			vlrHeaderSize := 0
+			if isVLR, vlrHeaderSize, _ = IsVarLenRecord(t); isVLR {
 				syscall.AddVlrMap(t, parentArgMap, argName)
-				fmt.Fprintf(s, "    //vlr %v%v = %v; %v\n", derefOp, dstPath, srcPath, argName)
 			} else {
 				sifter.AddStruct(t.Type.(*prog.StructType))
 			}
@@ -553,7 +556,31 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 				arrayLenName := fmt.Sprintf("%v.%v", parentVarName, (*arrayLen).FieldName())
 				if !dataInStack {
 					stackVarName := ""
-					fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&stackVarName, argType), 1))
+					vlrHeaderVarName := ""
+					vlrRecordTypes := make(map[string]string)
+					vlrTypeStackVarNames := make(map[string]string)
+					if isVLR {
+						headerType := fmt.Sprintf("uint%d_t", vlrHeaderSize*8)
+						fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&vlrHeaderVarName, headerType), 1))
+						for _, field := range(t.Type.(*prog.UnionType).Fields) {
+							vlrRecordType := ""
+							if len(field.(*prog.StructType).Fields) > 1 {
+								//vlrRecordType = fmt.Sprintf("struct %v", field.(*prog.StructType).Fields[1].Name())
+								vlrRecordType = argTypeName(field.(*prog.StructType).Fields[1])
+								if _, ok := vlrTypeStackVarNames[vlrRecordType]; !ok {
+									if structArg, ok := field.(*prog.StructType).Fields[1].(*prog.StructType); ok {
+										sifter.AddStruct(structArg)
+									}
+									newStackVarName := ""
+									fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&newStackVarName, vlrRecordType), 1))
+									vlrTypeStackVarNames[vlrRecordType] = newStackVarName
+								}
+							}
+							vlrRecordTypes[field.FieldName()] = vlrRecordType
+						}
+					} else {
+						fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&stackVarName, argType), 1))
+					}
 					endLabelName := fmt.Sprintf("array_%v_end", stackVarName)
 					//newSrcPath := stackVarName
 					fmt.Fprintf(s, "    int offset = 0;\n")
@@ -564,15 +591,33 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 						arrayLenRangeEnd = arrayLenRangeEnd / minElementSize(t.Type)
 					}
 					for i := 0; i < arrayLenRangeEnd; i++ {
-						fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "offset"), 1))
-						//sifter.AddStruct(t.Type.(*prog.StructType))
-						//for _, field := range t.Fields {
-						//	sifter.GenerateArgTracer(s, syscall, field, newSrcPath, argName, dstPath+accessOp, parentArgMap, depth)
-						//}
-						fmt.Fprintf(s, "    offset += sizeof(%v);\n", stackVarName)
-						fmt.Fprintf(s, "    if (offset + sizeof(%v) <= end) {\n", stackVarName)
-						fmt.Fprintf(s, "        goto %v;\n", endLabelName)
-						fmt.Fprintf(s, "    }\n")
+						if isVLR {
+							fmt.Fprintf(s, "    %v\n", indent(sifter.GenerateCopyFromUser(srcPath, vlrHeaderVarName, "offset"), 1))
+							fmt.Fprintf(s, "    offset += sizeof(%v);\n", vlrHeaderVarName)
+							fmt.Fprintf(s, "    switch(%v) {\n", vlrHeaderVarName)
+							for _, field := range(t.Type.(*prog.UnionType).Fields) {
+								fmt.Fprintf(s, "    case 0x%x:\n", field.(*prog.StructType).Fields[0].(*prog.ConstType).Val)
+								if vlrRecordType, ok := vlrRecordTypes[field.FieldName()]; ok && vlrRecordType != "" {
+									fmt.Fprintf(s, "        %v\n", indent(sifter.GenerateCopyFromUser(srcPath, vlrTypeStackVarNames[vlrRecordType], "offset"), 2))
+									fmt.Fprintf(s, "        offset += sizeof(%v);\n", vlrTypeStackVarNames[vlrRecordType])
+								}
+								fmt.Fprintf(s, "        break;\n")
+							}
+							fmt.Fprintf(s, "    }\n")
+							fmt.Fprintf(s, "    if (offset >= end) {\n")
+							fmt.Fprintf(s, "        goto %v;\n", endLabelName)
+							fmt.Fprintf(s, "    }\n")
+						} else {
+							fmt.Fprintf(s, "    %v\n", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "offset"), 1))
+							//sifter.AddStruct(t.Type.(*prog.StructType))
+							//for _, field := range t.Fields {
+							//	sifter.GenerateArgTracer(s, syscall, field, newSrcPath, argName, dstPath+accessOp, parentArgMap, depth)
+							//}
+							fmt.Fprintf(s, "    offset += sizeof(%v);\n", stackVarName)
+							fmt.Fprintf(s, "    if (offset + sizeof(%v) > end) {\n", stackVarName)
+							fmt.Fprintf(s, "        goto %v;\n", endLabelName)
+							fmt.Fprintf(s, "    }\n")
+						}
 					}
 					fmt.Fprintf(s, "%v:\n", endLabelName)
 				}
