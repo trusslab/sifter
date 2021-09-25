@@ -592,7 +592,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 					}
 					for i := 0; i < arrayLenRangeEnd; i++ {
 						if isVLR {
-							fmt.Fprintf(s, "    %v\n", indent(sifter.GenerateCopyFromUser(srcPath, vlrHeaderVarName, "offset"), 1))
+							fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, vlrHeaderVarName, "offset"), 1))
 							fmt.Fprintf(s, "    offset += sizeof(%v);\n", vlrHeaderVarName)
 							fmt.Fprintf(s, "    switch(%v) {\n", vlrHeaderVarName)
 							for _, field := range(t.Type.(*prog.UnionType).Fields) {
@@ -943,6 +943,7 @@ func (sifter *Sifter) GenerateMapSection() {
 			fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_seq_tree, ARRAY, int, struct syscall_seq, SC_SEQ_MAX);\n")
 			fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_seq_curr, ARRAY, int, struct syscall_seq_curr, 1);\n")
 			fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_seq_order, HASH, uint8_t, uint64_t, SC_SEQ_MAX);\n")
+			fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_seq_seq, HASH, uint8_t, uint64_t, SC_SEQ_MAX);\n")
 			fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_seqs_curr, ARRAY, int, uint64_t, 1);\n")
 		}
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(init_map, ARRAY, int, int, 1);\n")
@@ -1062,6 +1063,7 @@ func (sifter *Sifter) GenerateStructSection() {
 		fmt.Fprintf(s, "	int l;\n")
 		fmt.Fprintf(s, "	int u;\n")
 		fmt.Fprintf(s, "	uint32_t idx;\n")
+		fmt.Fprintf(s, "	uint8_t last_seq_id;\n")
 		fmt.Fprintf(s, "};\n")
 	}
 }
@@ -1130,16 +1132,13 @@ func (sifter *Sifter) GenerateHelperSection() {
 	if sifter.mode == FilterMode {
 		if a := sifter.GetAnalysis("pattern analysis"); a != nil {
 			pa, _ := a.(*PatternAnalysis)
-			fmt.Fprintf(s, "bool __always_inline check_seq_order(uint8_t seq_id) {\n")
-			fmt.Fprintf(s, "    int i = 0;\n")
+			fmt.Fprintf(s, "bool __always_inline check_seq_order(uint8_t seq_id, uint64_t seq_seq, uint64_t seqs_curr) {\n")
 			fmt.Fprintf(s, "    uint64_t *seq_order = bpf_syscall_seq_order_lookup_elem(&seq_id);\n")
-			fmt.Fprintf(s, "    uint64_t *seqs_curr = bpf_syscall_seqs_curr_lookup_elem(&i);\n")
-			fmt.Fprintf(s, "\n")
-			fmt.Fprintf(s, "    if (seq_order && seqs_curr) {\n")
-			fmt.Fprintf(s, "        if ((*seq_order & *seqs_curr) != 0) {\n")
-			fmt.Fprintf(s, "            return false;\n")
-			fmt.Fprintf(s, "        } else {\n")
+			fmt.Fprintf(s, "    if (seq_order) {\n")
+			fmt.Fprintf(s, "        if ((*seq_order & seqs_curr) == 0 && ((1 << seq_id) & seq_seq) != 0) {\n")
 			fmt.Fprintf(s, "            return true;\n")
+			fmt.Fprintf(s, "        } else {\n")
+			fmt.Fprintf(s, "            return false;\n")
 			fmt.Fprintf(s, "        }\n")
 			fmt.Fprintf(s, "    } else {\n")
 			fmt.Fprintf(s, "        return false;\n")
@@ -1192,9 +1191,20 @@ func (sifter *Sifter) GenerateHelperSection() {
 				fmt.Fprintf(s, "    }\n")
 			}
 			fmt.Fprintf(s, "\n")
+			fmt.Fprintf(s, "    uint8_t last_seq_id = seq_curr->last_seq_id;\n")
+			fmt.Fprintf(s, "    uint64_t *syscall_seq_seq = bpf_syscall_seq_seq_lookup_elem(&last_seq_id);\n")
+			fmt.Fprintf(s, "    if (!syscall_seq_seq) {\n")
+			fmt.Fprintf(s, "        goto error;\n")
+			fmt.Fprintf(s, "    }\n")
+			fmt.Fprintf(s, "\n")
+			fmt.Fprintf(s, "    uint64_t *seqs_curr = bpf_syscall_seqs_curr_lookup_elem(&i);\n")
+			fmt.Fprintf(s, "    if (!seqs_curr) {\n")
+			fmt.Fprintf(s, "        goto error;\n")
+			fmt.Fprintf(s, "    }\n")
+			fmt.Fprintf(s, "\n")
 			fmt.Fprintf(s, "    bool ok = false;\n")
 			for i := 0; i < len(pa.patternList); i++ {
-				fmt.Fprintf(s, "    if (%d >= l && %d <= u) { ok |= check_seq_order(%d); }\n", i, i, i)
+				fmt.Fprintf(s, "    if (%d >= l && %d <= u) { ok |= check_seq_order(%d, *syscall_seq_seq, *seqs_curr); }\n", i, i, i)
 			}
 			fmt.Fprintf(s, "\n")
 			fmt.Fprintf(s, "	if (ok) {\n")
@@ -1203,6 +1213,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 			fmt.Fprintf(s, "			if (seqs_curr) {\n")
 			fmt.Fprintf(s, "				*seqs_curr |= (1 << l);\n")
 			fmt.Fprintf(s, "			}\n")
+			fmt.Fprintf(s, "			seq_curr->last_seq_id = l;\n")
 			fmt.Fprintf(s, "			seq_curr->l = 0;\n")
 			fmt.Fprintf(s, "			seq_curr->u = SC_SEQ_MAX - 1;\n")
 			fmt.Fprintf(s, "			seq_curr->idx = 0;\n")
@@ -1244,6 +1255,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 		fmt.Fprintf(s, "        seq_curr->l = 0;\n")
 		fmt.Fprintf(s, "        seq_curr->u = SC_SEQ_MAX - 1;\n")
 		fmt.Fprintf(s, "        seq_curr->idx = 0;\n")
+		fmt.Fprintf(s, "        seq_curr->last_seq_id = 0;\n")
 		fmt.Fprintf(s, "    }\n")
 		fmt.Fprintf(s, "}\n")
 		fmt.Fprintf(s, "\n")
@@ -1297,6 +1309,15 @@ func (sifter *Sifter) GenerateHelperSection() {
 			}
 			fmt.Fprintf(s, "}\n")
 			fmt.Fprintf(s, "\n")
+			fmt.Fprintf(s, "void __always_inline init_syscall_seq_seq() {\n")
+			fmt.Fprintf(s, "    uint8_t id = 0;\n")
+			fmt.Fprintf(s, "    uint64_t seq_seq;\n")
+			for pi, _ := range pa.patternList {
+				fmt.Fprintf(s, "    id = %d; seq_seq= 0x%x;\n", pi, pa.patternOrderList[pi])
+				fmt.Fprintf(s, "    bpf_syscall_seq_seq_update_elem(&id, &seq_seq, BPF_ANY);\n")
+			}
+			fmt.Fprintf(s, "}\n")
+			fmt.Fprintf(s, "\n")
 		}
 		fmt.Fprintf(s, "int __always_inline check_dev_path(char *path)\n")
 		fmt.Fprintf(s, "{\n")
@@ -1322,6 +1343,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 		fmt.Fprintf(s, "            init_syscall_seq_curr();\n")
 		fmt.Fprintf(s, "            init_syscall_seqs_curr();\n")
 		fmt.Fprintf(s, "            init_syscall_seq_order();\n")
+		fmt.Fprintf(s, "            init_syscall_seq_seq();\n")
 		fmt.Fprintf(s, "        }\n")
 		fmt.Fprintf(s, "    }\n")
 		fmt.Fprintf(s, "    return;\n")
