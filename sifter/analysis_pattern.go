@@ -246,10 +246,11 @@ type PatternAnalysis struct {
 	filterStates      map[AnalysisUnitKey]*FilterState
 	unitOfAnalysis    AnalysisUnit
 
-	patternList       [][]*TaggedSyscallNode
-	patternListTag    []int
 	uniqueSyscallList []*TaggedSyscall
-	patternOrderList  map[int]uint64
+	seqTags           []int
+	seqTreeList       [][]*TaggedSyscallNode
+	seqOrderList      map[int]uint64
+	seqSeqList        map[int]uint64
 
 	patternSequences  map[AnalysisUnitKey][]PatternTimestamp
 	patternSeqGraph   map[int]map[int]int
@@ -274,9 +275,10 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.patternOrderCtr = make(map[int]map[int]int)
 	a.filterStates = make(map[AnalysisUnitKey]*FilterState)
 
-	a.patternList = make([][]*TaggedSyscallNode, 0)
+	a.seqTreeList = make([][]*TaggedSyscallNode, 0)
 	a.uniqueSyscallList = make([]*TaggedSyscall, 0)
-	a.patternOrderList = make(map[int]uint64)
+	a.seqOrderList = make(map[int]uint64)
+	a.seqSeqList = make(map[int]uint64)
 
 	a.patternSequences = make(map[AnalysisUnitKey][]PatternTimestamp)
 	a.patternSeqGraph = make(map[int]map[int]int)
@@ -579,21 +581,25 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, 
 //	}
 //}
 
-func (a *PatternAnalysis) MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallNode) {
+func (a *PatternAnalysis) MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallNode, root *TaggedSyscallNode) {
 	for f, _ := range dst.counts {
 		dst.counts[f] += src.counts[f]
 	}
 	dst.events = append(dst.events, src.events...)
 	dst.pt = 0
+	//fmt.Printf("merge (%v to %v), ", src, dst)
 	for _, srcNext := range src.next {
 		if idx := dst.findChild(srcNext.syscall); idx != -1 {
-			if dst.findEndChild() == -1 {
-				a.MergeTrees(dst.next[idx], srcNext)
+			if dst.findEndChild() == -1 || dst == root {
+				a.MergeTrees(dst.next[idx], srcNext, root)
+			} else {
+				a.MergeTrees(root, src, root)
 			}
 		} else {
 			dst.next = append(dst.next, srcNext)
 		}
 	}
+	//fmt.Printf("return ")
 }
 
 func (a *PatternAnalysis) getPatternEnd(sn *TaggedSyscallNode, pn *TaggedSyscallNode) *TaggedSyscallNode {
@@ -611,19 +617,34 @@ func (a *PatternAnalysis) getPatternEnd(sn *TaggedSyscallNode, pn *TaggedSyscall
 func (a *PatternAnalysis) PurgeTree2(osn *TaggedSyscallNode, opn *TaggedSyscallNode) bool {
 	purged := false
 	for _, sn := range osn.next {
+		//fmt.Printf("purge sn:%v opn:%v\n", sn, opn)
 		if ne := a.getPatternEnd(sn, a.patTreeRoot); ne != nil && ne.pt == 0 {
+			//fmt.Printf("pattern end:%v\n", ne)
 			ne.pt = 1
-			a.MergeTrees(a.seqTreeRoot, ne)
-			if idx := ne.findEndChild(); idx >= 0 {
-				ne.next = []*TaggedSyscallNode{ne.next[idx]}
-			} else {
-				ne.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
-				a.tagCounter += 1
+			if idx := ne.findEndChild(); idx != -1 && len(ne.next) != 1 {
+				a.MergeTrees(a.seqTreeRoot, ne, a.seqTreeRoot)
+				//fmt.Printf("\n")
+				if idx := ne.findEndChild(); idx >= 0 {
+					ne.next = []*TaggedSyscallNode{ne.next[idx]}
+				} else {
+					ne.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
+					a.tagCounter += 1
+				}
+			}
+			if osn != a.seqTreeRoot {
+				a.MergeTrees(a.seqTreeRoot, osn, a.seqTreeRoot)
+				if idx := osn.findEndChild(); idx >= 0 {
+					osn.next = []*TaggedSyscallNode{osn.next[idx]}
+				} else {
+					osn.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
+					a.tagCounter += 1
+				}
 			}
 			purged = true
 		} else if a.PurgeTree2(sn, a.patTreeRoot) {
 			purged = true
 		}
+		//fmt.Printf("else\n")
 	}
 	return purged
 }
@@ -632,12 +653,16 @@ func (a *PatternAnalysis) extractPattern(osn *TaggedSyscallNode, opn *TaggedSysc
 	extracted := false
 	for _, sn := range osn.next {
 		pn := opn
+		//fmt.Printf("extract sn:%v pn:%v ", sn, pn)
 		if matchIdx := pn.findChild(sn.syscall); matchIdx >= 0 {
 			pn = pn.next[matchIdx]
+			//fmt.Printf("c1 \n")
 		} else if pn.findEndChild() == -1 || pn == a.patTreeRoot {
+			//fmt.Printf("c2 \n")
 			extracted = true
-			if sn.syscall.syscall == nil {
-				a.MergeTrees(a.patTreeRoot, pn)
+			if sn.syscall.syscall == nil && pn != a.patTreeRoot {
+				a.MergeTrees(a.patTreeRoot, pn, a.patTreeRoot)
+				//fmt.Printf("\n")
 				pn.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
 				a.tagCounter += 1
 				pn = pn.next[len(pn.next)-1]
@@ -646,6 +671,7 @@ func (a *PatternAnalysis) extractPattern(osn *TaggedSyscallNode, opn *TaggedSysc
 				pn = pn.next[len(pn.next)-1]
 			}
 		} else {
+			//fmt.Printf("c3 \n")
 			pn = a.patTreeRoot
 		}
 
@@ -773,7 +799,7 @@ func (n *TaggedSyscallNode) Print(a *PatternAnalysis) {
 	n.print(&depth, depthsWithOtherChildren, false, a)
 }
 
-func (a *PatternAnalysis) genPatternList(node *TaggedSyscallNode, nodeStack []*TaggedSyscallNode) {
+func (a *PatternAnalysis) genSeqTreeList(node *TaggedSyscallNode, nodeStack []*TaggedSyscallNode) {
 	nodeStack = append(nodeStack, node)
 	if idx := node.findEndChild(); idx != -1 && node != a.seqTreeRoot {
 		var pattern []*TaggedSyscallNode
@@ -782,11 +808,11 @@ func (a *PatternAnalysis) genPatternList(node *TaggedSyscallNode, nodeStack []*T
 				pattern = append(pattern, n)
 			}
 		}
-		a.patternList = append(a.patternList, pattern)
-		a.patternListTag = append(a.patternListTag, node.next[idx].tag)
+		a.seqTreeList = append(a.seqTreeList, pattern)
+		a.seqTags = append(a.seqTags, node.next[idx].tag)
 	} else {
 		for _, next := range node.next {
-			a.genPatternList(next, nodeStack)
+			a.genSeqTreeList(next, nodeStack)
 		}
 	}
 	nodeStack = nodeStack[:len(nodeStack)-1]
@@ -809,13 +835,13 @@ func (a *PatternAnalysis) genUniqueNodeList(node *TaggedSyscallNode) {
 	}
 }
 
-func (a *PatternAnalysis) genPatternOrderList() {
+func (a *PatternAnalysis) genSeqOrderList() {
 	patternOccurence := make(map[int][]int)
-	for _, tag := range a.patternListTag {
+	for _, tag := range a.seqTags {
 		patternOccurence[tag] = make([]int, 3)
 	}
 	for key, _ := range a.patternInterval {
-		for _, tag := range a.patternListTag {
+		for _, tag := range a.seqTags {
 			patternOccurence[tag][0] += a.patternOccurence[key][tag]
 			if a.patternOccurence[key][tag] != 0 {
 				patternOccurence[tag][1] += 1
@@ -825,9 +851,9 @@ func (a *PatternAnalysis) genPatternOrderList() {
 			}
 		}
 	}
-	for i, iTag := range a.patternListTag {
+	for i, iTag := range a.seqTags {
 		var order uint64
-		for j, jTag := range a.patternListTag {
+		for j, jTag := range a.seqTags {
 			if i == j {
 				if patternOccurence[jTag][2] == 0 {
 					order = order | (1 << j)
@@ -838,7 +864,19 @@ func (a *PatternAnalysis) genPatternOrderList() {
 				}
 			}
 		}
-		a.patternOrderList[i] = order
+		a.seqOrderList[i] = order
+	}
+}
+
+func (a *PatternAnalysis) genSeqSeqList() {
+	for i, iTag := range a.seqTags {
+		var nexts uint64
+		for j, jTag := range a.seqTags {
+			if a.patternSeqGraph[iTag][jTag] > 0 {
+				nexts = nexts | (1 << j)
+			}
+		}
+		a.seqSeqList[i] = nexts
 	}
 }
 
@@ -1069,14 +1107,25 @@ func (a *PatternAnalysis) PostProcess(flag Flag) {
 	a.seqTreeRoot.Print(a)
 	//i := 0
 	for {
-		extracted := a.extractPattern(a.seqTreeRoot, a.patTreeRoot)
-		purged := a.PurgeTree2(a.seqTreeRoot, a.patTreeRoot)
-
 		//i += 1
 		//fmt.Print("--------------------------------------------------------------------------------\n")
-		//fmt.Printf("purging #%v purged=%v extracted=%v\n", i, purged, extracted)
+		//fmt.Printf("purging #%v\n", i)
+		extracted := a.extractPattern(a.seqTreeRoot, a.patTreeRoot)
+		//fmt.Print("--------------------------------------------------------------------------------\n")
+		//fmt.Print("pattern tree\n")
+		//a.patTreeRoot.Print(a)
+		//fmt.Print("--------------------------------------------------------------------------------\n")
+		//fmt.Print("sequence tree\n")
 		//a.seqTreeRoot.Print(a)
-
+		purged := a.PurgeTree2(a.seqTreeRoot, a.patTreeRoot)
+		//fmt.Print("--------------------------------------------------------------------------------\n")
+		//fmt.Printf("purging #%v purged=%v extracted=%v\n", i, purged, extracted)
+		//fmt.Print("--------------------------------------------------------------------------------\n")
+		//fmt.Print("pattern tree\n")
+		//a.patTreeRoot.Print(a)
+		//fmt.Print("--------------------------------------------------------------------------------\n")
+		//fmt.Print("sequence tree\n")
+		//a.seqTreeRoot.Print(a)
 		if !purged && !extracted {
 			break
 		}
@@ -1089,16 +1138,17 @@ func (a *PatternAnalysis) PostProcess(flag Flag) {
 	a.seqTreeRoot.Print(a)
 	a.AnalyzeInterPatternOrder()
 	a.AnalyzeInterPatternSequence()
-	a.GenPatternList()
+	a.GenSeqPolicy()
 }
 
-func (a *PatternAnalysis) GenPatternList() {
+func (a *PatternAnalysis) GenSeqPolicy() {
 	fmt.Print("--------------------------------------------------------------------------------\n")
 	nodeStack := make([]*TaggedSyscallNode, 0)
-	a.genPatternList(a.seqTreeRoot, nodeStack)
+	a.genSeqTreeList(a.seqTreeRoot, nodeStack)
 	a.genUniqueNodeList(a.seqTreeRoot)
-	a.genPatternOrderList()
-	for _, p := range a.patternList {
+	a.genSeqOrderList()
+	a.genSeqSeqList()
+	for _, p := range a.seqTreeList {
 		for _, s := range p {
 			fmt.Print("%v ", s)
 		}

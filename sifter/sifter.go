@@ -937,7 +937,7 @@ func (sifter *Sifter) GenerateMapSection() {
 		if a := sifter.GetAnalysis("pattern analysis"); a != nil {
 			pa, _ := a.(*PatternAnalysis)
 			fmt.Fprintf(s, "#define SC_ID_MAX %d\n", len(pa.uniqueSyscallList))
-			fmt.Fprintf(s, "#define SC_SEQ_MAX %d\n", len(pa.patternList))
+			fmt.Fprintf(s, "#define SC_SEQ_MAX %d\n", len(pa.seqTreeList))
 			fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_id_map, HASH, struct syscall_id_key, uint8_t, SC_ID_MAX);\n")
 			fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_id_curr, HASH, uint32_t, struct syscall_id_key, 128);\n")
 			fmt.Fprintf(s, "DEFINE_BPF_MAP(syscall_seq_tree, ARRAY, int, struct syscall_seq, SC_SEQ_MAX);\n")
@@ -1173,7 +1173,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 			fmt.Fprintf(s, "    bool end = false;\n")
 			fmt.Fprintf(s, "    int seq_id;\n")
 			fmt.Fprintf(s, "    struct syscall_seq *seq;\n")
-			for i := 0; i < len(pa.patternList); i++ {
+			for i := 0; i < len(pa.seqTreeList); i++ {
 				fmt.Fprintf(s, "    seq_id = %v;\n", i)
 				fmt.Fprintf(s, "    seq = bpf_syscall_seq_tree_lookup_elem(&seq_id);\n")
 				fmt.Fprintf(s, "    if (seq) {\n")
@@ -1203,7 +1203,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 			fmt.Fprintf(s, "    }\n")
 			fmt.Fprintf(s, "\n")
 			fmt.Fprintf(s, "    bool ok = false;\n")
-			for i := 0; i < len(pa.patternList); i++ {
+			for i := 0; i < len(pa.seqTreeList); i++ {
 				fmt.Fprintf(s, "    if (%d >= l && %d <= u) { ok |= check_seq_order(%d, *syscall_seq_seq, *seqs_curr); }\n", i, i, i)
 			}
 			fmt.Fprintf(s, "\n")
@@ -1280,7 +1280,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 			fmt.Fprintf(s, "void __always_inline init_syscall_seq_tree() {\n")
 			fmt.Fprintf(s, "    int id = 0;\n")
 			fmt.Fprintf(s, "    struct syscall_seq seqs;\n")
-			for pi, pattern := range pa.patternList {
+			for pi, pattern := range pa.seqTreeList {
 				fmt.Fprintf(s, "    id = %d; ", pi)
 				for psi, ps := range pattern {
 					idx := 0
@@ -1303,8 +1303,8 @@ func (sifter *Sifter) GenerateHelperSection() {
 			fmt.Fprintf(s, "void __always_inline init_syscall_seq_order() {\n")
 			fmt.Fprintf(s, "    uint8_t id = 0;\n")
 			fmt.Fprintf(s, "    uint64_t seq_order;\n")
-			for pi, _ := range pa.patternList {
-				fmt.Fprintf(s, "    id = %d; seq_order= 0x%x;\n", pi, pa.patternOrderList[pi])
+			for pi, _ := range pa.seqTreeList {
+				fmt.Fprintf(s, "    id = %d; seq_order= 0x%x;\n", pi, pa.seqOrderList[pi])
 				fmt.Fprintf(s, "    bpf_syscall_seq_order_update_elem(&id, &seq_order, BPF_ANY);\n")
 			}
 			fmt.Fprintf(s, "}\n")
@@ -1312,8 +1312,8 @@ func (sifter *Sifter) GenerateHelperSection() {
 			fmt.Fprintf(s, "void __always_inline init_syscall_seq_seq() {\n")
 			fmt.Fprintf(s, "    uint8_t id = 0;\n")
 			fmt.Fprintf(s, "    uint64_t seq_seq;\n")
-			for pi, _ := range pa.patternList {
-				fmt.Fprintf(s, "    id = %d; seq_seq= 0x%x;\n", pi, pa.patternOrderList[pi])
+			for pi, _ := range pa.seqTreeList {
+				fmt.Fprintf(s, "    id = %d; seq_seq= 0x%x;\n", pi, pa.seqSeqList[pi])
 				fmt.Fprintf(s, "    bpf_syscall_seq_seq_update_elem(&id, &seq_seq, BPF_ANY);\n")
 			}
 			fmt.Fprintf(s, "}\n")
@@ -1864,8 +1864,8 @@ func (sifter *Sifter) TrainAndTest() {
 		pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 		pa.SetGroupingThreshold(SyscallGrouping, 1)
 		pa.SetPatternOrderThreshold(0.8)
-		pa.SetUnitOfAnalysis(TraceLevel)
-		//pa.SetUnitOfAnalysis(ProcessLevel)
+		//pa.SetUnitOfAnalysis(TraceLevel)
+		pa.SetUnitOfAnalysis(ProcessLevel)
 
 		//sifter.AddAnalysis(&vra)
 		sifter.AddAnalysis(&la)
