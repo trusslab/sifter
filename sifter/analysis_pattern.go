@@ -209,18 +209,6 @@ func (a *PatternAnalysis) newAnalysisUnitKey(te *TraceEvent) (bool, AnalysisUnit
 	return false, AnalysisUnitKey{te.trace, 0, 0}
 }
 
-func (a *PatternAnalysis) isTraceAssociateWithUnitKey(te *TraceEvent, key AnalysisUnitKey) bool {
-	if regID, fd := te.GetFD(); regID != -1 {
-		switch a.unitOfAnalysis {
-		case ProcessLevel:
-			return fd == key.fd && te.trace == key.trace && te.id == key.pid
-		case TraceLevel:
-			return fd == key.fd && te.trace == key.trace
-		}
-	}
-	return false
-}
-
 type FilterState struct {
 	lastNode         *TaggedSyscallNode
 	patternRecorded  map[int]bool
@@ -234,7 +222,6 @@ type PatternTimestamp struct {
 type PatternAnalysis struct {
 	groupingMethods   map[Grouping]GroupingMethod
 	lastNodeOfPid     map[uint32]*TaggedSyscallNode
-	firstAndLastOfPid map[uint32][]*TraceEvent
 	seqTreeRoot       *TaggedSyscallNode
 	patTreeRoot       *TaggedSyscallNode
 	tagCounter        int
@@ -268,7 +255,6 @@ func (a *PatternAnalysis) String() string {
 
 func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.lastNodeOfPid = make(map[uint32]*TaggedSyscallNode)
-	a.firstAndLastOfPid = make(map[uint32][]*TraceEvent)
 	a.seqTreeRoot = new(TaggedSyscallNode)
 	a.seqTreeRoot.syscall = new(TaggedSyscall)
 	a.patTreeRoot = new(TaggedSyscallNode)
@@ -326,13 +312,8 @@ func (a *PatternAnalysis) toBreakDown(te *TraceEvent) bool {
 }
 
 func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
-	if te.typ != 0 {
-		if _, ok := a.firstAndLastOfPid[te.id]; !ok {
-			a.firstAndLastOfPid[te.id] = append(a.firstAndLastOfPid[te.id], te)
-			a.firstAndLastOfPid[te.id] = append(a.firstAndLastOfPid[te.id], nil)
-		} else {
-			a.firstAndLastOfPid[te.id][1] = te
-		}
+	if (te.flag & TraceEventFlagBadData) != 0 {
+		return
 	}
 
 	if te.typ == 0 {
@@ -695,54 +676,6 @@ func (a *PatternAnalysis) extractPattern(osn *TaggedSyscallNode, opn *TaggedSysc
 	return extracted
 }
 
-func (a *PatternAnalysis) getPhaseString(n *TaggedSyscallNode) string {
-	s := ""
-
-	if len(n.events) == 0 {
-		return s
-	}
-
-	phaseFlag := 0
-	startEvent := n.events[0]
-	endEvent := n.events[len(n.events)-1]
-	startEventProcStartTime := a.firstAndLastOfPid[startEvent.id][0].ts
-	startEventProcEndTime := a.firstAndLastOfPid[startEvent.id][1].ts
-	startEventProcTime := startEventProcEndTime - startEventProcStartTime
-	endEventProcStartTime := a.firstAndLastOfPid[endEvent.id][0].ts
-	endEventProcEndTime := a.firstAndLastOfPid[endEvent.id][1].ts
-	endEventProcTime := endEventProcEndTime - endEventProcStartTime
-	startEventTimePct := float64((startEvent.ts - startEventProcStartTime)) / float64(startEventProcTime)
-	endEventTimePct := float64((endEvent.ts - endEventProcStartTime)) / float64(endEventProcTime)
-	//s += fmt.Sprintf(" %.4f %.4f", startEventTimePct, endEventTimePct)
-	//s += fmt.Sprintf(" %e %e", float64(startEvent.ts - startEventProcStartTime), float64(endEvent.ts - endEventProcStartTime))
-	//s += fmt.Sprintf(" %e %e", float64(startEventProcEndTime - startEvent.ts), float64(endEventProcEndTime - endEvent.ts))
-	if startEvent.ts - startEventProcStartTime < 100000000 && endEvent.ts - endEventProcStartTime < 100000000 {
-		phaseFlag |= (1 << 0)
-	}
-	if startEventProcEndTime - startEvent.ts < 100000000 && endEventProcEndTime - endEvent.ts < 100000000 {
-		phaseFlag |= (1 << 4)
-	}
-	if startEventTimePct < 0.001 && endEventTimePct < 0.001 {
-		phaseFlag |= (1 << 1)
-	}
-	if startEventTimePct > 0.999 && endEventTimePct > 0.999 {
-		phaseFlag |= (1 << 5)
-	}
-
-	if phaseFlag != 0 {
-		s += fmt.Sprintf(" [")
-		if initFlag := (phaseFlag & 0x0000000f) >> 0; initFlag != 0 {
-			s += fmt.Sprintf("i%v", initFlag)
-		}
-		if termFlag := (phaseFlag & 0x000000f0) >> 4; termFlag != 0 {
-			s += fmt.Sprintf("t%v", termFlag)
-		}
-		s += fmt.Sprintf("]")
-	}
-
-	return s
-}
-
 func getPidsUniqueString(n *TaggedSyscallNode) string {
 	s := ""
 	pidsUnique := true
@@ -785,7 +718,6 @@ func (n *TaggedSyscallNode) print(depth *int, depthsWithChildren map[int]bool, h
 		}
 	} else {
 		s += fmt.Sprintf("[%v]%v%v", *depth, n.syscall.syscall.name, n.syscall.tags)
-//		s += fmt.Sprintf("%v", a.getPhaseString(n))
 		s += fmt.Sprintf("%v", getPidsUniqueString(n))
 	}
 
@@ -893,37 +825,23 @@ func (a *PatternAnalysis) genSeqSeqList() {
 	}
 }
 
-func (a *PatternAnalysis) findRangeOfTrace(n *TaggedSyscallNode, key AnalysisUnitKey) (int, uint64, uint64) {
-	var first, last uint64
-	found := 0
-	for _, event := range n.events {
-		if a.isTraceAssociateWithUnitKey(event, key) {
-			if first == 0 {
-				first = event.ts
-				last = event.ts
-			} else {
-				if event.ts < first {
-					first = event.ts
-				}
-				if event.ts > last {
-					last = event.ts
-				}
-			}
-			found += 1
-		}
-	}
-	return found, first, last
-}
-
 func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
 	if idx := n.findEndChild(); idx != -1 && n != a.seqTreeRoot {
 		tag := n.next[idx].tag
-		for key, _ := range a.patternInterval {
-			if found, first, last := a.findRangeOfTrace(n, key); found >= 0 {
-				a.patternInterval[key][tag] = append(a.patternInterval[key][tag], first)
-				a.patternInterval[key][tag] = append(a.patternInterval[key][tag], last)
-				a.patternOccurence[key][tag] += found
+		fmt.Printf("get seq time interval of tag:%v len:%v\n", tag, len(n.events))
+		for _, te := range n.events {
+			_, key := a.newAnalysisUnitKey(te)
+			if interval, ok := a.patternInterval[key][tag]; !ok {
+				a.patternInterval[key][tag] = []uint64{te.ts, te.ts}
+			} else {
+				if te.ts < interval[0] {
+					a.patternInterval[key][tag][0] = te.ts
+				}
+				if te.ts > interval[1] {
+					a.patternInterval[key][tag][1] = te.ts
+				}
 			}
+			a.patternOccurence[key][tag] += 1
 		}
 	}
 	for _, next := range n.next {
