@@ -244,6 +244,10 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall) error {
 	}
 }
 
+const (
+	TraceEventFlagBadData = 1
+)
+
 type TraceEvent struct {
 	ts      uint64
 	id      uint32
@@ -251,6 +255,7 @@ type TraceEvent struct {
 	trace   *Trace
 	data    []byte
 	tags    []int
+	flag    int
 	typ     int
 	ret     uint64
 }

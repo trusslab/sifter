@@ -7,34 +7,57 @@ import (
 )
 
 type FlagSet struct {
-	values map[uint64]int
+	values map[uint64][]int
 	idx    int
 }
 
-func (flags *FlagSet) Update(v uint64, f AnalysisFlag) int {
-	count, _ := flags.values[v]
-
-	if f == TrainFlag {
-		flags.values[v] += 1
+func (flags *FlagSet) Update(v uint64, f AnalysisFlag, opt int) (bool, bool) {
+	_, ok := flags.values[v]
+	if !ok {
+		flags.values[v] = make([]int, 2)
 	}
 
-	return count
+	update := false
+	updateOL := false
+	if f == TrainFlag {
+		if opt == 0 {
+			flags.values[v][0] += 1
+			update = !ok
+		} else if opt == 1 {
+			if flags.values[v][0] == 0 {
+				updateOL = true
+			}
+		}
+	} else if f == TestFlag {
+		if flags.values[v][0] == 0 {
+			flags.values[v][1] += 1
+			if flags.values[v][1] > 10 {
+				fmt.Printf("Warning: might have a false positive\n")
+				update = true
+			} else {
+				updateOL = true
+			}
+		}
+	}
+
+	return update, updateOL
 }
 
 func (flags *FlagSet) RemoveOutlier() bool {
 	sum := 0
 	for _, c := range flags.values {
-		sum += c
+		sum += c[0]
 	}
 	freqThreshold := 0.0001
 	absThreshold := 10
 	fmt.Printf("flags outliers:\n")
 	hasOutliers := false
 	for v, c := range flags.values {
-		if float64(c) / float64(sum) < freqThreshold && c < absThreshold {
+		if float64(c[0]) / float64(sum) < freqThreshold && c[0] < absThreshold {
 			fmt.Printf("%v ", v)
 			hasOutliers = true
-			delete(flags.values, v)
+			//delete(flags.values, v)
+			flags.values[v][0] = 0
 		}
 		fmt.Printf("\n")
 	}
@@ -43,7 +66,7 @@ func (flags *FlagSet) RemoveOutlier() bool {
 
 func newFlagSet(idx int) *FlagSet {
 	newFlags := new(FlagSet)
-	newFlags.values = make(map[uint64]int)
+	newFlags.values = make(map[uint64][]int)
 	newFlags.idx = idx
 	return newFlags
 }
@@ -142,22 +165,35 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 		return "", 0, 0
 	}
 
+	var ol []bool
 	msgs := make([]string, 0)
 	var offset uint64
 	for i, arg := range te.syscall.def.Args {
 		if te.syscall.def.CallName == "ioctl" && i == 1 {
 			_, tr := te.GetData(offset, 8)
-			if a.regFlags[te.syscall][arg].Update(tr, flag) == 0 {
+			update, updateOL := a.regFlags[te.syscall][arg].Update(tr, flag, opt)
+			if update || updateOL {
 				msgs = append(msgs, fmt.Sprintf("reg[%v] new flag %x", i, tr))
+				ol  = append(ol, updateOL)
 			}
-			te.tags = append(te.tags, int(tr))
+			if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
+				te.tags = append(te.tags, int(tr))
+			} else {
+				te.flag = te.flag | TraceEventFlagBadData
+			}
 		}
 		if _, isFlagsArg := arg.(*prog.FlagsType); isFlagsArg {
 			_, tr := te.GetData(offset, 8)
-			if a.regFlags[te.syscall][arg].Update(tr, flag) == 0 {
+			update, updateOL := a.regFlags[te.syscall][arg].Update(tr, flag, opt)
+			if update || updateOL {
 				msgs = append(msgs, fmt.Sprintf("reg[%v] new flag %x", i, tr))
+				ol  = append(ol, updateOL)
 			}
-			te.tags = append(te.tags, int(tr))
+			if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
+				te.tags = append(te.tags, int(tr))
+			} else {
+				te.flag = te.flag | TraceEventFlagBadData
+			}
 		}
 		offset += 8
 	}
@@ -167,20 +203,32 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 			for _, field := range structArg.Fields {
 				if _, isFlagsArg := field.(*prog.FlagsType); isFlagsArg {
 					_, tr := te.GetData(offset, field.Size())
-					if a.argFlags[argMap][field].Update(tr, flag) == 0{
+					update, updateOL := a.argFlags[argMap][field].Update(tr, flag, opt)
+					if update || updateOL {
 						msgs = append(msgs, fmt.Sprintf("%v::%v new flag %x", argMap.name, field.Name(), tr))
+						ol  = append(ol, updateOL)
 					}
-					te.tags = append(te.tags, int(tr))
+					if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
+						te.tags = append(te.tags, int(tr))
+					} else {
+						te.flag = te.flag | TraceEventFlagBadData
+					}
 				}
 				offset += field.Size()
 			}
 		} else {
 			if flagArg, isFlagsArg := argMap.arg.(*prog.FlagsType); isFlagsArg {
 				_, tr := te.GetData(offset, flagArg.Size())
-				if a.argFlags[argMap][argMap.arg].Update(tr, flag) == 0{
+				update, updateOL := a.argFlags[argMap][argMap.arg].Update(tr, flag, opt)
+				if update || updateOL {
 					msgs = append(msgs, fmt.Sprintf("%v new flag %x", argMap.name, tr))
+					ol  = append(ol, updateOL)
 				}
-				te.tags = append(te.tags, int(tr))
+				if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
+					te.tags = append(te.tags, int(tr))
+				} else {
+					te.flag = te.flag | TraceEventFlagBadData
+				}
 			}
 			offset += argMap.size
 		}
@@ -212,20 +260,32 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 						for _, ff := range structField.Fields {
 							if _, isFlagsArg := ff.(*prog.FlagsType); isFlagsArg {
 								_, tr := te.GetData(offset+fieldOffset, ff.Size())
-								if a.vlrFlags[vlr][vlrRecord][ff].Update(tr, flag) == 0 {
+								update, updateOL := a.vlrFlags[vlr][vlrRecord][ff].Update(tr, flag, opt)
+								if update || updateOL {
 									msgs = append(msgs, fmt.Sprintf("%v_%v_%v new flag %x", vlrRecord.name, f.FieldName(), ff.FieldName(), tr))
+									ol  = append(ol, updateOL)
 								}
-								te.tags = append(te.tags, int(tr))
+								if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
+									te.tags = append(te.tags, int(tr))
+								} else {
+									te.flag = te.flag | TraceEventFlagBadData
+								}
 							}
 							fieldOffset += ff.Size()
 						}
 					} else {
 						if _, isFlagsArg := f.(*prog.FlagsType); isFlagsArg {
 							_, tr := te.GetData(offset, f.Size())
-							if a.vlrFlags[vlr][vlrRecord][f].Update(tr, flag) == 0 {
+							update, updateOL := a.vlrFlags[vlr][vlrRecord][f].Update(tr, flag, opt)
+							if update || updateOL {
 								msgs = append(msgs, fmt.Sprintf("%v_%v new flag %x", vlrRecord.name, f.FieldName(), tr))
+								ol  = append(ol, updateOL)
 							}
-							te.tags = append(te.tags, int(tr))
+							if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
+								te.tags = append(te.tags, int(tr))
+							} else {
+								te.flag = te.flag | TraceEventFlagBadData
+							}
 						}
 					}
 					offset += f.Size()
@@ -236,19 +296,28 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 			}
 		}
 	}
-	updatedRangesLen := len(msgs)
-	updatedRangesMsg := ""
+	updateMsg := ""
+	updateFP := 0
+	updateTP := 0
 	for i, msg := range msgs {
-		updatedRangesMsg += msg
-		if i != updatedRangesLen-1 {
-			updatedRangesMsg += ", "
+		updateMsg += msg
+		if ol[i] {
+			updateMsg += " outlier"
+			updateTP += 1
+		} else {
+			updateFP += 1
+		}
+		if i != len(msg)-1 {
+			updateMsg += ", "
 		}
 	}
-	return updatedRangesMsg, updatedRangesLen, 0
+	return updateMsg, updateFP, updateTP
 }
 
 func (a *FlagAnalysis) PostProcess(opt int) {
-	a.RemoveOutliers()
+	if opt == 0 {
+		a.RemoveOutliers()
+	}
 }
 
 func (a *FlagAnalysis) RemoveOutliers() {

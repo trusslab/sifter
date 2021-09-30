@@ -1492,7 +1492,7 @@ func (sifter *Sifter) DoAnalyses(name string, flag AnalysisFlag, analysesConfigs
 		updateMsg := ""
 		for _, ac := range analysesConfigs {
 			if msg, update, updateOL := ac.a.ProcessTraceEvent(te, flag, ac.opt); update > 0 || updateOL > 0 {
-				updateMsg += fmt.Sprintf("  ├ %v: %v\n", ac.a, msg)
+				updateMsg += fmt.Sprintf("%v: %v;", ac.a, msg)
 				if updateOL > 0 {
 					updatedTeOLNum += 1
 				} else {
@@ -1510,9 +1510,8 @@ func (sifter *Sifter) DoAnalyses(name string, flag AnalysisFlag, analysesConfigs
 
 			if sifter.verbose >= AllTraceV || updateMsg != "" {
 				fmt.Printf("%v", te)
+				fmt.Printf("  ├ update(%v/%v) %v\n", updatedTeNum, updatedTeOLNum, updateMsg)
 			}
-
-			fmt.Printf("(%v/%v) %v", updatedTeNum, updatedTeOLNum, updateMsg)
 		}
 	}
 
@@ -1801,8 +1800,8 @@ func (sifter *Sifter) TrainAndTest() {
 				sifter.traces[filePath].ClearEvents()
 			}
 
-			for _, analysis := range sifter.analyses {
-				analysis.PostProcess(TrainFlag)
+			for _, ac := range round.ac {
+				ac.a.PostProcess(ac.opt)
 			}
 
 			fmt.Printf("#trace size: %v\n", traceSize[ri])

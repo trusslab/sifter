@@ -406,12 +406,12 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 	}
 	updateMsg := ""
 	updateFP := 0
-	updateFN := 0
+	updateTP := 0
 	for i, msg := range msgs {
 		updateMsg += msg
 		if ol[i] {
 			updateMsg += " outlier"
-			updateFN += 1
+			updateTP += 1
 		} else {
 			updateFP += 1
 		}
@@ -419,11 +419,13 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 			updateMsg += ", "
 		}
 	}
-	return updateMsg, updateFP, updateFN
+	return updateMsg, updateFP, updateTP
 }
 
 func (a *LenAnalysis) PostProcess(opt int) {
-	a.RemoveOutliers()
+	if opt == 0 {
+		a.RemoveOutliers()
+	}
 }
 
 func (a *LenAnalysis) RemoveOutliers() {
