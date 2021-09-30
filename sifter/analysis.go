@@ -4,10 +4,10 @@ import (
 	"github.com/google/syzkaller/prog"
 )
 
-type Flag int
+type AnalysisFlag int
 
 const (
-	TrainFlag Flag = iota
+	TrainFlag AnalysisFlag = iota
 	TestFlag
 )
 
@@ -15,9 +15,8 @@ type Analysis interface {
 	String() string
 	Init(TracedSyscalls *map[string][]*Syscall)
 	Reset()
-	ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int)
-	PostProcess(flag Flag)
+	ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt int) (string, int, int)
+	PostProcess(opt int)
 	PrintResult(v Verbose)
 	GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint
 }
-

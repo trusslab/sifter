@@ -9,10 +9,10 @@ import (
 type VlrSequenceNode struct {
 	next       []*VlrSequenceNode
 	record     *VlrRecord
-	counts     map[Flag]uint64
+	counts     map[AnalysisFlag]uint64
 	events     []*TraceEvent
 	tag        int
-	flag       Flag
+	flag       AnalysisFlag
 }
 
 type VlrAnalysis struct {
@@ -38,7 +38,7 @@ func (a *VlrAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 func (a *VlrAnalysis) Reset() {
 }
 
-func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
+func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt int) (string, int, int) {
 	if te.typ != 1 || te.syscall.vlrMaps == nil {
 		return "", 0, 0
 	}
@@ -93,7 +93,7 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 			} else {
 				newNode := new(VlrSequenceNode)
 				newNode.record = matchedRecord
-				newNode.counts = make(map[Flag]uint64)
+				newNode.counts = make(map[AnalysisFlag]uint64)
 				node.next = append(node.next, newNode)
 				node = newNode
 				if flag == TestFlag {
@@ -178,7 +178,7 @@ func (n *VlrSequenceNode) Print() {
 	n._Print(&depth, depthsWithOtherChildren, false)
 }
 
-func (a *VlrAnalysis) PostProcess(flag Flag) {
+func (a *VlrAnalysis) PostProcess(opt int) {
 }
 
 func (a *VlrAnalysis) PrintResult(v Verbose) {

@@ -1,19 +1,14 @@
 package sifter
 
 import (
-	"bufio"
 	"bytes"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
-	"strconv"
 
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/prog"
@@ -44,6 +39,18 @@ type Context struct {
 	errorRetVal    string
 }
 
+type AnalysisRound struct {
+	flag   AnalysisFlag
+	ac     []AnalysisConfig
+//	traces []*Trace
+	files []os.FileInfo
+}
+
+type AnalysisConfig struct {
+	a    Analysis
+	opt  int
+}
+
 type Sifter struct {
 	mode           Mode
 	verbose        Verbose
@@ -51,7 +58,6 @@ type Sifter struct {
 	structs        []*prog.StructType
 	syscalls       []*prog.Syscall
 	moduleSyscalls map[string][]*Syscall
-	otherSyscalls  map[uint64]*Syscall
 	otherSyscall   *Syscall
 
 	stackVarId int
@@ -59,9 +65,10 @@ type Sifter struct {
 
 	traceDir   string
 	traceFiles []os.FileInfo
-	trace      []*TraceEvent
-	traceInfo  map[string]*TraceInfo
+	traces     map[string]*Trace
 
+	analysisRounds  []AnalysisRound
+	analysesConfigs [][]AnalysisConfig
 	analyses        []Analysis
 	trainTestSplit  float64
 	trainTestIter   int
@@ -109,10 +116,8 @@ func NewSifter(f Flags) (*Sifter, error) {
 	s.sections = make(map[string]*bytes.Buffer)
 	s.syscalls = make([]*prog.Syscall, 512)
 	s.moduleSyscalls = make(map[string][]*Syscall)
-	s.otherSyscalls = make(map[uint64]*Syscall)
 	s.traceDir = f.Trace
-	s.trace = make([]*TraceEvent, 0)
-	s.traceInfo = make(map[string]*TraceInfo)
+	s.traces = make(map[string]*Trace)
 	s.stackVarId = 0
 	s.depthLimit = math.MaxInt32
 	s.verbose = Verbose(f.Verbose)
@@ -161,6 +166,11 @@ func NewSifter(f Flags) (*Sifter, error) {
 			return nil, fmt.Errorf("failed to create output dir %v", f.Outdir)
 		}
 	}
+
+	s.otherSyscall = new(Syscall)
+	s.otherSyscall.name = "other_syscalls"
+	s.otherSyscall.traceSizeBits = 18
+	s.otherSyscall.syscalls = make(map[uint64]*Syscall)
 
 	for _, syscall := range s.target.Syscalls {
 		// Build original syscall list
@@ -215,16 +225,13 @@ func NewSifter(f Flags) (*Sifter, error) {
 				tracedSyscall.traceSizeBits = 10
 				s.moduleSyscalls[callName] = append(s.moduleSyscalls[callName], tracedSyscall)
 			}
-		} else if _, ok := s.otherSyscalls[syscall.NR]; !ok {
+		} else if _, ok := s.otherSyscall.syscalls[syscall.NR]; !ok {
 			otherSyscall := new(Syscall)
 			otherSyscall.name = fixName(syscall.Name)
 			otherSyscall.def = syscall
 			otherSyscall.traceSizeBits = 18
-			s.otherSyscalls[syscall.NR] = otherSyscall
+			s.otherSyscall.syscalls[syscall.NR] = otherSyscall
 		}
-		s.otherSyscall = new(Syscall)
-		s.otherSyscall.name = "other_syscalls"
-		s.otherSyscall.traceSizeBits = 18
 	}
 
 	if len(s.devName) == 0 {
@@ -252,17 +259,34 @@ func (sifter *Sifter) Iter() int {
 	return sifter.trainTestIter
 }
 
-func (sifter *Sifter) AddAnalysis(a Analysis) {
-	sifter.analyses = append(sifter.analyses, a)
-	a.Init(&sifter.moduleSyscalls)
+func (sifter *Sifter) CreateAnalysisRound(round int, flag AnalysisFlag, files []os.FileInfo) int {
+	sifter.analysisRounds = append(sifter.analysisRounds, AnalysisRound{flag, make([]AnalysisConfig, 0), files})
+	return len(sifter.analysisRounds)-1
+}
+
+func (sifter *Sifter) AddAnalysisToRound(round int, a Analysis, opt int) {
+	if len(sifter.analysisRounds) < round+1 {
+		return
+	}
+
+	analysisExist := false
+	for _, analysis := range sifter.analyses {
+		if analysis.String() == a.String() {
+			analysisExist = true
+		}
+	}
+
+	if !analysisExist {
+		sifter.analyses = append(sifter.analyses, a)
+		a.Init(&sifter.moduleSyscalls)
+	}
+
+	sifter.analysisRounds[round].ac = append(sifter.analysisRounds[round].ac, AnalysisConfig{a, opt})
 }
 
 func (sifter *Sifter) ClearAnalysis() {
-	sifter.analyses = nil
-}
-
-func (sifter *Sifter) ClearTrace() {
-	sifter.trace = nil
+	sifter.analyses = make([]Analysis, 0)
+	sifter.analysisRounds = make([]AnalysisRound, 0)
 }
 
 func (sifter *Sifter) GetAnalysis(name string) Analysis {
@@ -1450,14 +1474,14 @@ func toSecString(ns uint64) string {
 	return fmt.Sprintf("%v.%09d", ns/1000000000, ns%1000000000)
 }
 
-func (sifter *Sifter) DoAnalyses(flag Flag) (int, int) {
-
+func (sifter *Sifter) DoAnalyses(name string, flag AnalysisFlag, analysesConfigs []AnalysisConfig) (int, int) {
 	lastUpdatedTeIdx := 0
 	updatedTeNum := 0
 	updatedTeOLNum := 0
 	var lastTe *TraceEvent
-	for i, _ := range sifter.trace {
-		te := sifter.trace[i]
+
+	for i, _ := range sifter.traces[name].events {
+		te := sifter.traces[name].events[i]
 
 		if lastTe != nil && te.ts == lastTe.ts && te.syscall == lastTe.syscall {
 			continue
@@ -1465,39 +1489,10 @@ func (sifter *Sifter) DoAnalyses(flag Flag) (int, int) {
 			lastTe = te
 		}
 
-//		allZero := true
-//		for _, e := range te.data {
-//			if e != 0 {
-//				allZero = false
-//				break
-//			}
-//		}
-//		if allZero {
-//			if te.syscall != nil {
-//				fmt.Printf("AZ %d %x %v\n", te.typ, te.id, te.syscall.name)
-//			} else {
-//				fmt.Printf("AZ %d %x nil\n", te.typ, te.id)
-//			}
-//			continue
-//		}
-
 		updateMsg := ""
-		for _, analysis := range sifter.analyses {
-			if msg, update, updateOL := analysis.ProcessTraceEvent(te, flag); update > 0 || updateOL > 0 {
-				updateMsg += fmt.Sprintf("  ├ %v: %v\n", analysis, msg)
-				updateMsg += fmt.Sprintf("  ├ raw data:\n")
-				for bi, b := range te.data {
-					if bi % 64 == 0 {
-						updateMsg += fmt.Sprintf("  | %8d: ", bi)
-					}
-					if bi % 4 == 0 {
-						updateMsg += fmt.Sprintf(" ")
-					}
-					updateMsg += fmt.Sprintf("%02x ", b)
-					if bi % 64 == 63 || bi == len(te.data)-1 {
-						updateMsg += fmt.Sprintf("\n")
-					}
-				}
+		for _, ac := range analysesConfigs {
+			if msg, update, updateOL := ac.a.ProcessTraceEvent(te, flag, ac.opt); update > 0 || updateOL > 0 {
+				updateMsg += fmt.Sprintf("  ├ %v: %v\n", ac.a, msg)
 				if updateOL > 0 {
 					updatedTeOLNum += 1
 				} else {
@@ -1508,183 +1503,61 @@ func (sifter *Sifter) DoAnalyses(flag Flag) (int, int) {
 
 		if sifter.verbose >= UpdateV {
 			if sifter.verbose < AllTraceV && updateMsg != "" {
-				timeElapsed := te.ts - sifter.trace[lastUpdatedTeIdx].ts
+				timeElapsed := te.ts - sifter.traces[name].events[lastUpdatedTeIdx].ts
 				fmt.Printf("  | %v events / %v sec elapsed\n", i-lastUpdatedTeIdx, toSecString(timeElapsed))
 				lastUpdatedTeIdx = i
 			}
 
 			if sifter.verbose >= AllTraceV || updateMsg != "" {
-				fmt.Printf("[%v] update:(%d/%d) ", toSecString(te.ts), updatedTeNum, updatedTeOLNum)
-				if te.typ == 0 {
-					switch (te.id & 0x0fff0000) >> 16 {
-					case 1:
-						fmt.Printf("start ")
-					case 2:
-						fmt.Printf("lost %v events ", binary.LittleEndian.Uint32(te.data))
-					default:
-						fmt.Printf("unknown id %v ", te.id)
-					}
-				} else {
-					if procName, ok := te.info.pidComm[te.id]; ok {
-						fmt.Printf("%v", procName)
-					}
-					fmt.Printf("(%d) %v %v ", te.id, te.syscall.name, te.tags)
-					if regID, fd := te.GetFD(); regID != -1 {
-						fmt.Printf("fd(%d) ", fd)
-					}
-				}
-				if i == len(sifter.trace)-1 {
-					fmt.Printf("end of trace")
-				}
-				fmt.Printf("\n")
+				fmt.Printf("%v", te)
 			}
 
-			fmt.Printf("%v", updateMsg)
+			fmt.Printf("(%v/%v) %v", updatedTeNum, updatedTeOLNum, updateMsg)
 		}
 	}
 
 	if sifter.verbose >= ResultV {
-		for _, analysis := range sifter.analyses {
+		for _, ac := range analysesConfigs {
 			fmt.Printf("================================================================================\n")
-			fmt.Printf("%v result:\n", analysis)
-			analysis.PrintResult(sifter.verbose)
+			fmt.Printf("%v result:\n", ac.a)
+			ac.a.PrintResult(sifter.verbose)
 		}
+		fmt.Print("================================================================================\n")
 	}
-	for _, analysis := range sifter.analyses {
-		analysis.Reset()
+
+	for _, ac := range analysesConfigs {
+		ac.a.Reset()
 	}
 	return updatedTeNum, updatedTeOLNum
 }
 
-func (sifter *Sifter) ReadTracedPidComm(dirPath string) {
-	fileName := fmt.Sprintf("%v/traced_pid_comm_map.log", dirPath)
-	file, err := os.Open(fileName)
-	if err != nil {
-		failf("failed to open %v", fileName)
-	}
-
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	traceInfo := newTraceInfo(dirPath)
-
-	for scanner.Scan() {
-		entry := strings.SplitN(scanner.Text(), " ", 2)
-		if pid, err := strconv.Atoi(entry[0]); err == nil {
-			traceInfo.pidComm[uint32(pid)] = entry[1]
-		} else {
-			break
-		}
-	}
-	sifter.traceInfo[dirPath] = traceInfo
-}
-
 func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
-	info := sifter.traceInfo[dirPath]
+
+	trace := newTrace(dirPath)
+	if err := trace.ReadTracedPidComm(); err != nil {
+		fmt.Printf("failed to read traced pid comm map: %v\n", err)
+	}
+
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
-			fileName := fmt.Sprintf("%v/raw_trace_%v.dat", dirPath, syscall.name)
-			file, err := os.Open(fileName)
-			if err != nil {
-				failf("failed to open trace file: %v", fileName)
-			}
-
-			syscall.traceFile = file
-			syscall.traceReader = bufio.NewReader(file)
-		}
-	}
-	for _, syscalls := range sifter.moduleSyscalls {
-		for _, syscall := range syscalls {
-			for {
-				var ts uint64
-				var id uint32
-				err := binary.Read(syscall.traceReader, binary.LittleEndian, &ts)
-				err = binary.Read(syscall.traceReader, binary.LittleEndian, &id)
-				traceEvent := newTraceEvent(ts, id, info, syscall)
-				_, err = io.ReadFull(syscall.traceReader, traceEvent.data)
-
-				if err != nil {
-					if err.Error() != "EOF" {
-						fmt.Printf("trace, %v, ended unexpectedly: %v\n", syscall.name, err)
-					}
-					break
-				}
-
-				if traceEvent.ts != 0 {
-					sifter.trace = append(sifter.trace, traceEvent)
-				}
+			if err := trace.ReadSyscallTrace(syscall); err != nil {
+				fmt.Printf("failed to read syscall trace: %v\n", err)
+				trace.ClearEvents()
+				return 0
 			}
 		}
 	}
-
-	fileName := fmt.Sprintf("%v/raw_trace_other_syscalls.dat", dirPath)
-	file, err := os.Open(fileName)
-	if err != nil {
-		failf("failed to open trace file: %v", fileName)
+	if err := trace.ReadSyscallTrace(sifter.otherSyscall); err != nil {
+		fmt.Printf("failed to read syscall trace: %v\n", err)
+		trace.ClearEvents()
+		return 0
 	}
 
-	traceReader := bufio.NewReader(file)
-	for {
-		var ts uint64
-		var id uint32
-		var nr uint32
-		var err error
-		var traceEvent *TraceEvent
-		if err = binary.Read(traceReader, binary.LittleEndian, &ts); err != nil {
-			if err.Error() == "EOF" {
-				goto end
-			} else {
-				goto endUnexpectedly
-			}
-		}
+	trace.SortEvents()
 
-		if err = binary.Read(traceReader, binary.LittleEndian, &id); err != nil {
-			goto endUnexpectedly
-		}
+	sifter.traces[dirPath] = trace
 
-		traceEvent = newTraceEvent(ts, id, info, nil)
-		if traceEvent.typ != 0 {
-			if _, err = io.ReadFull(traceReader, traceEvent.data); err != nil {
-				goto endUnexpectedly
-			}
-			if err = binary.Read(traceReader, binary.LittleEndian, &nr); err != nil {
-				goto endUnexpectedly
-			}
-
-			if _, ok := sifter.otherSyscalls[uint64(nr)]; ok {
-				traceEvent.syscall = sifter.otherSyscalls[uint64(nr)]
-			} else {
-				newSyscall := new(Syscall)
-				newSyscall.name = fmt.Sprintf("syscall_%v", nr)
-				newSyscall.def = new(prog.Syscall)
-				newSyscall.def.NR = uint64(nr)
-				newSyscall.def.Name = fmt.Sprintf("syscall_%v", nr)
-				newSyscall.def.CallName = fmt.Sprintf("syscall_%v", nr)
-				traceEvent.syscall = newSyscall
-				sifter.otherSyscalls[uint64(nr)] = newSyscall
-			}
-		} else {
-			if _, err = io.ReadFull(traceReader, traceEvent.data); err != nil {
-				goto endUnexpectedly
-			}
-		}
-
-		if traceEvent.ts != 0 {
-			sifter.trace = append(sifter.trace, traceEvent)
-		}
-		continue
-
-endUnexpectedly:
-		fmt.Printf("trace, other_syscalls, ended unexpectedly: %v\n", err)
-end:
-		break
-	}
-
-	sort.Slice(sifter.trace, func(i, j int) bool {
-		return sifter.trace[i].ts < sifter.trace[j].ts
-	})
-
-	return len(sifter.trace)
+	return trace.Size()
 }
 
 func (sifter *Sifter) WriteAgentConfigFile() {
@@ -1816,117 +1689,129 @@ func (sifter *Sifter) GetTrainTestFiles() ([]os.FileInfo, []os.FileInfo) {
 
 func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	var la LenAnalysis
-	//var sa SequenceAnalysis
 	var fa FlagAnalysis
-	//var vra ValueRangeAnalysis
 	var vlra VlrAnalysis
 	var pa PatternAnalysis
+	//var sa SequenceAnalysis
 	//sa.SetLen(0)
 	//sa.SetUnitOfAnalysis(ProcessLevel)
 	pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 	pa.SetGroupingThreshold(SyscallGrouping, 1)
-	pa.SetPatternOrderThreshold(8)
+	pa.SetPatternOrderThreshold(0.5)
 	//pa.SetUnitOfAnalysis(TraceLevel)
 	pa.SetUnitOfAnalysis(ProcessLevel)
 
-	sifter.AddAnalysis(&la)
-	sifter.AddAnalysis(&fa)
-	//sifter.AddAnalysis(&vra)
-	sifter.AddAnalysis(&vlra)
-	//sifter.AddAnalysis(&sa)
-	sifter.AddAnalysis(&pa)
+	fi, err := os.Stat(sifter.traceDir)
+	if err != nil {
+		fmt.Printf("failed to open trace: %v", err)
+	}
 
-	sifter.ReadTracedPidComm(sifter.traceDir)
-	sifter.ReadSyscallTrace(sifter.traceDir)
-	sifter.DoAnalyses(TrainFlag)
+	r := 0
+	r = sifter.CreateAnalysisRound(0, TrainFlag, []os.FileInfo{fi})
+	sifter.AddAnalysisToRound(r, &la, 0)
+	sifter.AddAnalysisToRound(r, &fa, 0)
+	r = sifter.CreateAnalysisRound(0, TrainFlag, []os.FileInfo{fi})
+	sifter.AddAnalysisToRound(r, &la, 1)
+	sifter.AddAnalysisToRound(r, &fa, 1)
+	sifter.AddAnalysisToRound(r, &vlra, 0)
+	sifter.AddAnalysisToRound(r, &pa, 0)
+	//sifter.AddAnalysisToRound(1, &sa, 0)
+
+	for _, round := range sifter.analysisRounds {
+//		for _, file := range round.files {
+			sifter.ReadSyscallTrace(sifter.traceDir)
+			sifter.DoAnalyses(sifter.traceDir, round.flag, round.ac)
+//		}
+	}
 	fmt.Print("--------------------------------------------------------------------------------\n")
 
-	for _, analysis := range sifter.analyses {
-		analysis.PostProcess(TrainFlag)
+//	for _, analysis := range sifter.analyses {
+//		analysis.PostProcess(TrainFlag)
+//	}
+}
+
+func fileNames(files []os.FileInfo) string {
+	s := ""
+	for i, file := range files {
+		s += fmt.Sprintf("%v", file.Name())
+		if i != len(files) - 1 {
+			s += ", "
+		}
 	}
+	return s
 }
 
 func (sifter *Sifter) TrainAndTest() {
 	sifter.ReadTraceDir(sifter.traceDir)
 
-	testUpdateSum := 0
-	testUpdateOLSum := 0
+	fpsTotal := make(map[int]int)
+	tpsTotal := make(map[int]int)
 	for i := 0; i < sifter.Iter(); i ++ {
 		sifter.ClearAnalysis()
-		//var vra ValueRangeAnalysis
 		var la LenAnalysis
 		var fa FlagAnalysis
-		//var sa SequenceAnalysis
 		var vlra VlrAnalysis
 		var pa PatternAnalysis
+		//var sa SequenceAnalysis
 		//sa.SetLen(0)
 		//sa.SetUnitOfAnalysis(TraceLevel)
 		pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 		pa.SetGroupingThreshold(SyscallGrouping, 1)
-		pa.SetPatternOrderThreshold(0.8)
+		pa.SetPatternOrderThreshold(0.5)
 		//pa.SetUnitOfAnalysis(TraceLevel)
 		pa.SetUnitOfAnalysis(ProcessLevel)
 
-		//sifter.AddAnalysis(&vra)
-		sifter.AddAnalysis(&la)
-		sifter.AddAnalysis(&fa)
-		sifter.AddAnalysis(&vlra)
-		//sifter.AddAnalysis(&sa)
-		sifter.AddAnalysis(&pa)
-
-		var testSize, trainSize, testUpdates, trainUpdates, testUpdatesOL, trainUpdatesOL int
 		trainFiles, testFiles := sifter.GetTrainTestFiles()
 
-		fmt.Printf("#Run %v\n", i)
-		fmt.Printf("#training apps:\n")
-		for i, file := range trainFiles {
-			if i != len(trainFiles) - 1 {
-				fmt.Printf("%v, ", file.Name())
-			} else {
-				fmt.Printf("%v\n", file.Name())
-			}
-		}
-		for _, file := range trainFiles {
-			fmt.Printf("#training app: %v\n", file.Name())
-			sifter.ClearTrace()
-			sifter.ReadTracedPidComm(sifter.traceDir+"/"+file.Name())
-			trainSize += sifter.ReadSyscallTrace(sifter.traceDir+"/"+file.Name())
-			update, updateOL := sifter.DoAnalyses(TrainFlag)
-			trainUpdates += update
-			trainUpdatesOL += updateOL
-		}
-		fmt.Printf("#training size: %v\n", trainSize)
-		fmt.Printf("#training updates: %v/%v\n", trainUpdates, trainUpdatesOL)
-		fmt.Print("--------------------------------------------------------------------------------\n")
+		r := 0
+		r = sifter.CreateAnalysisRound(0, TrainFlag, trainFiles)
+		sifter.AddAnalysisToRound(r, &la, 0)
+		sifter.AddAnalysisToRound(r, &fa, 0)
+		r = sifter.CreateAnalysisRound(1, TrainFlag, trainFiles)
+		sifter.AddAnalysisToRound(r, &la, 1)
+		sifter.AddAnalysisToRound(r, &fa, 1)
+		sifter.AddAnalysisToRound(r, &vlra, 0)
+		sifter.AddAnalysisToRound(r, &pa, 0)
+		//sifter.AddAnalysisToRound(r, &sa, 0)
+		r = sifter.CreateAnalysisRound(2, TestFlag, testFiles)
+		sifter.AddAnalysisToRound(r, &la, 1)
+		sifter.AddAnalysisToRound(r, &fa, 1)
+		sifter.AddAnalysisToRound(r, &vlra, 0)
+		sifter.AddAnalysisToRound(r, &pa, 0)
 
-		for _, analysis := range sifter.analyses {
-			analysis.PostProcess(TrainFlag)
-		}
+		traceSize := make([]int, len(sifter.analysisRounds))
+		fps := make([]int, len(sifter.analysisRounds))
+		tps := make([]int, len(sifter.analysisRounds))
 
-		fmt.Printf("#testing apps:\n")
-		for i, file := range testFiles {
-			if i != len(testFiles) - 1 {
-				fmt.Printf("%v,", file.Name())
-			} else {
-				fmt.Printf("%v\n", file.Name())
+		fmt.Print("================================================================================\n")
+		fmt.Printf("#Iter %v\n", i)
+		for ri, round := range sifter.analysisRounds {
+			fmt.Print("================================================================================\n")
+			fmt.Printf("#Round %v: %v\n", ri, fileNames(round.files))
+			for fi, file := range round.files {
+				fmt.Printf("#Trace %v-%v-%v: %v\n", i, ri, fi, file.Name())
+				filePath := sifter.traceDir + "/" + file.Name()
+				traceSize[ri] += sifter.ReadSyscallTrace(filePath)
+				fp, tp := sifter.DoAnalyses(filePath, round.flag, round.ac)
+				fps[ri] += fp
+				tps[ri] += tp
+				fpsTotal[ri] += fp
+				tpsTotal[ri] += tp
+
+				sifter.traces[filePath].ClearEvents()
 			}
+
+			for _, analysis := range sifter.analyses {
+				analysis.PostProcess(TrainFlag)
+			}
+
+			fmt.Printf("#trace size: %v\n", traceSize[ri])
+			fmt.Printf("#updates: %v/%v\n", fps[ri], tps[ri])
+			fmt.Print("================================================================================\n")
 		}
-		for _, file := range testFiles {
-			fmt.Printf("#testing app: %v\n", file.Name())
-			sifter.ClearTrace()
-			sifter.ReadTracedPidComm(sifter.traceDir+"/"+file.Name())
-			testSize += sifter.ReadSyscallTrace(sifter.traceDir+"/"+file.Name())
-			update, updateOL := sifter.DoAnalyses(TestFlag)
-			testUpdates += update
-			testUpdatesOL += updateOL
-		}
-		testUpdateSum += testUpdates
-		testUpdateOLSum += testUpdatesOL
-		fmt.Printf("#testing size: %v\n", testSize)
-		fmt.Printf("#testing updates: %v/%v\n", testUpdates, testUpdatesOL)
+		fmt.Print("================================================================================\n")
 	}
-	fmt.Print("================================================================================\n")
 	fmt.Printf("#Testing error:\n")
-	fmt.Printf("#FP:%d FN:%d\n", testUpdateSum, testUpdateOLSum)
-	fmt.Printf("#Avg: %.3f\n", float64(testUpdateSum)/float64(sifter.Iter()))
+	fmt.Printf("#FP:%d TP:%d\n", fpsTotal[2], tpsTotal[2])
+	fmt.Printf("#Avg FP: %.3f\n", float64(fpsTotal[2])/float64(sifter.Iter()))
 }

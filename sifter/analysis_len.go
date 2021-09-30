@@ -36,7 +36,7 @@ func (r *LenRange) String() string {
 	return s
 }
 
-func (r *LenRange) Update(v uint64, te *TraceEvent, flag Flag) (bool, bool, bool, bool) {
+func (r *LenRange) Update(v uint64, te *TraceEvent, flag AnalysisFlag) (bool, bool, bool, bool) {
 	updateLower := false
 	updateUpper := false
 	updateLowerOL := false
@@ -164,7 +164,7 @@ func (r *LenRange) RemoveOutlier() bool {
 			z := math.Abs(float64(v) - mean0) / meanAbsDev0
 			if z > devThreshold {
 				for _, te := range tes {
-					fmt.Printf("%v %v %v\n", te.info.name, v, z)
+					fmt.Printf("%v %v %v\n", te.trace.name, v, z)
 				}
 				delete(r.values, v)
 				update = true
@@ -207,6 +207,11 @@ func (r *LenRange) RemoveOutlier() bool {
 		} else {
 			r.upper = math.MaxUint64
 		}
+	} else {
+		r.lower = uint64(mean1)
+		r.upper = uint64(mean1)
+		r.lowerOL = uint64(mean1)
+		r.upperOL = uint64(mean1)
 	}
 
 	fmt.Printf("new lower:%d upper:%d lowerOL:%d upperOL:%d\n", r.lower, r.upper, r.lowerOL, r.upperOL)
@@ -281,7 +286,7 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 func (a *LenAnalysis) Reset() {
 }
 
-func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
+func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt int) (string, int, int) {
 	if te.typ != 1 {
 		return "", 0, 0
 	}
@@ -417,7 +422,7 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int,
 	return updateMsg, updateFP, updateFN
 }
 
-func (a *LenAnalysis) PostProcess(flag Flag) {
+func (a *LenAnalysis) PostProcess(opt int) {
 	a.RemoveOutliers()
 }
 

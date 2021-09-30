@@ -11,7 +11,7 @@ type FlagSet struct {
 	idx    int
 }
 
-func (flags *FlagSet) Update(v uint64, f Flag) int {
+func (flags *FlagSet) Update(v uint64, f AnalysisFlag) int {
 	count, _ := flags.values[v]
 
 	if f == TrainFlag {
@@ -27,7 +27,7 @@ func (flags *FlagSet) RemoveOutlier() bool {
 		sum += c
 	}
 	freqThreshold := 0.0001
-	absThreshold := 50
+	absThreshold := 10
 	fmt.Printf("flags outliers:\n")
 	hasOutliers := false
 	for v, c := range flags.values {
@@ -137,7 +137,7 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 func (a *FlagAnalysis) Reset() {
 }
 
-func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
+func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt int) (string, int, int) {
 	if te.typ != 1 {
 		return "", 0, 0
 	}
@@ -247,7 +247,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int
 	return updatedRangesMsg, updatedRangesLen, 0
 }
 
-func (a *FlagAnalysis) PostProcess(flag Flag) {
+func (a *FlagAnalysis) PostProcess(opt int) {
 	a.RemoveOutliers()
 }
 

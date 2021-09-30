@@ -124,8 +124,8 @@ func (a *TaggedSyscall) Equal(b *TaggedSyscall) bool {
 type TaggedSyscallNode struct {
 	next    []*TaggedSyscallNode
 	syscall *TaggedSyscall
-	counts  map[Flag]uint64
-	flag    Flag
+	counts  map[AnalysisFlag]uint64
+	flag    AnalysisFlag
 	tag     int
 	events  []*TraceEvent
 	pt      int
@@ -135,16 +135,16 @@ func NewTaggedSyscallNode(n *TaggedSyscallNode) *TaggedSyscallNode {
 	newNode := new(TaggedSyscallNode)
 	newNode.syscall = n.syscall
 	newNode.flag = n.flag
-	newNode.counts = make(map[Flag]uint64)
+	newNode.counts = make(map[AnalysisFlag]uint64)
 	newNode.tag = n.tag
 	return newNode
 }
 
-func NewTaggedSyscallEndNode(flag Flag, tag int) *TaggedSyscallNode {
+func NewTaggedSyscallEndNode(flag AnalysisFlag, tag int) *TaggedSyscallNode {
 	newEndNode := new(TaggedSyscallNode)
 	newEndNode.syscall = new(TaggedSyscall)
 	newEndNode.flag = flag
-	newEndNode.counts = make(map[Flag]uint64)
+	newEndNode.counts = make(map[AnalysisFlag]uint64)
 	newEndNode.counts[flag] += 1
 	newEndNode.tag = tag
 	return newEndNode
@@ -188,34 +188,34 @@ const (
 )
 
 type AnalysisUnitKey struct {
-	info *TraceInfo
+	trace *Trace
 	fd   uint64
 	pid  uint32
 }
 
 func (k AnalysisUnitKey) String() string {
-	return fmt.Sprintf("%v pid:%d fd:%d", k.info.name, k.pid, k.fd)
+	return fmt.Sprintf("%v pid:%d fd:%d", k.trace.name, k.pid, k.fd)
 }
 
 func (a *PatternAnalysis) newAnalysisUnitKey(te *TraceEvent) (bool, AnalysisUnitKey) {
 	if regID, fd := te.GetFD(); regID != -1 {
 		switch a.unitOfAnalysis {
 		case ProcessLevel:
-			return true, AnalysisUnitKey{te.info, fd, te.id}
+			return true, AnalysisUnitKey{te.trace, fd, te.id}
 		case TraceLevel:
-			return true, AnalysisUnitKey{te.info, fd, 0}
+			return true, AnalysisUnitKey{te.trace, fd, 0}
 		}
 	}
-	return false, AnalysisUnitKey{te.info, 0, 0}
+	return false, AnalysisUnitKey{te.trace, 0, 0}
 }
 
 func (a *PatternAnalysis) isTraceAssociateWithUnitKey(te *TraceEvent, key AnalysisUnitKey) bool {
 	if regID, fd := te.GetFD(); regID != -1 {
 		switch a.unitOfAnalysis {
 		case ProcessLevel:
-			return fd == key.fd && te.info == key.info && te.id == key.pid
+			return fd == key.fd && te.trace == key.trace && te.id == key.pid
 		case TraceLevel:
-			return fd == key.fd && te.info == key.info
+			return fd == key.fd && te.trace == key.trace
 		}
 	}
 	return false
@@ -243,7 +243,7 @@ type PatternAnalysis struct {
 	patternOrder      map[int]map[int]int
 	patternOrderCtr   map[int]map[int]int
 	patternOrderTh    float64
-	filterStates      map[AnalysisUnitKey]*FilterState
+
 	unitOfAnalysis    AnalysisUnit
 
 	uniqueSyscallList []*TaggedSyscall
@@ -251,6 +251,10 @@ type PatternAnalysis struct {
 	seqTreeList       [][]*TaggedSyscallNode
 	seqOrderList      map[int]uint64
 	seqSeqList        map[int]uint64
+
+	filterStates      map[AnalysisUnitKey]*FilterState
+	filterLastTag     int
+	filterDelayedCall []*TraceEvent
 
 	patternSequences  map[AnalysisUnitKey][]PatternTimestamp
 	patternSeqGraph   map[int]map[int]int
@@ -395,7 +399,7 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			newNextNode := new(TaggedSyscallNode)
 			newNextNode.syscall = NewTaggedSyscall(te.syscall, te.tags)
 			newNextNode.flag = TrainFlag
-			newNextNode.counts = make(map[Flag]uint64)
+			newNextNode.counts = make(map[AnalysisFlag]uint64)
 			newNextNode.counts[TrainFlag] += 1
 			newNextNode.tag = a.tagCounter
 			a.tagCounter += 1
@@ -466,10 +470,18 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 			if len(seqOrderViolated) == 0 {
 				filterState.patternRecorded[thisSeqId] = true
 			} else {
-				errMsg += fmt.Sprintf("seq%x violates inter-pattern order with seq%x %v", thisSeqId, seqOrderViolated, seqOrderViolatedPolicy)
+				errMsg += fmt.Sprintf("seq%x violates inter-seq order with seq%x %v", thisSeqId, seqOrderViolated, seqOrderViolatedPolicy)
 				errNum += 1
 			}
 			filterState.lastNode = a.seqTreeRoot
+
+			//if ctr, ok := a.patternSeqGraph[a.filterLastTag][thisSeqId]; !ok || ctr == 0 {
+			//	errMsg += fmt.Sprintf("seq%x violates inter-seq seq with seq%x", thisSeqId, a.filterLastTag)
+			//	errNum += 1
+			//}
+			//} else {
+			//	a.filterLastTag = thisSeqId
+			//}
 		}
 
 		if idx := filterState.lastNode.findChild(NewTaggedSyscall(te.syscall, te.tags)); idx != -1 {
@@ -486,6 +498,7 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 			errMsg += fmt.Sprintf(")")
 			errNum += 1
 		}
+
 	}
 	return errMsg, errNum
 }
@@ -545,7 +558,7 @@ func (a *PatternAnalysis) testSeqTreeModel(te *TraceEvent) (string, int) {
 	return errMsg, errNum
 }
 
-func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
+func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt int) (string, int, int) {
 	msg := ""
 	update := 0
 
@@ -1072,12 +1085,12 @@ func (a *PatternAnalysis) AnalyzeInterPatternSequence() {
 	for _, seq := range a.patternSequences {
 		lastTag := 0
 		for _, tagTimestamp := range seq {
-			if lastTag != 0 {
+			//if lastTag != 0 {
 				if _, ok := a.patternSeqGraph[lastTag]; !ok {
 					a.patternSeqGraph[lastTag] = make(map[int]int)
 				}
 				a.patternSeqGraph[lastTag][tagTimestamp.tag] += 1
-			}
+			//}
 			lastTag = tagTimestamp.tag
 		}
 	}
@@ -1094,7 +1107,7 @@ func (a *PatternAnalysis) AnalyzeInterPatternSequence() {
 	fmt.Print("--------------------------------------------------------------------------------\n")
 }
 
-func (a *PatternAnalysis) PostProcess(flag Flag) {
+func (a *PatternAnalysis) PostProcess(opt int) {
 	for pid, n := range a.lastNodeOfPid {
 		if n.findEndChild() == -1 {
 			newEndNode := NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)

@@ -9,7 +9,7 @@ import (
 type Node struct {
 	syscall *Syscall
 	tags    []int
-	flag    Flag
+	flag    AnalysisFlag
 }
 
 func (n *Node) String() string {
@@ -19,8 +19,8 @@ func (n *Node) String() string {
 type Edge struct {
 	next    *Node
 	prevs   []*Node
-	flag    Flag
-	counts  map[Flag]uint64
+	flag    AnalysisFlag
+	counts  map[AnalysisFlag]uint64
 }
 
 func (e *Edge) String() string {
@@ -125,14 +125,14 @@ func (a *SequenceAnalysis) previousNodes(te *TraceEvent) []*Node {
 	return a.prevs[key][0:a.seqLen]
 }
 
-func (a *SequenceAnalysis) findEdge(te *TraceEvent, nextNode *Node, flag Flag) (bool, *Edge) {
+func (a *SequenceAnalysis) findEdge(te *TraceEvent, nextNode *Node, flag AnalysisFlag) (bool, *Edge) {
 	lastNode := a.lastNode(te)
 
 	newEdge := new(Edge)
 	newEdge.next = nextNode
 	newEdge.prevs = a.previousNodes(te)
 	newEdge.flag = flag
-	newEdge.counts = make(map[Flag]uint64)
+	newEdge.counts = make(map[AnalysisFlag]uint64)
 	newEdge.counts[flag] = 1
 
 	for _, edge := range a.seqGraph[lastNode] {
@@ -149,7 +149,7 @@ func (a *SequenceAnalysis) findEdge(te *TraceEvent, nextNode *Node, flag Flag) (
 	return true, newEdge
 }
 
-func (a *SequenceAnalysis) findNode(te *TraceEvent, flag Flag) (bool, *Node) {
+func (a *SequenceAnalysis) findNode(te *TraceEvent, flag AnalysisFlag) (bool, *Node) {
 	for i, node := range a.nodes {
 		if te.syscall == node.syscall && tagsEqual(te.tags, node.tags) {
 			if flag == TestFlag && node.flag == TestFlag {
@@ -165,7 +165,7 @@ func (a *SequenceAnalysis) findNode(te *TraceEvent, flag Flag) (bool, *Node) {
 	return true, newNode
 }
 
-func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string, int, int) {
+func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt int) (string, int, int) {
 	if te.typ != 1 {
 		return "", 0, 0
 	}
@@ -191,7 +191,7 @@ func (a *SequenceAnalysis) ProcessTraceEvent(te *TraceEvent, flag Flag) (string,
 	return updateMsg, updateNum, 0
 }
 
-func (a *SequenceAnalysis) PostProcess(flag Flag) {
+func (a *SequenceAnalysis) PostProcess(opt int) {
 }
 
 func (a *SequenceAnalysis) PrintResult(v Verbose) {
