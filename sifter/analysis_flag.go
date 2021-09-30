@@ -50,18 +50,21 @@ func (flags *FlagSet) RemoveOutlier() bool {
 	}
 	freqThreshold := 0.0001
 	absThreshold := 10
-	fmt.Printf("flags outliers:\n")
-	hasOutliers := false
+	outliers := make([]string, 0)
 	for v, c := range flags.values {
 		if float64(c[0]) / float64(sum) < freqThreshold && c[0] < absThreshold {
-			fmt.Printf("%v ", v)
-			hasOutliers = true
+			outliers = append(outliers, fmt.Sprintf("%v\n", v))
 			//delete(flags.values, v)
 			flags.values[v][0] = 0
 		}
-		fmt.Printf("\n")
 	}
-	return hasOutliers
+	if len(outliers) > 0 {
+		fmt.Printf("flags outliers:\n")
+		for _, outlier := range outliers {
+			fmt.Printf("%v", outlier)
+		}
+	}
+	return len(outliers) != 0
 }
 
 func newFlagSet(idx int) *FlagSet {
@@ -321,12 +324,14 @@ func (a *FlagAnalysis) PostProcess(opt int) {
 }
 
 func (a *FlagAnalysis) RemoveOutliers() {
+	fmt.Printf("removing outlier flag:\n")
 	for syscall, _ := range a.moduleSyscalls {
-		s := ""
+		fmt.Printf("%v\n", syscall.name)
 		for i, arg := range syscall.def.Args {
 			if flags, ok := a.regFlags[syscall][arg]; ok {
+				fmt.Printf("reg[%v]:\n", i)
 				if flags.RemoveOutlier() {
-					s += fmt.Sprintf("reg[%v]: %v\n", i, flags)
+					fmt.Printf("%v\n", flags)
 				}
 			}
 		}
@@ -334,15 +339,17 @@ func (a *FlagAnalysis) RemoveOutliers() {
 			if structArg, ok := argMap.arg.(*prog.StructType); ok {
 				for _, field := range structArg.Fields {
 					if flags, ok := a.argFlags[argMap][field]; ok {
+						fmt.Printf("%v_%v:\n", argMap.name, field.FieldName())
 						if flags.RemoveOutlier() {
-							 s += fmt.Sprintf("%v_%v: %v\n", argMap.name, field.FieldName(), flags)
+							fmt.Printf("%v\n", flags)
 						}
 					}
 				}
 			} else {
 				if flags, ok := a.argFlags[argMap][argMap.arg]; ok {
+					fmt.Printf("%v:\n", argMap.name)
 					if flags.RemoveOutlier() {
-						s += fmt.Sprintf("%v: %v\n", argMap.name, flags)
+						fmt.Printf("%v\n", flags)
 					}
 				}
 			}
@@ -355,24 +362,22 @@ func (a *FlagAnalysis) RemoveOutliers() {
 					if structField, isStructArg := f.(*prog.StructType); isStructArg {
 						for _, ff := range structField.Fields {
 							if flags, ok := a.vlrFlags[vlrMap][vlrRecord][ff]; ok {
+								fmt.Printf("%v_%v_%v:\n", vlrRecord.name, f.FieldName(), ff.FieldName())
 								if flags.RemoveOutlier() {
-									s += fmt.Sprintf("%v_%v_%v: %v\n", vlrRecord.name, f.FieldName(), ff.FieldName(), flags)
+									fmt.Printf("%v\n", flags)
 								}
 							}
 						}
 					} else {
 						if flags, ok := a.vlrFlags[vlrMap][vlrRecord][f]; ok {
+							fmt.Printf("%v_%v:\n", vlrRecord.name, f.FieldName())
 							if flags.RemoveOutlier() {
-								s += fmt.Sprintf("%v_%v: %v\n", vlrRecord.name, f.FieldName(), flags)
+								fmt.Printf("%v\n", flags)
 							}
 						}
 					}
 				}
 			}
-		}
-		if len(s) != 0 {
-			fmt.Print("--------------------------------------------------------------------------------\n")
-			fmt.Printf("%v\n%s", syscall.name, s)
 		}
 	}
 }
