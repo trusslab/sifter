@@ -1026,6 +1026,10 @@ func (a *PatternAnalysis) AnalyzeInterPatternSequence() {
 }
 
 func (a *PatternAnalysis) PostProcess(opt int) {
+	if opt == 0 {
+		return
+	}
+
 	for pid, n := range a.lastNodeOfPid {
 		if n.findEndChild() == -1 {
 			newEndNode := NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)
@@ -1079,14 +1083,22 @@ func (a *PatternAnalysis) GenSeqPolicy() {
 	a.genUniqueNodeList(a.seqTreeRoot)
 	a.genSeqOrderList()
 	a.genSeqSeqList()
-	for _, p := range a.seqTreeList {
+	fmt.Print("syscalls:\n")
+	for sci, sc := range a.uniqueSyscallList {
+		fmt.Print("%2d: %v\n", sci, sc.syscall.name, sc.tags)
+	}
+	fmt.Print("syscall seq tree:\n")
+	for seqi, p := range a.seqTreeList {
+		fmt.Printf("%2d: ", seqi)
 		for _, s := range p {
-			fmt.Print("%v ", s)
+			for sci, sc := range a.uniqueSyscallList {
+				if s.syscall.Equal(sc) {
+					fmt.Printf("%2d ", sci)
+					break
+				}
+			}
 		}
 		fmt.Print("\n")
-	}
-	for i, s := range a.uniqueSyscallList {
-		fmt.Print("%d %v\n", i, s)
 	}
 	fmt.Print("--------------------------------------------------------------------------------\n")
 }
