@@ -1490,16 +1490,20 @@ func (sifter *Sifter) DoAnalyses(name string, flag AnalysisFlag, analysesConfigs
 		}
 
 		updateMsg := ""
+		hasUpdate := 0
+		hasUpdateOL := 0
 		for _, ac := range analysesConfigs {
 			if msg, update, updateOL := ac.a.ProcessTraceEvent(te, flag, ac.opt); update > 0 || updateOL > 0 {
 				updateMsg += fmt.Sprintf("%v: %v;", ac.a, msg)
 				if updateOL > 0 {
-					updatedTeOLNum += 1
+					hasUpdateOL = 1
 				} else {
-					updatedTeNum += 1
+					hasUpdate = 1
 				}
 			}
 		}
+		updatedTeOLNum += hasUpdateOL
+		updatedTeNum += hasUpdate
 
 		if sifter.verbose >= UpdateV {
 			if sifter.verbose < AllTraceV && updateMsg != "" {
