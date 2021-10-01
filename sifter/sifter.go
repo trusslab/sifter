@@ -1490,20 +1490,23 @@ func (sifter *Sifter) DoAnalyses(name string, flag AnalysisFlag, analysesConfigs
 		}
 
 		updateMsg := ""
-		hasUpdate := 0
-		hasUpdateOL := 0
+		hasUpdate := false
+		hasUpdateOL := false
 		for _, ac := range analysesConfigs {
 			if msg, update, updateOL := ac.a.ProcessTraceEvent(te, flag, ac.opt); update > 0 || updateOL > 0 {
 				updateMsg += fmt.Sprintf("%v: %v;", ac.a, msg)
 				if updateOL > 0 {
-					hasUpdateOL = 1
+					hasUpdateOL = true
 				} else {
-					hasUpdate = 1
+					hasUpdate = true
 				}
 			}
 		}
-		updatedTeOLNum += hasUpdateOL
-		updatedTeNum += hasUpdate
+		if hasUpdateOL {
+			updatedTeOLNum += 1
+		} else if hasUpdate {
+			updatedTeNum += 1
+		}
 
 		if sifter.verbose >= UpdateV {
 			if sifter.verbose < AllTraceV && updateMsg != "" {
@@ -1700,7 +1703,7 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	//sa.SetUnitOfAnalysis(ProcessLevel)
 	pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 	pa.SetGroupingThreshold(SyscallGrouping, 1)
-	pa.SetPatternOrderThreshold(0.5)
+	pa.SetPatternOrderThreshold(0.8)
 	//pa.SetUnitOfAnalysis(TraceLevel)
 	pa.SetUnitOfAnalysis(ProcessLevel)
 
@@ -1760,9 +1763,9 @@ func (sifter *Sifter) TrainAndTest() {
 		//sa.SetUnitOfAnalysis(TraceLevel)
 		pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 		pa.SetGroupingThreshold(SyscallGrouping, 1)
-		pa.SetPatternOrderThreshold(0.5)
-		//pa.SetUnitOfAnalysis(TraceLevel)
-		pa.SetUnitOfAnalysis(ProcessLevel)
+		pa.SetPatternOrderThreshold(0.8)
+		pa.SetUnitOfAnalysis(TraceLevel)
+		//pa.SetUnitOfAnalysis(ProcessLevel)
 
 		trainFiles, testFiles := sifter.GetTrainTestFiles()
 
@@ -1774,7 +1777,7 @@ func (sifter *Sifter) TrainAndTest() {
 		sifter.AddAnalysisToRound(r, &la, 1)
 		sifter.AddAnalysisToRound(r, &fa, 1)
 		sifter.AddAnalysisToRound(r, &vlra, 0)
-		sifter.AddAnalysisToRound(r, &pa, 0)
+		sifter.AddAnalysisToRound(r, &pa, 1)
 		//sifter.AddAnalysisToRound(r, &sa, 0)
 		r = sifter.CreateAnalysisRound(2, TestFlag, testFiles)
 		sifter.AddAnalysisToRound(r, &la, 1)
