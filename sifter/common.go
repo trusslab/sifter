@@ -258,6 +258,10 @@ type TraceEvent struct {
 	flag    int
 	typ     int
 	ret     uint64
+
+	fdCached    uint64
+	fdIdxCached int
+
 }
 
 func newTraceEvent(ts uint64, id uint32, trace *Trace, syscall *Syscall) *TraceEvent {
@@ -266,6 +270,8 @@ func newTraceEvent(ts uint64, id uint32, trace *Trace, syscall *Syscall) *TraceE
 	traceEvent.id = id
 	traceEvent.trace = trace
 	traceEvent.syscall = syscall
+	traceEvent.fdIdxCached = -1
+
 	if (id & 0x80000000 != 0) {
 		traceEvent.data = make([]byte, (id & 0x0000ffff))
 		traceEvent.typ = 0
@@ -316,12 +322,34 @@ func (te *TraceEvent) String() string {
 }
 
 func (te *TraceEvent) GetFD() (int, uint64) {
+	if te.fdIdxCached != -1 {
+		return te.fdIdxCached, te.fdCached
+	}
+
 	if te.syscall.def == nil {
 		return -1, 0
 	}
+
 	for i, arg := range te.syscall.def.Args {
 		//if res, ok := arg.(*prog.ResourceType); ok && res.FldName == "fd" {
 		if _, ok := arg.(*prog.ResourceType); ok {
+			te.fdIdxCached = i
+			te.fdCached = uint64(binary.LittleEndian.Uint32(te.data[i*8+4:i*8+8]))
+			//return i, uint64(binary.LittleEndian.Uint32(te.data[i*8+4:i*8+8]))
+			return te.fdIdxCached, te.fdCached
+		}
+	}
+	return -1, 0
+}
+
+func (te *TraceEvent) GetFD2(name string) (int, uint64) {
+	if te.syscall.def == nil {
+		return -1, 0
+	}
+
+	for i, arg := range te.syscall.def.Args {
+		if res, ok := arg.(*prog.ResourceType); ok && res.FldName == name {
+		//if _, ok := arg.(*prog.ResourceType); ok {
 			return i, uint64(binary.LittleEndian.Uint32(te.data[i*8+4:i*8+8]))
 		}
 	}
