@@ -379,17 +379,23 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			a.lastNodeOfPid[te.id] = newNextNode
 		}
 		a.lastNodeOfPid[te.id].events = append(a.lastNodeOfPid[te.id].events, te)
-//	} else if te.typ == 2 {
-//		_, nr := te.GetNR()
-//		_, key := a.newAnalysisUnitKey(te)
-//		_, fd := te.GetFD()
-//		if _, ok := a.patternInterval[key]; ok {
-//			if nr == 23 || nr == 24 {
-//				fmt.Printf("%v use dup %d %d\n", te.info.name, nr, fd)
-//			} else {
-//				fmt.Printf("%v use %d %d\n", te.info.name, nr, fd)
-//			}
-//		}
+	} else if te.typ == 2 {
+		_, nr := te.GetNR()
+		_, key := a.newAnalysisUnitKey(te)
+		idx := -1
+		fd := uint64(0)
+		switch nr {
+		case 21:
+			idx, fd = te.GetFD2("fd")
+		case 23, 24:
+			idx, fd = te.GetFD2("oldfd")
+		}
+		if idx != -1 {
+			key.fd = fd
+		}
+		if _, ok := a.patternInterval[key]; ok {
+			fmt.Printf("%v %v %d\n", te.trace.name, te.syscall.name, key.fd)
+		}
 	}
 
 	for _, gm := range a.groupingMethods {
@@ -1027,19 +1033,27 @@ func (a *PatternAnalysis) AnalyzeInterPatternSequence() {
 	fmt.Print("--------------------------------------------------------------------------------\n")
 }
 
+func (a *PatternAnalysis) appendEndNode(n *TaggedSyscallNode) {
+	if idx := n.findEndChild(); idx != -1 {
+		return
+	} else if len(n.next) == 0 {
+		newEndNode := NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)
+		n.next = append(n.next, newEndNode)
+		a.tagCounter += 1
+		return
+	}
+
+	for _, next := range n.next {
+		a.appendEndNode(next)
+	}
+}
+
 func (a *PatternAnalysis) PostProcess(opt int) {
 	if opt == 0 {
 		return
 	}
 
-	for pid, n := range a.lastNodeOfPid {
-		if n.findEndChild() == -1 {
-			newEndNode := NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)
-			n.next = append(n.next, newEndNode)
-			a.tagCounter += 1
-			a.lastNodeOfPid[pid] = a.seqTreeRoot
-		}
-	}
+	a.appendEndNode(a.seqTreeRoot)
 	fmt.Print("sequence tree before purging\n")
 	a.seqTreeRoot.Print(a)
 	//i := 0
