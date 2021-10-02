@@ -54,7 +54,7 @@ func (r *LenRange) Update(v uint64, te *TraceEvent, flag AnalysisFlag, opt int) 
 		updateLower = true
 	}
 	if r.upper < v {
-		if flag == TrainFlag {
+		if flag == TrainFlag && opt == 0 {
 			r.upper = v
 		} else if r.upperOL < v {
 			updateUpperOL = true
@@ -140,6 +140,27 @@ func medianAbsDev(vMap map[uint64]int, median uint64) uint64 {
 	return mad
 }
 
+func genRange(mean float64, dev float64, c float64) (uint64, uint64) {
+	var lower, upper uint64
+	if mean != 0 {
+		signedLower := mean - (c * dev)
+		if signedLower < 0 {
+			lower = 0
+		} else {
+			lower = uint64(signedLower)
+		}
+		if math.MaxUint64 - uint64(c * dev) > uint64(mean) {
+			upper = uint64(mean + (c * dev))
+		} else {
+			upper = math.MaxUint64
+		}
+	} else {
+		lower = uint64(mean)
+		upper = uint64(mean)
+	}
+	return lower, upper
+}
+
 func (r *LenRange) RemoveOutlier() bool {
 	if len(r.values) == 0 {
 		return false
@@ -176,17 +197,6 @@ func (r *LenRange) RemoveOutlier() bool {
 				fmt.Printf("%v", outlier)
 			}
 		}
-		signedLowerOL := mean0 - (devThreshold * meanAbsDev0)
-		if signedLowerOL < 0 {
-			r.lowerOL = 0
-		} else {
-			r.lowerOL = uint64(signedLowerOL)
-		}
-		if math.MaxUint64 - uint64(devThreshold * meanAbsDev0) > uint64(mean0) {
-			r.upperOL = uint64(mean0 + (devThreshold * meanAbsDev0))
-		} else {
-			r.upperOL = math.MaxUint64
-		}
 	}
 
 	vKeys = make([]uint64, 0)
@@ -200,26 +210,8 @@ func (r *LenRange) RemoveOutlier() bool {
 	median1 := median(r.values, vKeys)
 	medianAbsDev1 := medianAbsDev(r.values, median1)
 	fmt.Printf("1 median: %v mad: %v mean: %v mad: %v\n", median1, medianAbsDev1, mean1, meanAbsDev1)
-
-	if meanAbsDev1 != 0 {
-		signedLower := mean1 - (devThreshold * meanAbsDev1)
-		if signedLower < 0 {
-			r.lower = 0
-		} else {
-			r.lower = uint64(signedLower)
-		}
-		if math.MaxUint64 - uint64(100 * meanAbsDev1) > uint64(mean1) {
-			r.upper = uint64(mean1 + (100 * meanAbsDev1))
-		} else {
-			r.upper = math.MaxUint64
-		}
-	} else {
-		r.lower = uint64(mean1)
-		r.upper = uint64(mean1)
-		r.lowerOL = uint64(mean1)
-		r.upperOL = uint64(mean1)
-	}
-
+	r.lower, r.upper = genRange(mean1, meanAbsDev1, 100)
+	r.lowerOL, r.upperOL = genRange(mean1, meanAbsDev1, 10000)
 	fmt.Printf("new lower:%d upper:%d lowerOL:%d upperOL:%d\n", r.lower, r.upper, r.lowerOL, r.upperOL)
 
 	return update
@@ -438,6 +430,7 @@ func (a *LenAnalysis) PostProcess(opt int) {
 func (a *LenAnalysis) RemoveOutliers() {
 	fmt.Printf("removing outlier len:\n")
 	for syscall, _ := range a.lenContainingSyscall {
+		fmt.Printf("%v\n", syscall.name)
 		for i, arg := range syscall.def.Args {
 			if lenRange, ok := a.regLenRanges[syscall][arg]; ok {
 				fmt.Printf("reg[%v]:\n", i)
