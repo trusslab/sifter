@@ -237,7 +237,6 @@ type PatternAnalysis struct {
 	seqSeqList        map[int]uint64
 
 	filterStates      map[AnalysisUnitKey]*FilterState
-	filterLastTag     int
 	filterDelayedCall []*TraceEvent
 
 	patternSequences  map[AnalysisUnitKey][]PatternTimestamp
@@ -379,7 +378,7 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			a.lastNodeOfPid[te.id] = newNextNode
 		}
 		a.lastNodeOfPid[te.id].events = append(a.lastNodeOfPid[te.id].events, te)
-	} else if te.typ == 2 {
+	} else if te.typ == 2 && (te.flag & TraceEventFlagUseFD) != 0 {
 		_, nr := te.GetNR()
 		_, key := a.newAnalysisUnitKey(te)
 		idx := -1
@@ -394,7 +393,7 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			key.fd = fd
 		}
 		if _, ok := a.patternInterval[key]; ok {
-			fmt.Printf("%v %v %d\n", te.trace.name, te.syscall.name, key.fd)
+			fmt.Printf("%v %v kernel module fd(%d)\n", te.trace.name, te.syscall.name, key.fd)
 		}
 	}
 
@@ -453,18 +452,14 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 			}
 			filterState.lastNode = a.seqTreeRoot
 
-			if filterState.lastSeqTag == 0 {
-				filterState.lastSeqTag = thisSeqId
-			} else if ctr, ok := a.patternSeqGraph[filterState.lastSeqTag][thisSeqId]; !ok || ctr == 0 {
-			//if ctr, ok := a.patternSeqGraph[a.filterLastTag][thisSeqId]; !ok || ctr == 0 {
-				//errMsg += fmt.Sprintf("seq%x violates inter-seq seq with seq%x", thisSeqId, a.filterLastTag)
-				errMsg += fmt.Sprintf("seq%x violates inter-seq seq with seq%x", thisSeqId, filterState.lastSeqTag)
-				errNum += 1
-			}
-			//} else {
-				filterState.lastSeqTag = thisSeqId
-				//a.filterLastTag = thisSeqId
-			//}
+//			if filterState.lastSeqTag == 0 {
+//				filterState.lastSeqTag = thisSeqId
+//			} else if ctr, ok := a.patternSeqGraph[filterState.lastSeqTag][thisSeqId]; !ok || ctr == 0 {
+//				errMsg += fmt.Sprintf("seq%x violates inter-seq seq with seq%x", thisSeqId, filterState.lastSeqTag)
+//				errNum += 1
+//			} else {
+//				filterState.lastSeqTag = thisSeqId
+//			}
 		}
 
 		if idx := filterState.lastNode.findChild(NewTaggedSyscall(te.syscall, te.tags)); idx != -1 {
