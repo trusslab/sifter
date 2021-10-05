@@ -614,7 +614,8 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 						fmt.Fprintf(s, "    int end = %v;\n", arrayLenName)
 						arrayLenRangeEnd = arrayLenRangeEnd / minElementSize(t.Type)
 					}
-					for i := 0; i < arrayLenRangeEnd; i++ {
+					arrayLenRangeMax := 20
+					for i := 0; i < arrayLenRangeEnd && i < arrayLenRangeMax; i++ {
 						if isVLR {
 							fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, vlrHeaderVarName, "offset"), 1))
 							fmt.Fprintf(s, "    offset += sizeof(%v);\n", vlrHeaderVarName)
@@ -664,7 +665,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 
 func (sifter *Sifter) GenerateOtherSyscallsTracer() {
 	s := sifter.GetSection("level2_tracing")
-	fmt.Fprintf(s, "%v __always_inline trace_other_syscalls(%v *ctx, uint32_t pid) {\n", sifter.ctx.defaultRetType, sifter.ctx.name)
+	fmt.Fprintf(s, "%v __always_inline trace_other_syscalls(%v *ctx, uint32_t pid, uint64_t flag) {\n", sifter.ctx.defaultRetType, sifter.ctx.name)
 	fmt.Fprintf(s, "    %v ret = %v;\n", sifter.ctx.defaultRetType, sifter.ctx.defaultRetVal)
 	if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
 		fmt.Fprintf(s, "    int i = 0;\n")
@@ -676,7 +677,7 @@ func (sifter *Sifter) GenerateOtherSyscallsTracer() {
 		fmt.Fprintf(s, "    syscall_ent_t *ent = bpf_other_syscalls_ent_lookup_elem(&idx);\n")
 		fmt.Fprintf(s, "    if (ent) {\n")
 		fmt.Fprintf(s, "    	ent->ts = bpf_ktime_get_ns();\n")
-		fmt.Fprintf(s, "    	ent->id = pid;\n")
+		fmt.Fprintf(s, "    	ent->id = pid | flag;\n")
 		fmt.Fprintf(s, "    	ent->args[0] = ctx->regs[0];\n")
 		fmt.Fprintf(s, "    	ent->args[1] = ctx->regs[1];\n")
 		fmt.Fprintf(s, "    	ent->args[2] = ctx->regs[2];\n")
@@ -857,9 +858,11 @@ func (sifter *Sifter) GenerateProgSection() {
 				fmt.Fprintf(s, "            trace_%v(ctx, pid);\n", syscalls[0].name)
 			}
 		}
+		fmt.Fprintf(s, "        } else {\n")
+		fmt.Fprintf(s, "            trace_other_syscalls(ctx, pid, 0x40000000);\n")
 		fmt.Fprintf(s, "        }\n")
 		fmt.Fprintf(s, "    } else {\n")
-		fmt.Fprintf(s, "        trace_other_syscalls(ctx, pid);\n")
+		fmt.Fprintf(s, "        trace_other_syscalls(ctx, pid, 0);\n")
 		fmt.Fprintf(s, "    }\n")
 		fmt.Fprintf(s, "    return;\n")
 		fmt.Fprintf(s, "}\n")
@@ -912,20 +915,22 @@ func (sifter *Sifter) GenerateProgSection() {
 		fmt.Fprintf(s, "        check_dev_open(ctx);\n")
 		fmt.Fprintf(s, "    } else if (nr != %v && check_syscall_fd(ctx)) {\n", sifter.SyscallNumber("close"))
 		fmt.Fprintf(s, "        if (nr == %v) {\n", sifter.SyscallNumber("ioctl"))
-		fmt.Fprintf(s, "            trace_ioctl(ctx, pid);\n")
+		fmt.Fprintf(s, "            ret = trace_ioctl(ctx, pid);\n")
 		for key, syscalls := range sifter.moduleSyscalls {
 			if key != "ioctl" && key != "close" {
 				fmt.Fprintf(s, "        } else if (nr == %v) {\n", sifter.SyscallNumber(key))
-				fmt.Fprintf(s, "            trace_%v(ctx, pid);\n", syscalls[0].name)
+				fmt.Fprintf(s, "            ret = trace_%v(ctx, pid);\n", syscalls[0].name)
 			}
 		}
+		fmt.Fprintf(s, "        } else {\n")
+		fmt.Fprintf(s, "            ret = SECCOMP_RET_ERRNO | EINVAL;\n")
 		fmt.Fprintf(s, "        }\n")
 		if a := sifter.GetAnalysis("pattern analysis"); a != nil {
 			fmt.Fprintf(s, "        if (ret == SECCOMP_RET_ALLOW) {\n")
 			fmt.Fprintf(s, "            if (check_seq(pid)) {\n")
 			fmt.Fprintf(s, "                ret = SECCOMP_RET_ALLOW;\n")
 			fmt.Fprintf(s, "            } else {\n")
-			fmt.Fprintf(s, "                ret = SECCOMP_RET_ERRNO;\n")
+			fmt.Fprintf(s, "                ret = SECCOMP_RET_ERRNO | EINVAL;\n")
 			fmt.Fprintf(s, "            }\n")
 			fmt.Fprintf(s, "        }\n")
 			fmt.Fprintf(s, "        bpf_syscall_id_curr_delete_elem(&pid);\n")
@@ -1607,24 +1612,26 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 	outf.Write(s.Bytes())
 }
 
-func getSubsets(set []int, num int) [][]int {
-	subsets := make([][]int, 0)
-	if num != 0 {
-		for i := 0; i <= len(set)-num; i++ {
-			elementSubset := []int{set[i]}
-			subSubsets := getSubsets(set[i+1:], num-1)
-			if len(subSubsets) != 0 {
-				for _, subSubset := range subSubsets {
-					newSubset := append(elementSubset, subSubset...)
-					subsets = append(subsets, newSubset)
-				}
-			} else {
-				subsets = append(subsets, elementSubset)
-			}
-		}
-	}
-	return subsets
-}
+//func getSubsets(set []int, num int) [][]int {
+//	//fmt.Printf("%v %v\n", set, num)
+//	subsets := make([][]int, 0)
+//	if num != 0 {
+//		for i := 0; i <= len(set)-num; i++ {
+//			elementSubset := []int{set[i]}
+//			subSubsets := getSubsets(set[i+1:], num-1)
+//			if len(subSubsets) != 0 {
+//				for _, subSubset := range subSubsets {
+//					newSubset := append(elementSubset, subSubset...)
+//					subsets = append(subsets, newSubset)
+//				}
+//			} else {
+//				subsets = append(subsets, elementSubset)
+//			}
+//		}
+//	}
+//	//fmt.Printf("ret\n")
+//	return subsets
+//}
 
 func (sifter *Sifter) ReadTraceDir(dir string) {
 	var err error
@@ -1633,62 +1640,90 @@ func (sifter *Sifter) ReadTraceDir(dir string) {
 		failf("failed to open trace directory %v", dir)
 	}
 
-	traceFileNum := len(sifter.traceFiles)
-	trainRatio := sifter.trainTestSplit / (1 + sifter.trainTestSplit)
-	trainFileNum := int(float64(traceFileNum) * trainRatio)
-	testFileNum := traceFileNum - trainFileNum
-	traceFileIdxSet := make([]int, traceFileNum)
-	for i := 0; i < traceFileNum; i++ {
-		traceFileIdxSet[i] = i
-	}
-
-	sifter.testFileIdxSets = getSubsets(traceFileIdxSet, testFileNum)
+//	traceFileNum := len(sifter.traceFiles)
+//	trainRatio := sifter.trainTestSplit / (1 + sifter.trainTestSplit)
+//	trainFileNum := int(float64(traceFileNum) * trainRatio)
+//	testFileNum := traceFileNum - trainFileNum
+//	fmt.Printf("ttt r=%v tr=%v train=%v test=%v\n", sifter.trainTestSplit, trainRatio, trainFileNum, testFileNum)
+//	traceFileIdxSet := make([]int, traceFileNum)
+//	for i := 0; i < traceFileNum; i++ {
+//		traceFileIdxSet[i] = i
+//	}
+//
+//	sifter.testFileIdxSets = getSubsets(traceFileIdxSet, testFileNum)
 }
 
 func (sifter *Sifter) GetTrainTestFiles() ([]os.FileInfo, []os.FileInfo) {
-	r := rand.Int31n(int32(len(sifter.testFileIdxSets)))
-	testFileNum := len(sifter.testFileIdxSets[0])
+//	r := rand.Int31n(int32(len(sifter.testFileIdxSets)))
+//	testFileNum := len(sifter.testFileIdxSets[0])
 
 	testFiles := make([]os.FileInfo, 0)
 	trainFiles := make([]os.FileInfo, 0)
-	for i := 0; i < len(sifter.traceFiles); i++ {
-		isTestFileIdx := false
-		for j := 0; j < testFileNum; j++ {
-			if i == sifter.testFileIdxSets[r][j] {
-				isTestFileIdx = true
-			}
-		}
-
-		if isTestFileIdx {
-			testFiles = append(testFiles, sifter.traceFiles[i])
+	trainRatio := sifter.trainTestSplit / (1 + sifter.trainTestSplit)
+	trainFileNum := int(float64(sifter.traceNum) * trainRatio)
+	testFileNum := sifter.traceNum - trainFileNum
+	usedFileMap := make(map[int32]bool)
+	for {
+		if len(testFiles) == testFileNum {
+			break
 		} else {
-			trainFiles = append(trainFiles, sifter.traceFiles[i])
-		}
-	}
-
-
-	if sifter.traceNum != 0 && len(sifter.traceFiles) > sifter.traceNum {
-		trainRatio := sifter.trainTestSplit / (1 + sifter.trainTestSplit)
-		trainFileNum := int(float64(sifter.traceNum) * trainRatio)
-		testFileNum := sifter.traceNum - trainFileNum
-		for {
-			if trainFileNum == len(trainFiles) {
-				break
-			} else {
-				dropIdx := rand.Int31n(int32(len(trainFiles)))
-				trainFiles = append(trainFiles[:dropIdx], trainFiles[dropIdx+1:]...)
-			}
-		}
-
-		for {
-			if testFileNum == len(testFiles) {
-				break
-			} else {
-				dropIdx := rand.Int31n(int32(len(testFiles)))
-				testFiles = append(testFiles[:dropIdx], testFiles[dropIdx+1:]...)
+			r := rand.Int31n(int32(len(sifter.traceFiles)))
+			if _, ok := usedFileMap[r]; !ok {
+				testFiles = append(testFiles, sifter.traceFiles[r])
+				usedFileMap[r] = true
 			}
 		}
 	}
+	for {
+		if len(trainFiles) == trainFileNum {
+			break
+		} else {
+			r := rand.Int31n(int32(len(sifter.traceFiles)))
+			if _, ok := usedFileMap[r]; !ok {
+				trainFiles = append(trainFiles, sifter.traceFiles[r])
+				usedFileMap[r] = true
+			}
+		}
+	}
+//	for i := 0; i < len(sifter.traceFiles); i++ {
+//		isTestFileIdx := false
+//		for j := 0; j < testFileNum; j++ {
+//			if i == sifter.testFileIdxSets[r][j] {
+//				isTestFileIdx = true
+//			}
+//		}
+//
+//		if isTestFileIdx {
+//			testFiles = append(testFiles, sifter.traceFiles[i])
+//		} else {
+//			trainFiles = append(trainFiles, sifter.traceFiles[i])
+//		}
+//	}
+//
+//
+//	if sifter.traceNum != 0 && len(sifter.traceFiles) > sifter.traceNum {
+//		trainRatio := sifter.trainTestSplit / (1 + sifter.trainTestSplit)
+//		trainFileNum := int(float64(sifter.traceNum) * trainRatio)
+//		testFileNum := sifter.traceNum - trainFileNum
+//		fmt.Printf("ttt r=%v tr=%v train=%v test=%v\n", sifter.trainTestSplit, trainRatio, trainFileNum, testFileNum)
+//		for {
+//			if trainFileNum == len(trainFiles) {
+//				break
+//			} else {
+//				dropIdx := rand.Int31n(int32(len(trainFiles)))
+//				trainFiles = append(trainFiles[:dropIdx], trainFiles[dropIdx+1:]...)
+//			}
+//		}
+//
+//		for {
+//			if testFileNum == len(testFiles) {
+//				break
+//			} else {
+//				dropIdx := rand.Int31n(int32(len(testFiles)))
+//				testFiles = append(testFiles[:dropIdx], testFiles[dropIdx+1:]...)
+//			}
+//		}
+//	}
 
 	return trainFiles, testFiles
 }
