@@ -1216,7 +1216,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 						}
 					}
 					fmt.Fprintf(s, "(%d << %d)", syscallID+1, ssi*6)
-					if ssi == len(pa.seqTreeList) - 1 {
+					if ssi == len(pa.seqTreeList[i]) - 1 {
 						fmt.Fprintf(s, "\n;")
 					} else {
 						fmt.Fprintf(s, " | ")
