@@ -246,6 +246,7 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall) error {
 
 const (
 	TraceEventFlagBadData = 1
+	TraceEventFlagUseFD = 2
 )
 
 type TraceEvent struct {
@@ -278,6 +279,10 @@ func newTraceEvent(ts uint64, id uint32, trace *Trace, syscall *Syscall) *TraceE
 	} else if syscall.def == nil {
 		traceEvent.data = make([]byte, 48)
 		traceEvent.typ = 2
+		if traceEvent.id & 0x40000000 != 0 {
+			traceEvent.id = traceEvent.id & 0x0fffffff
+			traceEvent.flag = TraceEventFlagUseFD
+		}
 	} else {
 		traceEvent.data = make([]byte, 48 + syscall.size)
 		traceEvent.typ = 1
