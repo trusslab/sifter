@@ -7,59 +7,63 @@ import (
 )
 
 type FlagSet struct {
-	values map[uint64][]int
+	values map[uint64]map[*Trace]int
 	idx    int
 }
 
-func (flags *FlagSet) Update(v uint64, f AnalysisFlag, opt int) (bool, bool) {
+func (flags *FlagSet) Update(v uint64, te *TraceEvent, f AnalysisFlag, opt int) (bool, bool) {
 	_, ok := flags.values[v]
 	if !ok {
-		flags.values[v] = make([]int, 2)
+		flags.values[v] = make(map[*Trace]int)
 	}
 
 	update := false
 	updateOL := false
 	if f == TrainFlag {
 		if opt == 0 {
-			flags.values[v][0] += 1
+			flags.values[v][te.trace] += 1
 			update = !ok
 		} else if opt == 1 {
-			if flags.values[v][0] == 0 {
+			if _, ok := flags.values[v][nil]; ok {
 				updateOL = true
+			} else if _, ok := flags.values[v]; !ok {
+				update = true
 			}
 		}
 	} else if f == TestFlag {
-		if flags.values[v][0] == 0 {
-			flags.values[v][1] += 1
-			if flags.values[v][1] > 10 {
+		if _, ok := flags.values[v][nil]; ok {
+			flags.values[v][nil] += 1
+			if flags.values[v][nil] > 10 {
 				fmt.Printf("Warning: might have a false positive\n")
 				update = true
 			} else {
 				updateOL = true
 			}
+		} else if _, ok := flags.values[v]; !ok {
+			update = true
 		}
 	}
 
 	return update, updateOL
 }
 
-func (flags *FlagSet) RemoveOutlier() bool {
+func (flags *FlagSet) RemoveOutlier(traceNum int) bool {
 	sum := 0
-	for _, c := range flags.values {
-		sum += c[0]
+	for _, traceCounts := range flags.values {
+		for _, count := range traceCounts {
+			sum += count
+		}
 	}
-	freqThreshold := 0.0001
-	absThreshold := 10
+	traceThreshold := 0.10
 	outliers := make([]string, 0)
-	for v, c := range flags.values {
-		if float64(c[0]) / float64(sum) < freqThreshold && c[0] < absThreshold {
-			outliers = append(outliers, fmt.Sprintf("%v\n", v))
-			//delete(flags.values, v)
-			flags.values[v][0] = 0
+	for v, traceCounts := range flags.values {
+		if float64(len(traceCounts)) / float64(traceNum) < traceThreshold {
+			outliers = append(outliers, fmt.Sprintf("%v(%v/%v)\n", v, sum, len(traceCounts)))
+			flags.values[v][nil] = 0
 		}
 	}
 	if len(outliers) > 0 {
-		fmt.Printf("flags outliers:\n")
+		fmt.Printf("remove:\n")
 		for _, outlier := range outliers {
 			fmt.Printf("%v", outlier)
 		}
@@ -69,15 +73,19 @@ func (flags *FlagSet) RemoveOutlier() bool {
 
 func newFlagSet(idx int) *FlagSet {
 	newFlags := new(FlagSet)
-	newFlags.values = make(map[uint64][]int)
+	newFlags.values = make(map[uint64]map[*Trace]int)
 	newFlags.idx = idx
 	return newFlags
 }
 
 func (flags *FlagSet) String() string {
 	s := ""
-	for flag, count := range flags.values {
-		s += fmt.Sprintf("%x(%d) ", flag, count)
+	for flag, traceCounts := range flags.values {
+		counts := 0
+		for _, count := range traceCounts {
+			counts += count
+		}
+		s += fmt.Sprintf("%x(%d/%d) ", flag, counts, len(traceCounts))
 	}
 	return s
 }
@@ -87,6 +95,7 @@ type FlagAnalysis struct {
 	regFlags map[*Syscall]map[prog.Type]*FlagSet
 	vlrFlags map[*VlrMap]map[*VlrRecord]map[prog.Type]*FlagSet
 	moduleSyscalls map[*Syscall]bool
+	traces map[*Trace]bool
 }
 
 func (a *FlagAnalysis) String() string {
@@ -97,6 +106,7 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.argFlags = make(map[*ArgMap]map[prog.Type]*FlagSet)
 	a.regFlags = make(map[*Syscall]map[prog.Type]*FlagSet)
 	a.vlrFlags = make(map[*VlrMap]map[*VlrRecord]map[prog.Type]*FlagSet)
+	a.traces = make(map[*Trace]bool)
 	for _, syscalls := range *TracedSyscalls {
 		for _, syscall := range syscalls {
 			idx := 0
@@ -168,13 +178,15 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 		return "", 0, 0
 	}
 
+	a.traces[te.trace] = true
+
 	var ol []bool
 	msgs := make([]string, 0)
 	var offset uint64
 	for i, arg := range te.syscall.def.Args {
 		if te.syscall.def.CallName == "ioctl" && i == 1 {
 			_, tr := te.GetData(offset, 8)
-			update, updateOL := a.regFlags[te.syscall][arg].Update(tr, flag, opt)
+			update, updateOL := a.regFlags[te.syscall][arg].Update(tr, te, flag, opt)
 			if update || updateOL {
 				msgs = append(msgs, fmt.Sprintf("reg[%v] new flag %x", i, tr))
 				ol  = append(ol, updateOL)
@@ -187,7 +199,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 		}
 		if _, isFlagsArg := arg.(*prog.FlagsType); isFlagsArg {
 			_, tr := te.GetData(offset, 8)
-			update, updateOL := a.regFlags[te.syscall][arg].Update(tr, flag, opt)
+			update, updateOL := a.regFlags[te.syscall][arg].Update(tr, te, flag, opt)
 			if update || updateOL {
 				msgs = append(msgs, fmt.Sprintf("reg[%v] new flag %x", i, tr))
 				ol  = append(ol, updateOL)
@@ -206,7 +218,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 			for _, field := range structArg.Fields {
 				if _, isFlagsArg := field.(*prog.FlagsType); isFlagsArg {
 					_, tr := te.GetData(offset, field.Size())
-					update, updateOL := a.argFlags[argMap][field].Update(tr, flag, opt)
+					update, updateOL := a.argFlags[argMap][field].Update(tr, te, flag, opt)
 					if update || updateOL {
 						msgs = append(msgs, fmt.Sprintf("%v::%v new flag %x", argMap.name, field.Name(), tr))
 						ol  = append(ol, updateOL)
@@ -222,7 +234,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 		} else {
 			if flagArg, isFlagsArg := argMap.arg.(*prog.FlagsType); isFlagsArg {
 				_, tr := te.GetData(offset, flagArg.Size())
-				update, updateOL := a.argFlags[argMap][argMap.arg].Update(tr, flag, opt)
+				update, updateOL := a.argFlags[argMap][argMap.arg].Update(tr, te, flag, opt)
 				if update || updateOL {
 					msgs = append(msgs, fmt.Sprintf("%v new flag %x", argMap.name, tr))
 					ol  = append(ol, updateOL)
@@ -263,7 +275,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 						for _, ff := range structField.Fields {
 							if _, isFlagsArg := ff.(*prog.FlagsType); isFlagsArg {
 								_, tr := te.GetData(offset+fieldOffset, ff.Size())
-								update, updateOL := a.vlrFlags[vlr][vlrRecord][ff].Update(tr, flag, opt)
+								update, updateOL := a.vlrFlags[vlr][vlrRecord][ff].Update(tr, te, flag, opt)
 								if update || updateOL {
 									msgs = append(msgs, fmt.Sprintf("%v_%v_%v new flag %x", vlrRecord.name, f.FieldName(), ff.FieldName(), tr))
 									ol  = append(ol, updateOL)
@@ -279,7 +291,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 					} else {
 						if _, isFlagsArg := f.(*prog.FlagsType); isFlagsArg {
 							_, tr := te.GetData(offset, f.Size())
-							update, updateOL := a.vlrFlags[vlr][vlrRecord][f].Update(tr, flag, opt)
+							update, updateOL := a.vlrFlags[vlr][vlrRecord][f].Update(tr, te, flag, opt)
 							if update || updateOL {
 								msgs = append(msgs, fmt.Sprintf("%v_%v new flag %x", vlrRecord.name, f.FieldName(), tr))
 								ol  = append(ol, updateOL)
@@ -325,12 +337,13 @@ func (a *FlagAnalysis) PostProcess(opt int) {
 
 func (a *FlagAnalysis) RemoveOutliers() {
 	fmt.Printf("removing outlier flag:\n")
+	traceNum := len(a.traces)
 	for syscall, _ := range a.moduleSyscalls {
 		fmt.Printf("%v\n", syscall.name)
 		for i, arg := range syscall.def.Args {
 			if flags, ok := a.regFlags[syscall][arg]; ok {
 				fmt.Printf("reg[%v]:\n", i)
-				if flags.RemoveOutlier() {
+				if flags.RemoveOutlier(traceNum) {
 					fmt.Printf("%v\n", flags)
 				}
 			}
@@ -340,7 +353,7 @@ func (a *FlagAnalysis) RemoveOutliers() {
 				for _, field := range structArg.Fields {
 					if flags, ok := a.argFlags[argMap][field]; ok {
 						fmt.Printf("%v_%v:\n", argMap.name, field.FieldName())
-						if flags.RemoveOutlier() {
+						if flags.RemoveOutlier(traceNum) {
 							fmt.Printf("%v\n", flags)
 						}
 					}
@@ -348,7 +361,7 @@ func (a *FlagAnalysis) RemoveOutliers() {
 			} else {
 				if flags, ok := a.argFlags[argMap][argMap.arg]; ok {
 					fmt.Printf("%v:\n", argMap.name)
-					if flags.RemoveOutlier() {
+					if flags.RemoveOutlier(traceNum) {
 						fmt.Printf("%v\n", flags)
 					}
 				}
@@ -363,7 +376,7 @@ func (a *FlagAnalysis) RemoveOutliers() {
 						for _, ff := range structField.Fields {
 							if flags, ok := a.vlrFlags[vlrMap][vlrRecord][ff]; ok {
 								fmt.Printf("%v_%v_%v:\n", vlrRecord.name, f.FieldName(), ff.FieldName())
-								if flags.RemoveOutlier() {
+								if flags.RemoveOutlier(traceNum) {
 									fmt.Printf("%v\n", flags)
 								}
 							}
@@ -371,7 +384,7 @@ func (a *FlagAnalysis) RemoveOutliers() {
 					} else {
 						if flags, ok := a.vlrFlags[vlrMap][vlrRecord][f]; ok {
 							fmt.Printf("%v_%v:\n", vlrRecord.name, f.FieldName())
-							if flags.RemoveOutlier() {
+							if flags.RemoveOutlier(traceNum) {
 								fmt.Printf("%v\n", flags)
 							}
 						}
