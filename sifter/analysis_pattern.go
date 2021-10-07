@@ -414,6 +414,17 @@ func (a *PatternAnalysis) Reset() {
 	}
 }
 
+func (a *PatternAnalysis) potentialSeqIds(n *TaggedSyscallNode, seqIds *[]int) {
+	if idx := n.findEndChild(); idx != -1 {
+		*seqIds = append(*seqIds, n.next[idx].tag)
+		return
+	}
+
+	for _, next := range n.next {
+		a.potentialSeqIds(next, seqIds)
+	}
+}
+
 func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 	errMsg := ""
 	errNum := 0
@@ -432,38 +443,49 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 		}
 
 		filterState := a.filterStates[key]
-		if idx := filterState.lastNode.findEndChild(); idx != -1 && filterState.lastNode != a.seqTreeRoot {
-			thisSeqId := filterState.lastNode.next[idx].tag
-			var seqOrderViolated []int
-			var seqOrderViolatedPolicy []int
-			for p, _ := range filterState.patternRecorded {
-				order := a.patternOrder[p][thisSeqId]
-				//if p != thisSeqId && (order == 0 || order == 2) {
-				if p != thisSeqId && order == 2 {
-					seqOrderViolated = append(seqOrderViolated, p)
-					seqOrderViolatedPolicy = append(seqOrderViolatedPolicy, order)
-				}
-			}
-			if len(seqOrderViolated) == 0 {
-				filterState.patternRecorded[thisSeqId] = true
-			} else {
-				errMsg += fmt.Sprintf("seq%x violates inter-seq order with seq%x %v", thisSeqId, seqOrderViolated, seqOrderViolatedPolicy)
-				errNum += 1
-			}
-			filterState.lastNode = a.seqTreeRoot
-
-//			if filterState.lastSeqTag == 0 {
-//				filterState.lastSeqTag = thisSeqId
-//			} else if ctr, ok := a.patternSeqGraph[filterState.lastSeqTag][thisSeqId]; !ok || ctr == 0 {
-//				errMsg += fmt.Sprintf("seq%x violates inter-seq seq with seq%x", thisSeqId, filterState.lastSeqTag)
-//				errNum += 1
-//			} else {
-//				filterState.lastSeqTag = thisSeqId
-//			}
-		}
 
 		if idx := filterState.lastNode.findChild(NewTaggedSyscall(te.syscall, te.tags)); idx != -1 {
-			filterState.lastNode = filterState.lastNode.next[idx]
+			var seqIds []int
+			hasValidSeq := false
+			a.potentialSeqIds(filterState.lastNode.next[idx], &seqIds)
+			for _, seqId := range seqIds {
+				var seqOrderViolated []int
+				var seqOrderViolatedPolicy []int
+				for p, _ := range filterState.patternRecorded {
+					order := a.patternOrder[p][seqId]
+					//if p != thisSeqId && (order == 0 || order == 2) {
+					if p != seqId && order == 2 {
+						seqOrderViolated = append(seqOrderViolated, p)
+						seqOrderViolatedPolicy = append(seqOrderViolatedPolicy, order)
+					}
+				}
+				if len(seqOrderViolated) == 0 {
+					hasValidSeq = true
+				}
+//				if filterState.lastSeqTag == 0 {
+//					filterState.lastSeqTag = thisSeqId
+//				} else if ctr, ok := a.patternSeqGraph[filterState.lastSeqTag][thisSeqId]; !ok || ctr == 0 {
+//					errMsg += fmt.Sprintf("seq%x violates inter-seq seq with seq%x", thisSeqId, filterState.lastSeqTag)
+//					errNum += 1
+//				} else {
+//					filterState.lastSeqTag = thisSeqId
+//				}
+			}
+			if !hasValidSeq {
+				var recordedSeqIds []int
+				for k, _ := range filterState.patternRecorded {
+					recordedSeqIds = append(recordedSeqIds, k)
+				}
+				errMsg += fmt.Sprintf("seq%x all violate inter-seq order with seq%x", seqIds, recordedSeqIds)
+				errNum += 1
+			} else {
+				if endIdx := filterState.lastNode.next[idx].findEndChild(); endIdx != -1 {
+					filterState.patternRecorded[seqIds[0]] = true
+					filterState.lastNode = a.seqTreeRoot
+				} else {
+					filterState.lastNode = filterState.lastNode.next[idx]
+				}
+			}
 		} else {
 			errMsg += fmt.Sprintf("%v->%v%v no matching pattern", filterState.lastNode, te.syscall.name, te.tags)
 			errMsg += fmt.Sprintf(" valid next(")
