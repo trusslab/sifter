@@ -211,7 +211,7 @@ type FilterState struct {
 	recordedSeqs     map[int]bool
 }
 
-type PatternTimestamp struct {
+type SeqTimestamp struct {
 	tag int
 	ts  uint64
 }
@@ -222,25 +222,26 @@ type PatternAnalysis struct {
 	seqTreeRoot       *TaggedSyscallNode
 	patTreeRoot       *TaggedSyscallNode
 	tagCounter        int
-	patternInterval   map[AnalysisUnitKey]map[int][]uint64
-	patternOccurence  map[AnalysisUnitKey]map[int]int
-	patternOrder      map[int]map[int]int
-	patternOrderCtr   map[int]map[int]int
-	patternOrderTh    float64
 
 	unitOfAnalysis    AnalysisUnit
+
+	seqInterval       map[AnalysisUnitKey]map[int][]uint64
+	seqOccurence      map[AnalysisUnitKey]map[int]int
+	seqOrder          map[int]map[int]int
+	seqOrderCounter   map[int]map[int]int
+	seqOrderTh        float64
+
+	seqSeqList        map[int]uint64
+	seqSeqs           map[AnalysisUnitKey][]SeqTimestamp
+	seqSeqGraph       map[int]map[int]int
 
 	uniqueSyscallList []*TaggedSyscall
 	seqTags           []int
 	seqTreeList       [][]*TaggedSyscallNode
 	seqOrderList      map[int]uint64
-	seqSeqList        map[int]uint64
 
 	filterStates      map[AnalysisUnitKey]*FilterState
 	filterDelayedCall []*TraceEvent
-
-	patternSequences  map[AnalysisUnitKey][]PatternTimestamp
-	patternSeqGraph   map[int]map[int]int
 
 	debugEnable       bool
 }
@@ -255,10 +256,10 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.seqTreeRoot.syscall = new(TaggedSyscall)
 	a.patTreeRoot = new(TaggedSyscallNode)
 	a.patTreeRoot.syscall = new(TaggedSyscall)
-	a.patternInterval = make(map[AnalysisUnitKey]map[int][]uint64)
-	a.patternOccurence = make(map[AnalysisUnitKey]map[int]int)
-	a.patternOrder = make(map[int]map[int]int)
-	a.patternOrderCtr = make(map[int]map[int]int)
+	a.seqInterval = make(map[AnalysisUnitKey]map[int][]uint64)
+	a.seqOccurence = make(map[AnalysisUnitKey]map[int]int)
+	a.seqOrder = make(map[int]map[int]int)
+	a.seqOrderCounter = make(map[int]map[int]int)
 	a.filterStates = make(map[AnalysisUnitKey]*FilterState)
 
 	a.seqTreeList = make([][]*TaggedSyscallNode, 0)
@@ -266,14 +267,14 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.seqOrderList = make(map[int]uint64)
 	a.seqSeqList = make(map[int]uint64)
 
-	a.patternSequences = make(map[AnalysisUnitKey][]PatternTimestamp)
-	a.patternSeqGraph = make(map[int]map[int]int)
+	a.seqSeqs = make(map[AnalysisUnitKey][]SeqTimestamp)
+	a.seqSeqGraph = make(map[int]map[int]int)
 
 	a.debugEnable = false
 }
 
 func (a *PatternAnalysis) SetPatternOrderThreshold(th float64) {
-	a.patternOrderTh = th
+	a.seqOrderTh = th
 }
 
 func (a *PatternAnalysis) SetUnitOfAnalysis(u AnalysisUnit) {
@@ -326,10 +327,10 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 	} else if te.typ == 1 {
 		_, key := a.newAnalysisUnitKey(te)
 //		_, fd := te.GetFD()
-		if _, ok := a.patternInterval[key]; !ok {
+		if _, ok := a.seqInterval[key]; !ok {
 //			fmt.Printf("new key %v %d\n", te.info.name, fd)
-			a.patternInterval[key] = make(map[int][]uint64)
-			a.patternOccurence[key] = make(map[int]int)
+			a.seqInterval[key] = make(map[int][]uint64)
+			a.seqOccurence[key] = make(map[int]int)
 		}
 
 		if _, ok := a.lastNodeOfPid[te.id]; ok {
@@ -392,7 +393,7 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 		if idx != -1 {
 			key.fd = fd
 		}
-		if _, ok := a.patternInterval[key]; ok {
+		if _, ok := a.seqInterval[key]; ok {
 			fmt.Printf("%v %v kernel module fd(%d)\n", te.trace.name, te.syscall.name, key.fd)
 		}
 	}
@@ -452,7 +453,7 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 				var seqOrderViolated []int
 				var seqOrderViolatedPolicy []int
 				for p, _ := range filterState.recordedSeqs {
-					order := a.patternOrder[p][seqId]
+					order := a.seqOrder[p][seqId]
 					//if p != thisSeqId && (order == 0 || order == 2) {
 					if p != seqId && order == 2 {
 						seqOrderViolated = append(seqOrderViolated, p)
@@ -464,7 +465,7 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 				}
 //				if filterState.lastSeqTag == 0 {
 //					filterState.lastSeqTag = thisSeqId
-//				} else if ctr, ok := a.patternSeqGraph[filterState.lastSeqTag][thisSeqId]; !ok || ctr == 0 {
+//				} else if ctr, ok := a.seqSeqGraph[filterState.lastSeqTag][thisSeqId]; !ok || ctr == 0 {
 //					errMsg += fmt.Sprintf("seq%x violates inter-seq seq with seq%x", thisSeqId, filterState.lastSeqTag)
 //					errNum += 1
 //				} else {
@@ -806,18 +807,18 @@ func (a *PatternAnalysis) genUniqueNodeList(node *TaggedSyscallNode) {
 }
 
 func (a *PatternAnalysis) genSeqOrderList() {
-	patternOccurence := make(map[int][]int)
+	seqOccurence := make(map[int][]int)
 	for _, tag := range a.seqTags {
-		patternOccurence[tag] = make([]int, 3)
+		seqOccurence[tag] = make([]int, 3)
 	}
-	for key, _ := range a.patternInterval {
+	for key, _ := range a.seqInterval {
 		for _, tag := range a.seqTags {
-			patternOccurence[tag][0] += a.patternOccurence[key][tag]
-			if a.patternOccurence[key][tag] != 0 {
-				patternOccurence[tag][1] += 1
+			seqOccurence[tag][0] += a.seqOccurence[key][tag]
+			if a.seqOccurence[key][tag] != 0 {
+				seqOccurence[tag][1] += 1
 			}
-			if a.patternOccurence[key][tag] > 1 {
-				patternOccurence[tag][2] = 1
+			if a.seqOccurence[key][tag] > 1 {
+				seqOccurence[tag][2] = 1
 			}
 		}
 	}
@@ -825,11 +826,11 @@ func (a *PatternAnalysis) genSeqOrderList() {
 		var order uint64
 		for j, jTag := range a.seqTags {
 			if i == j {
-				if patternOccurence[jTag][2] == 0 {
+				if seqOccurence[jTag][2] == 0 {
 					order = order | (1 << j)
 				}
 			} else {
-				if a.patternOrder[iTag][jTag] == 1 {
+				if a.seqOrder[iTag][jTag] == 1 {
 					order = order | (1 << j)
 				}
 			}
@@ -842,7 +843,7 @@ func (a *PatternAnalysis) genSeqSeqList() {
 	for i, iTag := range a.seqTags {
 		var nexts uint64
 		for j, jTag := range a.seqTags {
-			if a.patternSeqGraph[iTag][jTag] > 0 {
+			if a.seqSeqGraph[iTag][jTag] > 0 {
 				nexts = nexts | (1 << j)
 			}
 		}
@@ -856,17 +857,17 @@ func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
 		fmt.Printf("get seq time interval of tag:%v len:%v\n", tag, len(n.events))
 		for _, te := range n.events {
 			_, key := a.newAnalysisUnitKey(te)
-			if interval, ok := a.patternInterval[key][tag]; !ok {
-				a.patternInterval[key][tag] = []uint64{te.ts, te.ts}
+			if interval, ok := a.seqInterval[key][tag]; !ok {
+				a.seqInterval[key][tag] = []uint64{te.ts, te.ts}
 			} else {
 				if te.ts < interval[0] {
-					a.patternInterval[key][tag][0] = te.ts
+					a.seqInterval[key][tag][0] = te.ts
 				}
 				if te.ts > interval[1] {
-					a.patternInterval[key][tag][1] = te.ts
+					a.seqInterval[key][tag][1] = te.ts
 				}
 			}
-			a.patternOccurence[key][tag] += 1
+			a.seqOccurence[key][tag] += 1
 		}
 	}
 	for _, next := range n.next {
@@ -874,46 +875,46 @@ func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
 	}
 }
 
-func (a *PatternAnalysis) AnalyzeInterPatternOrder() {
+func (a *PatternAnalysis) AnalyzeInterSeqOrder() {
 	a.GetPatternTimeInterval(a.seqTreeRoot)
 
 	fmt.Printf("analysis unit keys:\n")
-	for key, patternInterval := range a.patternInterval {
+	for key, seqInterval := range a.seqInterval {
 		fmt.Printf("%v\n", key)
-		for i, ni := range patternInterval {
-			if _, ok := a.patternOrder[i]; !ok {
-				a.patternOrder[i] = make(map[int]int)
-				a.patternOrderCtr[i] = make(map[int]int)
+		for i, ni := range seqInterval {
+			if _, ok := a.seqOrder[i]; !ok {
+				a.seqOrder[i] = make(map[int]int)
+				a.seqOrderCounter[i] = make(map[int]int)
 			}
-			for j, nj := range patternInterval {
-				if _, ok := a.patternOrder[i][j]; !ok {
-					a.patternOrder[i][j] = 0
-					a.patternOrderCtr[i][j] = 0
+			for j, nj := range seqInterval {
+				if _, ok := a.seqOrder[i][j]; !ok {
+					a.seqOrder[i][j] = 0
+					a.seqOrderCounter[i][j] = 0
 				}
 
 				//if i == 5 {
 				//	fmt.Printf("i:%v j:%v\n", ni, nj)
-				//	fmt.Printf("%v\n", a.patternOrder[i][j])
+				//	fmt.Printf("%v\n", a.seqOrder[i][j])
 				//}
 				if i == j || (ni[0] == 0 && ni[1] == 0) || (nj[0] == 0 && nj[1] == 0) {
 					continue
 				} else if ni[1] < nj[0] {
-					a.patternOrderCtr[i][j] += 1
-					if a.patternOrder[i][j] == 0 || a.patternOrder[i][j] == 1 {
-						a.patternOrder[i][j] = 1
+					a.seqOrderCounter[i][j] += 1
+					if a.seqOrder[i][j] == 0 || a.seqOrder[i][j] == 1 {
+						a.seqOrder[i][j] = 1
 					} else {
-						a.patternOrder[i][j] = 3
+						a.seqOrder[i][j] = 3
 					}
 				} else if ni[0] > nj[1] {
-					a.patternOrderCtr[i][j] += 1
-					if a.patternOrder[i][j] == 0 || a.patternOrder[i][j] == 2 {
-						a.patternOrder[i][j] = 2
+					a.seqOrderCounter[i][j] += 1
+					if a.seqOrder[i][j] == 0 || a.seqOrder[i][j] == 2 {
+						a.seqOrder[i][j] = 2
 					} else {
-						a.patternOrder[i][j] = 3
+						a.seqOrder[i][j] = 3
 					}
 				} else {
-					a.patternOrderCtr[i][j] += 1
-					a.patternOrder[i][j] = 3
+					a.seqOrderCounter[i][j] += 1
+					a.seqOrder[i][j] = 3
 				}
 			}
 		}
@@ -921,7 +922,7 @@ func (a *PatternAnalysis) AnalyzeInterPatternOrder() {
 
 	var tags []int
 	tagMax := 0
-	for k, _ := range a.patternOrder {
+	for k, _ := range a.seqOrder {
 		tags = append(tags, k)
 		if k > tagMax {
 			tagMax = k
@@ -938,31 +939,31 @@ func (a *PatternAnalysis) AnalyzeInterPatternOrder() {
 			fmt.Printf("%*x ", tagW, tag)
 		}
 	}
-	patternOccurence := make(map[int][]int)
+	seqOccurence := make(map[int][]int)
 	for _, tag := range tags {
-		patternOccurence[tag] = make([]int, 3)
+		seqOccurence[tag] = make([]int, 3)
 	}
-	for key, _ := range a.patternInterval {
+	for key, _ := range a.seqInterval {
 		for _, tag := range tags {
-			patternOccurence[tag][0] += a.patternOccurence[key][tag]
-			if a.patternOccurence[key][tag] != 0 {
-				patternOccurence[tag][1] += 1
+			seqOccurence[tag][0] += a.seqOccurence[key][tag]
+			if a.seqOccurence[key][tag] != 0 {
+				seqOccurence[tag][1] += 1
 			}
-			if a.patternOccurence[key][tag] > 1 {
-				patternOccurence[tag][2] = 1
+			if a.seqOccurence[key][tag] > 1 {
+				seqOccurence[tag][2] = 1
 			}
 		}
 	}
 	fmt.Printf("\n")
 	for _, ks := range tags {
-		fmt.Printf("%*x (%8d/%4d) ", tagW, ks, patternOccurence[ks][0], patternOccurence[ks][1])
-		if patternOccurence[ks][2] == 0 {
+		fmt.Printf("%*x (%8d/%4d) ", tagW, ks, seqOccurence[ks][0], seqOccurence[ks][1])
+		if seqOccurence[ks][2] == 0 {
 			fmt.Printf("u ")
 		} else {
 			fmt.Printf("  ")
 		}
 		for _, kd := range tags {
-			vd := a.patternOrder[ks][kd]
+			vd := a.seqOrder[ks][kd]
 			if vd == 0 {
 				fmt.Printf("%*s ", tagW, "-")
 			} else if vd == 1 {
@@ -978,16 +979,16 @@ func (a *PatternAnalysis) AnalyzeInterPatternOrder() {
 		fmt.Printf("\n")
 		fmt.Printf("                      ")
 		for _, kd := range tags {
-			vd := a.patternOrderCtr[ks][kd]
-			if a.patternOrder[ks][kd] == 1 || a.patternOrder[ks][kd] == 2 {
+			vd := a.seqOrderCounter[ks][kd]
+			if a.seqOrder[ks][kd] == 1 || a.seqOrder[ks][kd] == 2 {
 				n := 0
-				if patternOccurence[ks][1] < patternOccurence[kd][1] {
-					n = patternOccurence[ks][1]
+				if seqOccurence[ks][1] < seqOccurence[kd][1] {
+					n = seqOccurence[ks][1]
 				} else {
-					n = patternOccurence[kd][1]
+					n = seqOccurence[kd][1]
 				}
-				if vd < int(a.patternOrderTh * float64(n)) {
-					a.patternOrder[ks][kd] = 3
+				if vd < int(a.seqOrderTh * float64(n)) {
+					a.seqOrder[ks][kd] = 3
 					fmt.Printf("%*dt", tagW, vd)
 				} else if vd <= ctrMax {
 					fmt.Printf("%*d ", tagW, vd)
@@ -1002,45 +1003,45 @@ func (a *PatternAnalysis) AnalyzeInterPatternOrder() {
 	}
 }
 
-func (a *PatternAnalysis) addPatternToSequences(n *TaggedSyscallNode) {
+func (a *PatternAnalysis) addSeqToSeqs(n *TaggedSyscallNode) {
 	if idx := n.findEndChild(); idx != -1 && n != a.seqTreeRoot {
 		tag := n.next[idx].tag
 		for _, te := range n.events {
 			_, key := a.newAnalysisUnitKey(te)
-			a.patternSequences[key] = append(a.patternSequences[key], PatternTimestamp{tag, te.ts})
+			a.seqSeqs[key] = append(a.seqSeqs[key], SeqTimestamp{tag, te.ts})
 		}
 	}
 	for _, next := range n.next {
-		a.addPatternToSequences(next)
+		a.addSeqToSeqs(next)
 	}
 }
 
-func (a *PatternAnalysis) AnalyzeInterPatternSequence() {
+func (a *PatternAnalysis) AnalyzeInterSeqSeq() {
 //	a.unitOfAnalysis = ProcessLevel
-	a.addPatternToSequences(a.seqTreeRoot)
+	a.addSeqToSeqs(a.seqTreeRoot)
 
-	for key, _ := range a.patternSequences {
-		sort.Slice(a.patternSequences[key], func(i, j int) bool {
-			return a.patternSequences[key][i].ts < a.patternSequences[key][j].ts
+	for key, _ := range a.seqSeqs {
+		sort.Slice(a.seqSeqs[key], func(i, j int) bool {
+			return a.seqSeqs[key][i].ts < a.seqSeqs[key][j].ts
 		})
 	}
 
-	for _, seq := range a.patternSequences {
+	for _, seq := range a.seqSeqs {
 		lastTag := 0
 		for _, tagTimestamp := range seq {
 			//if lastTag != 0 {
-				if _, ok := a.patternSeqGraph[lastTag]; !ok {
-					a.patternSeqGraph[lastTag] = make(map[int]int)
+				if _, ok := a.seqSeqGraph[lastTag]; !ok {
+					a.seqSeqGraph[lastTag] = make(map[int]int)
 				}
-				a.patternSeqGraph[lastTag][tagTimestamp.tag] += 1
+				a.seqSeqGraph[lastTag][tagTimestamp.tag] += 1
 			//}
 			lastTag = tagTimestamp.tag
 		}
 	}
 
 	fmt.Print("--------------------------------------------------------------------------------\n")
-	fmt.Printf("pattern seq:\n")
-	for src, dsts := range a.patternSeqGraph {
+	fmt.Printf("inter-seq seq:\n")
+	for src, dsts := range a.seqSeqGraph {
 		fmt.Printf("%3x: ", src)
 		for dst, ctr := range dsts {
 			fmt.Printf("%3x(%d) ", dst, ctr)
@@ -1104,8 +1105,8 @@ func (a *PatternAnalysis) PostProcess(opt int) {
 	fmt.Print("--------------------------------------------------------------------------------\n")
 	fmt.Print("sequence tree after purging\n")
 	a.seqTreeRoot.Print(a)
-	a.AnalyzeInterPatternOrder()
-	a.AnalyzeInterPatternSequence()
+	a.AnalyzeInterSeqOrder()
+	a.AnalyzeInterSeqSeq()
 	a.GenSeqPolicy()
 }
 
