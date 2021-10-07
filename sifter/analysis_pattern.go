@@ -208,7 +208,7 @@ func (a *PatternAnalysis) newAnalysisUnitKey(te *TraceEvent) (bool, AnalysisUnit
 type FilterState struct {
 	lastSeqTag       int
 	lastNode         *TaggedSyscallNode
-	patternRecorded  map[int]bool
+	recordedSeqs     map[int]bool
 }
 
 type PatternTimestamp struct {
@@ -439,7 +439,7 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 		if _, ok := a.filterStates[key]; !ok {
 			a.filterStates[key] = new(FilterState)
 			a.filterStates[key].lastNode = a.seqTreeRoot
-			a.filterStates[key].patternRecorded = make(map[int]bool)
+			a.filterStates[key].recordedSeqs = make(map[int]bool)
 		}
 
 		filterState := a.filterStates[key]
@@ -451,7 +451,7 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 			for _, seqId := range seqIds {
 				var seqOrderViolated []int
 				var seqOrderViolatedPolicy []int
-				for p, _ := range filterState.patternRecorded {
+				for p, _ := range filterState.recordedSeqs {
 					order := a.patternOrder[p][seqId]
 					//if p != thisSeqId && (order == 0 || order == 2) {
 					if p != seqId && order == 2 {
@@ -473,14 +473,14 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 			}
 			if !hasValidSeq {
 				var recordedSeqIds []int
-				for k, _ := range filterState.patternRecorded {
+				for k, _ := range filterState.recordedSeqs {
 					recordedSeqIds = append(recordedSeqIds, k)
 				}
 				errMsg += fmt.Sprintf("seq%x all violate inter-seq order with seq%x", seqIds, recordedSeqIds)
 				errNum += 1
 			} else {
 				if endIdx := filterState.lastNode.next[idx].findEndChild(); endIdx != -1 {
-					filterState.patternRecorded[seqIds[0]] = true
+					filterState.recordedSeqs[seqIds[0]] = true
 					filterState.lastNode = a.seqTreeRoot
 				} else {
 					filterState.lastNode = filterState.lastNode.next[idx]
