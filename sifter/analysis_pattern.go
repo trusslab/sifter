@@ -427,6 +427,23 @@ func (a *PatternAnalysis) potentialSeqIds(n *TaggedSyscallNode, seqIds *[]int) {
 	}
 }
 
+func (a *PatternAnalysis) checkInterSeqOrderPolicy(seqId int, filterState *FilterState) bool {
+	var seqOrderViolated []int
+	for seqIdRecorded, _ := range filterState.recordedSeqs {
+		order := a.seqOrder[seqIdRecorded][seqId]
+		//if seq != seqId && (order == 0 || order == 2) {
+		if seqIdRecorded != seqId && order == 2 {
+			seqOrderViolated = append(seqOrderViolated, seqIdRecorded)
+		}
+	}
+	return len(seqOrderViolated) == 0
+}
+
+func (a *PatternAnalysis) checkInterSeqSeqPolicy(seqId int, filterState *FilterState) bool {
+	ctr, ok := a.seqSeqGraph[filterState.lastSeqId][seqId]
+	return (ok && ctr != 0) || filterState.lastSeqId == 0
+}
+
 func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int, int) {
 	errMsg := ""
 	errNum := 0
@@ -458,29 +475,7 @@ start:
 				var seqIds []int
 				a.potentialSeqIds(filterState.lastNode.next[idx], &seqIds)
 				for _, seqId := range seqIds {
-					hasValidSeqOrder := false
-					hasValidSeqSeq := false
-
-					var seqOrderViolated []int
-					var seqOrderViolatedPolicy []int
-					for p, _ := range filterState.recordedSeqs {
-						order := a.seqOrder[p][seqId]
-						//if p != seqId && (order == 0 || order == 2) {
-						if p != seqId && order == 2 {
-							seqOrderViolated = append(seqOrderViolated, p)
-							seqOrderViolatedPolicy = append(seqOrderViolatedPolicy, order)
-						}
-					}
-					if len(seqOrderViolated) == 0 {
-						hasValidSeqOrder = true
-					}
-
-					ctr, ok := a.seqSeqGraph[filterState.lastSeqId][seqId]
-					if (ok && ctr != 0) || filterState.lastSeqId == 0 {
-						hasValidSeq = true
-					}
-
-					if hasValidSeqOrder && hasValidSeqSeq {
+					if a.checkInterSeqOrderPolicy(seqId, filterState) && a.checkInterSeqSeqPolicy(seqId, filterState) {
 						hasValidSeq = true
 					}
 				}
