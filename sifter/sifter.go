@@ -1585,51 +1585,15 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 	outf.Write(s.Bytes())
 }
 
-//func getSubsets(set []int, num int) [][]int {
-//	//fmt.Printf("%v %v\n", set, num)
-//	subsets := make([][]int, 0)
-//	if num != 0 {
-//		for i := 0; i <= len(set)-num; i++ {
-//			elementSubset := []int{set[i]}
-//			subSubsets := getSubsets(set[i+1:], num-1)
-//			if len(subSubsets) != 0 {
-//				for _, subSubset := range subSubsets {
-//					newSubset := append(elementSubset, subSubset...)
-//					subsets = append(subsets, newSubset)
-//				}
-//			} else {
-//				subsets = append(subsets, elementSubset)
-//			}
-//		}
-//	}
-//	//fmt.Printf("ret\n")
-//	return subsets
-//}
-
 func (sifter *Sifter) ReadTraceDir(dir string) {
 	var err error
 	sifter.traceFiles, err = ioutil.ReadDir(dir)
 	if err != nil {
 		failf("failed to open trace directory %v", dir)
 	}
-
-//	traceFileNum := len(sifter.traceFiles)
-//	trainRatio := sifter.trainTestSplit / (1 + sifter.trainTestSplit)
-//	trainFileNum := int(float64(traceFileNum) * trainRatio)
-//	testFileNum := traceFileNum - trainFileNum
-//	fmt.Printf("ttt r=%v tr=%v train=%v test=%v\n", sifter.trainTestSplit, trainRatio, trainFileNum, testFileNum)
-//	traceFileIdxSet := make([]int, traceFileNum)
-//	for i := 0; i < traceFileNum; i++ {
-//		traceFileIdxSet[i] = i
-//	}
-//
-//	sifter.testFileIdxSets = getSubsets(traceFileIdxSet, testFileNum)
 }
 
 func (sifter *Sifter) GetTrainTestFiles() ([]os.FileInfo, []os.FileInfo) {
-//	r := rand.Int31n(int32(len(sifter.testFileIdxSets)))
-//	testFileNum := len(sifter.testFileIdxSets[0])
-
 	testFiles := make([]os.FileInfo, 0)
 	trainFiles := make([]os.FileInfo, 0)
 	trainRatio := sifter.trainTestSplit / (1 + sifter.trainTestSplit)
@@ -1658,45 +1622,6 @@ func (sifter *Sifter) GetTrainTestFiles() ([]os.FileInfo, []os.FileInfo) {
 			}
 		}
 	}
-//	for i := 0; i < len(sifter.traceFiles); i++ {
-//		isTestFileIdx := false
-//		for j := 0; j < testFileNum; j++ {
-//			if i == sifter.testFileIdxSets[r][j] {
-//				isTestFileIdx = true
-//			}
-//		}
-//
-//		if isTestFileIdx {
-//			testFiles = append(testFiles, sifter.traceFiles[i])
-//		} else {
-//			trainFiles = append(trainFiles, sifter.traceFiles[i])
-//		}
-//	}
-//
-//
-//	if sifter.traceNum != 0 && len(sifter.traceFiles) > sifter.traceNum {
-//		trainRatio := sifter.trainTestSplit / (1 + sifter.trainTestSplit)
-//		trainFileNum := int(float64(sifter.traceNum) * trainRatio)
-//		testFileNum := sifter.traceNum - trainFileNum
-//		fmt.Printf("ttt r=%v tr=%v train=%v test=%v\n", sifter.trainTestSplit, trainRatio, trainFileNum, testFileNum)
-//		for {
-//			if trainFileNum == len(trainFiles) {
-//				break
-//			} else {
-//				dropIdx := rand.Int31n(int32(len(trainFiles)))
-//				trainFiles = append(trainFiles[:dropIdx], trainFiles[dropIdx+1:]...)
-//			}
-//		}
-//
-//		for {
-//			if testFileNum == len(testFiles) {
-//				break
-//			} else {
-//				dropIdx := rand.Int31n(int32(len(testFiles)))
-//				testFiles = append(testFiles[:dropIdx], testFiles[dropIdx+1:]...)
-//			}
-//		}
-//	}
 
 	return trainFiles, testFiles
 }
@@ -1772,8 +1697,8 @@ func (sifter *Sifter) TrainAndTest() {
 		pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 		pa.SetGroupingThreshold(SyscallGrouping, 1)
 		pa.SetPatternOrderThreshold(0.8)
-		pa.SetUnitOfAnalysis(TraceLevel)
-		//pa.SetUnitOfAnalysis(ProcessLevel)
+		//pa.SetUnitOfAnalysis(TraceLevel)
+		pa.SetUnitOfAnalysis(ProcessLevel)
 
 		trainFiles, testFiles := sifter.GetTrainTestFiles()
 
