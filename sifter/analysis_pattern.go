@@ -206,9 +206,10 @@ func (a *PatternAnalysis) newAnalysisUnitKey(te *TraceEvent) (bool, AnalysisUnit
 }
 
 type FilterState struct {
-	lastSeqTag       int
+	lastSeqId        int
 	lastNode         *TaggedSyscallNode
 	recordedSeqs     map[int]bool
+	pid              uint32
 }
 
 type SeqTimestamp struct {
@@ -241,7 +242,7 @@ type PatternAnalysis struct {
 	seqOrderList      map[int]uint64
 
 	filterStates      map[AnalysisUnitKey]*FilterState
-	filterDelayedCall []*TraceEvent
+	filterDelayedSyscalls  []*TraceEvent
 
 	debugEnable       bool
 }
@@ -426,9 +427,10 @@ func (a *PatternAnalysis) potentialSeqIds(n *TaggedSyscallNode, seqIds *[]int) {
 	}
 }
 
-func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
+func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int, int) {
 	errMsg := ""
 	errNum := 0
+	delayNum := 0
 	if te.typ == 0 {
 		if te.id == 0x80010000 {
 			for pid, _ := range a.lastNodeOfPid {
@@ -436,6 +438,7 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 			}
 		}
 	} else if te.typ == 1 {
+start:
 		_, key := a.newAnalysisUnitKey(te)
 		if _, ok := a.filterStates[key]; !ok {
 			a.filterStates[key] = new(FilterState)
@@ -445,63 +448,85 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int) {
 
 		filterState := a.filterStates[key]
 
-		if idx := filterState.lastNode.findChild(NewTaggedSyscall(te.syscall, te.tags)); idx != -1 {
-			var seqIds []int
-			hasValidSeq := false
-			a.potentialSeqIds(filterState.lastNode.next[idx], &seqIds)
-			for _, seqId := range seqIds {
-				var seqOrderViolated []int
-				var seqOrderViolatedPolicy []int
-				for p, _ := range filterState.recordedSeqs {
-					order := a.seqOrder[p][seqId]
-					//if p != thisSeqId && (order == 0 || order == 2) {
-					if p != seqId && order == 2 {
-						seqOrderViolated = append(seqOrderViolated, p)
-						seqOrderViolatedPolicy = append(seqOrderViolatedPolicy, order)
+		if filterState.pid != 0 && filterState.pid != te.id {
+			errMsg += fmt.Sprintf("syscall delayed")
+			delayNum += 1
+			a.filterDelayedSyscalls = append(a.filterDelayedSyscalls, te)
+		} else {
+			if idx := filterState.lastNode.findChild(NewTaggedSyscall(te.syscall, te.tags)); idx != -1 {
+				hasValidSeq := false
+				var seqIds []int
+				a.potentialSeqIds(filterState.lastNode.next[idx], &seqIds)
+				for _, seqId := range seqIds {
+					hasValidSeqOrder := false
+					hasValidSeqSeq := false
+
+					var seqOrderViolated []int
+					var seqOrderViolatedPolicy []int
+					for p, _ := range filterState.recordedSeqs {
+						order := a.seqOrder[p][seqId]
+						//if p != seqId && (order == 0 || order == 2) {
+						if p != seqId && order == 2 {
+							seqOrderViolated = append(seqOrderViolated, p)
+							seqOrderViolatedPolicy = append(seqOrderViolatedPolicy, order)
+						}
+					}
+					if len(seqOrderViolated) == 0 {
+						hasValidSeqOrder = true
+					}
+
+					ctr, ok := a.seqSeqGraph[filterState.lastSeqId][seqId]
+					if (ok && ctr != 0) || filterState.lastSeqId == 0 {
+						hasValidSeq = true
+					}
+
+					if hasValidSeqOrder && hasValidSeqSeq {
+						hasValidSeq = true
 					}
 				}
-				if len(seqOrderViolated) == 0 {
-					hasValidSeq = true
-				}
-//				if filterState.lastSeqTag == 0 {
-//					filterState.lastSeqTag = thisSeqId
-//				} else if ctr, ok := a.seqSeqGraph[filterState.lastSeqTag][thisSeqId]; !ok || ctr == 0 {
-//					errMsg += fmt.Sprintf("seq%x violates inter-seq seq with seq%x", thisSeqId, filterState.lastSeqTag)
-//					errNum += 1
-//				} else {
-//					filterState.lastSeqTag = thisSeqId
-//				}
-			}
-			if !hasValidSeq {
-				var recordedSeqIds []int
-				for k, _ := range filterState.recordedSeqs {
-					recordedSeqIds = append(recordedSeqIds, k)
-				}
-				errMsg += fmt.Sprintf("seq%x all violate inter-seq order with seq%x", seqIds, recordedSeqIds)
-				errNum += 1
-			} else {
-				if endIdx := filterState.lastNode.next[idx].findEndChild(); endIdx != -1 {
-					filterState.recordedSeqs[seqIds[0]] = true
-					filterState.lastNode = a.seqTreeRoot
-				} else {
-					filterState.lastNode = filterState.lastNode.next[idx]
-				}
-			}
-		} else {
-			errMsg += fmt.Sprintf("%v->%v%v no matching pattern", filterState.lastNode, te.syscall.name, te.tags)
-			errMsg += fmt.Sprintf(" valid next(")
-			for i, nn := range filterState.lastNode.next {
-				errMsg += fmt.Sprintf("%v", nn)
-				if i != len(filterState.lastNode.next)-1 {
-					errMsg += fmt.Sprintf(", ")
-				}
-			}
-			errMsg += fmt.Sprintf(")")
-			errNum += 1
-		}
 
+				if !hasValidSeq {
+					var recordedSeqIds []int
+					for k, _ := range filterState.recordedSeqs {
+						recordedSeqIds = append(recordedSeqIds, k)
+					}
+					errMsg += fmt.Sprintf("no seq in seq%x satisfies inter-seq order with seq%x and inter-seq seq with seq[%x]", seqIds, recordedSeqIds, filterState.lastSeqId)
+					errNum += 1
+				} else {
+					if endIdx := filterState.lastNode.next[idx].findEndChild(); endIdx != -1 {
+						filterState.recordedSeqs[seqIds[0]] = true
+						filterState.lastNode = a.seqTreeRoot
+						filterState.lastSeqId = seqIds[0]
+						filterState.pid = 0
+
+						if len(a.filterDelayedSyscalls) != 0 {
+							delay := te.ts
+							te, a.filterDelayedSyscalls = a.filterDelayedSyscalls[0], a.filterDelayedSyscalls[1:]
+							delay = delay - te.ts
+							errMsg += fmt.Sprintf("process delayed syscall at [%v.%09d] after %v ns", te.ts/1000000000, te.ts%1000000000, delay)
+							delayNum += 1
+							goto start
+						}
+					} else {
+						filterState.pid = te.id
+						filterState.lastNode = filterState.lastNode.next[idx]
+					}
+				}
+			} else {
+				errMsg += fmt.Sprintf("%v->%v%v no matching pattern", filterState.lastNode, te.syscall.name, te.tags)
+				errMsg += fmt.Sprintf(" valid next(")
+				for i, nn := range filterState.lastNode.next {
+					errMsg += fmt.Sprintf("%v", nn)
+					if i != len(filterState.lastNode.next)-1 {
+						errMsg += fmt.Sprintf(", ")
+					}
+				}
+				errMsg += fmt.Sprintf(")")
+				errNum += 1
+			}
+		}
 	}
-	return errMsg, errNum
+	return errMsg, errNum, delayNum
 }
 
 func (a *PatternAnalysis) testSeqTreeModel(te *TraceEvent) (string, int) {
@@ -562,14 +587,16 @@ func (a *PatternAnalysis) testSeqTreeModel(te *TraceEvent) (string, int) {
 func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt int) (string, int, int) {
 	msg := ""
 	update := 0
+	delay := 0
 
 	if flag == TrainFlag {
 		a.buildSeqTree(te)
 	} else if flag == TestFlag {
 		//msg, update = a.testSeqTreeModel(te)
-		msg, update = a.testFilterPolicy(te)
+		a.unitOfAnalysis = TraceLevel
+		msg, update, delay = a.testFilterPolicy(te)
 	}
-	return msg, update, 0
+	return msg, update, delay
 }
 
 //func (a *PatternAnalysis) MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallNode) {
@@ -857,6 +884,10 @@ func (a *PatternAnalysis) GetPatternTimeInterval(n *TaggedSyscallNode) {
 		fmt.Printf("get seq time interval of tag:%v len:%v\n", tag, len(n.events))
 		for _, te := range n.events {
 			_, key := a.newAnalysisUnitKey(te)
+			if _, ok := a.seqInterval[key]; !ok {
+				a.seqInterval[key] = make(map[int][]uint64)
+				a.seqOccurence[key] = make(map[int]int)
+			}
 			if interval, ok := a.seqInterval[key][tag]; !ok {
 				a.seqInterval[key][tag] = []uint64{te.ts, te.ts}
 			} else {
@@ -1074,6 +1105,9 @@ func (a *PatternAnalysis) PostProcess(opt int) {
 	a.appendEndNode(a.seqTreeRoot)
 	fmt.Print("sequence tree before purging\n")
 	a.seqTreeRoot.Print(a)
+	a.unitOfAnalysis = TraceLevel
+	a.seqInterval = make(map[AnalysisUnitKey]map[int][]uint64)
+	a.seqOccurence = make(map[AnalysisUnitKey]map[int]int)
 	//i := 0
 	for {
 		//i += 1
