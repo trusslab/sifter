@@ -212,9 +212,9 @@ type FilterState struct {
 	pid              uint32
 }
 
-type SeqTimestamp struct {
-	tag int
-	ts  uint64
+type Seq struct {
+	id int
+	ts uint64
 }
 
 type PatternAnalysis struct {
@@ -232,14 +232,14 @@ type PatternAnalysis struct {
 	seqOrderCounter   map[int]map[int]int
 	seqOrderTh        float64
 
-	seqSeqList        map[int]uint64
-	seqSeqs           map[AnalysisUnitKey][]SeqTimestamp
-	seqSeqGraph       map[int]map[int]int
+	keySeqs           map[AnalysisUnitKey][]Seq
+	seqSeqGraph       map[int]map[int][]int
 
 	uniqueSyscallList []*TaggedSyscall
 	seqTags           []int
 	seqTreeList       [][]*TaggedSyscallNode
 	seqOrderList      map[int]uint64
+	seqSeqList        map[int]uint64
 
 	filterStates      map[AnalysisUnitKey]*FilterState
 	filterDelayedSyscalls  []*TraceEvent
@@ -268,8 +268,8 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.seqOrderList = make(map[int]uint64)
 	a.seqSeqList = make(map[int]uint64)
 
-	a.seqSeqs = make(map[AnalysisUnitKey][]SeqTimestamp)
-	a.seqSeqGraph = make(map[int]map[int]int)
+	a.keySeqs = make(map[AnalysisUnitKey][]Seq)
+	a.seqSeqGraph = make(map[int]map[int][]int)
 
 	a.debugEnable = false
 }
@@ -440,8 +440,11 @@ func (a *PatternAnalysis) checkInterSeqOrderPolicy(seqId int, filterState *Filte
 }
 
 func (a *PatternAnalysis) checkInterSeqSeqPolicy(seqId int, filterState *FilterState) bool {
+	if _, ok := a.seqSeqGraph[filterState.lastSeqId][-1]; ok {
+		return true
+	}
 	ctr, ok := a.seqSeqGraph[filterState.lastSeqId][seqId]
-	return (ok && ctr != 0) || filterState.lastSeqId == 0
+	return (ok && ctr[0] != 0) || filterState.lastSeqId == 0
 }
 
 func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int, int) {
@@ -498,7 +501,7 @@ start:
 							delay := te.ts
 							te, a.filterDelayedSyscalls = a.filterDelayedSyscalls[0], a.filterDelayedSyscalls[1:]
 							delay = delay - te.ts
-							errMsg += fmt.Sprintf("process delayed syscall at [%v.%09d] after %v ns", te.ts/1000000000, te.ts%1000000000, delay)
+							errMsg += fmt.Sprintf("process delayed syscall at [%v.%09d] after %v ns ", te.ts/1000000000, te.ts%1000000000, delay)
 							delayNum += 1
 							goto start
 						}
@@ -865,7 +868,9 @@ func (a *PatternAnalysis) genSeqSeqList() {
 	for i, iTag := range a.seqTags {
 		var nexts uint64
 		for j, jTag := range a.seqTags {
-			if a.seqSeqGraph[iTag][jTag] > 0 {
+			if _, ok := a.seqSeqGraph[iTag][-1]; ok {
+				nexts = nexts | (1 << j)
+			} else if stat, ok := a.seqSeqGraph[iTag][jTag]; ok && stat[0] > 0 {
 				nexts = nexts | (1 << j)
 			}
 		}
@@ -1034,7 +1039,7 @@ func (a *PatternAnalysis) addSeqToSeqs(n *TaggedSyscallNode) {
 		tag := n.next[idx].tag
 		for _, te := range n.events {
 			_, key := a.newAnalysisUnitKey(te)
-			a.seqSeqs[key] = append(a.seqSeqs[key], SeqTimestamp{tag, te.ts})
+			a.keySeqs[key] = append(a.keySeqs[key], Seq{tag, te.ts})
 		}
 	}
 	for _, next := range n.next {
@@ -1046,22 +1051,34 @@ func (a *PatternAnalysis) AnalyzeInterSeqSeq() {
 //	a.unitOfAnalysis = ProcessLevel
 	a.addSeqToSeqs(a.seqTreeRoot)
 
-	for key, _ := range a.seqSeqs {
-		sort.Slice(a.seqSeqs[key], func(i, j int) bool {
-			return a.seqSeqs[key][i].ts < a.seqSeqs[key][j].ts
+	for key, _ := range a.keySeqs {
+		sort.Slice(a.keySeqs[key], func(i, j int) bool {
+			return a.keySeqs[key][i].ts < a.keySeqs[key][j].ts
 		})
 	}
 
-	for _, seq := range a.seqSeqs {
-		lastTag := 0
-		for _, tagTimestamp := range seq {
-			//if lastTag != 0 {
-				if _, ok := a.seqSeqGraph[lastTag]; !ok {
-					a.seqSeqGraph[lastTag] = make(map[int]int)
-				}
-				a.seqSeqGraph[lastTag][tagTimestamp.tag] += 1
-			//}
-			lastTag = tagTimestamp.tag
+	for _, seqs := range a.keySeqs {
+		var lastSeq Seq
+		for _, seq := range seqs {
+			if _, ok := a.seqSeqGraph[lastSeq.id]; !ok {
+				a.seqSeqGraph[lastSeq.id] = make(map[int][]int)
+			}
+			if _, ok := a.seqSeqGraph[lastSeq.id][seq.id]; !ok {
+				a.seqSeqGraph[lastSeq.id][seq.id] = make([]int, 2)
+			}
+			a.seqSeqGraph[lastSeq.id][seq.id][0] += 1
+			if a.seqSeqGraph[lastSeq.id][seq.id][1] < int(seq.ts - lastSeq.ts) {
+				a.seqSeqGraph[lastSeq.id][seq.id][1] = int(seq.ts - lastSeq.ts)
+			}
+			lastSeq = seq
+		}
+	}
+
+	for srcSeq, dstSeqs := range a.seqSeqGraph {
+		for _, stat := range dstSeqs {
+			if stat[1] > 1000000 {
+				a.seqSeqGraph[srcSeq][-1] = make([]int, 2)
+			}
 		}
 	}
 
@@ -1069,8 +1086,11 @@ func (a *PatternAnalysis) AnalyzeInterSeqSeq() {
 	fmt.Printf("inter-seq seq:\n")
 	for src, dsts := range a.seqSeqGraph {
 		fmt.Printf("%3x: ", src)
-		for dst, ctr := range dsts {
-			fmt.Printf("%3x(%d) ", dst, ctr)
+		if _, ok := a.seqSeqGraph[src][-1]; ok {
+			fmt.Printf("drop all: ")
+		}
+		for dst, stat := range dsts {
+			fmt.Printf("%3x(%d) ", dst, stat)
 		}
 		fmt.Printf("\n")
 	}
