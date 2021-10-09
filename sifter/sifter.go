@@ -1160,14 +1160,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 	if sifter.mode == FilterMode {
 		if a := sifter.GetAnalysis("pattern analysis"); a != nil {
 			pa, _ := a.(*PatternAnalysis)
-			fmt.Fprintf(s, "bool __always_inline check_seq_order(uint8_t seq_id, uint64_t seq_seq, uint64_t seqs_curr) {\n")
-			fmt.Fprintf(s, "    uint64_t seq_order;\n")
-			fmt.Fprintf(s, "    switch (seq_id) {\n")
-			for pi, _ := range pa.seqTreeList {
-				fmt.Fprintf(s, "    case %d: seq_order= 0x%x; break;\n", pi, pa.seqOrderList[pi])
-			}
-			fmt.Fprintf(s, "    default: return false;\n")
-			fmt.Fprintf(s, "    }\n")
+			fmt.Fprintf(s, "bool __always_inline check_inter_seq_policy(uint8_t seq_id, uint64_t seq_order, uint64_t seq_seq, uint64_t seqs_curr) {\n")
 			fmt.Fprintf(s, "    if ((seq_order & seqs_curr) == 0 && ((1 << seq_id) & seq_seq) != 0) {\n")
 			fmt.Fprintf(s, "        return true;\n")
 			fmt.Fprintf(s, "    } else {\n")
@@ -1197,14 +1190,23 @@ func (sifter *Sifter) GenerateHelperSection() {
 			fmt.Fprintf(s, "    if (!seq_curr) {\n")
 			fmt.Fprintf(s, "        goto return_error;\n")
 			fmt.Fprintf(s, "    }\n")
-			fmt.Fprintf(s, "    bpf_spin_lock(&seq_curr->lock)\n")
+			fmt.Fprintf(s, "    bpf_spin_lock(&seq_curr->lock);\n")
 			fmt.Fprintf(s, "\n")
 			fmt.Fprintf(s, "    int l = -1;\n")
 			fmt.Fprintf(s, "    int u = -1;\n")
+			fmt.Fprintf(s, "    bool ok = false;\n")
 			fmt.Fprintf(s, "    bool end = false;\n")
 			fmt.Fprintf(s, "    uint32_t idx = seq_curr->idx;\n")
 			fmt.Fprintf(s, "    uint32_t shift = idx * 6;\n")
 			fmt.Fprintf(s, "    uint64_t syscall_seq;\n")
+			fmt.Fprintf(s, "    uint64_t seq_seq;\n")
+			fmt.Fprintf(s, "    uint64_t seq_order;\n")
+			fmt.Fprintf(s, "    switch(seq_curr->last_seq_id) {\n")
+			for i := 0; i < len(pa.seqSeqList); i++ {
+				fmt.Fprintf(s, "    case %v: seq_seq = 0x%x; break;\n", i, pa.seqSeqList[i])
+			}
+			fmt.Fprintf(s, "    default: seq_seq = 0;\n")
+			fmt.Fprintf(s, "    }\n")
 			for i := 0; i < len(pa.seqTreeList); i++ {
 				fmt.Fprintf(s, "    syscall_seq = ")
 				for ssi, ss := range pa.seqTreeList[i] {
@@ -1215,24 +1217,22 @@ func (sifter *Sifter) GenerateHelperSection() {
 							break
 						}
 					}
-					fmt.Fprintf(s, "(%d << %d)", syscallID+1, ssi*6)
+					fmt.Fprintf(s, "(%dUL << %d)", syscallID+1, ssi*6)
 					if ssi == len(pa.seqTreeList[i]) - 1 {
-						fmt.Fprintf(s, "\n;")
+						fmt.Fprintf(s, ";\n")
 					} else {
 						fmt.Fprintf(s, " | ")
 					}
 				}
 				fmt.Fprintf(s, "    if (*this_id == ((syscall_seq >> shift) & 0x3f)) {\n")
+				fmt.Fprintf(s, "    	seq_order = 0x%x;\n", pa.seqOrderList[i])
+				fmt.Fprintf(s, "    	ok |= check_inter_seq_policy(i, seq_order, seq_seq, seq_curr->seqs);\n")
 				fmt.Fprintf(s, "        if (l < 0)\n")
 				fmt.Fprintf(s, "            l = %v;\n", i)
 				fmt.Fprintf(s, "        if (idx == %v)\n", len(pa.seqTreeList[i])-1)
 				fmt.Fprintf(s, "            end = true;\n")
 				fmt.Fprintf(s, "        u = %v;\n", i)
 				fmt.Fprintf(s, "    }\n")
-			}
-			fmt.Fprintf(s, "    bool ok = false;\n")
-			for i := 0; i < len(pa.seqTreeList); i++ {
-				fmt.Fprintf(s, "    if (%d >= l && %d <= u) { ok |= check_seq_order(%d, syscall_seq_seq, seq_curr->seqs); }\n", i, i, i)
 			}
 			fmt.Fprintf(s, "\n")
 			fmt.Fprintf(s, "    if (ok) {\n")
@@ -1600,22 +1600,23 @@ func (sifter *Sifter) GetTrainTestFiles() ([]os.FileInfo, []os.FileInfo) {
 	trainFileNum := int(float64(sifter.traceNum) * trainRatio)
 	testFileNum := sifter.traceNum - trainFileNum
 	usedFileMap := make(map[int32]bool)
-	for {
+	traceFileNum := len(sifter.traceFiles)
+	for i := 0; i < traceFileNum; i++ {
+		r := rand.Int31n(int32(traceFileNum))
 		if len(testFiles) == testFileNum {
-			break
+			continue
 		} else {
-			r := rand.Int31n(int32(len(sifter.traceFiles)))
 			if _, ok := usedFileMap[r]; !ok {
 				testFiles = append(testFiles, sifter.traceFiles[r])
 				usedFileMap[r] = true
 			}
 		}
 	}
-	for {
+	for i := 0; i < traceFileNum; i++ {
+		r := rand.Int31n(int32(traceFileNum))
 		if len(trainFiles) == trainFileNum {
-			break
+			continue
 		} else {
-			r := rand.Int31n(int32(len(sifter.traceFiles)))
 			if _, ok := usedFileMap[r]; !ok {
 				trainFiles = append(trainFiles, sifter.traceFiles[r])
 				usedFileMap[r] = true
