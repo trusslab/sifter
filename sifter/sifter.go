@@ -1654,20 +1654,20 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	sifter.AddAnalysisToRound(r, &la, 1)
 	sifter.AddAnalysisToRound(r, &fa, 1)
 	sifter.AddAnalysisToRound(r, &vlra, 0)
-	sifter.AddAnalysisToRound(r, &pa, 0)
+	sifter.AddAnalysisToRound(r, &pa, 1)
 	//sifter.AddAnalysisToRound(1, &sa, 0)
 
 	for _, round := range sifter.analysisRounds {
-//		for _, file := range round.files {
-			sifter.ReadSyscallTrace(sifter.traceDir)
-			sifter.DoAnalyses(sifter.traceDir, round.flag, round.ac)
-//		}
-	}
-	fmt.Print("--------------------------------------------------------------------------------\n")
+		fmt.Print("================================================================================\n")
+		fmt.Printf("#Round %v: %v\n", ri, fileNames(round.files))
+		sifter.ReadSyscallTrace(sifter.traceDir)
+		sifter.DoAnalyses(sifter.traceDir, round.flag, round.ac)
 
-//	for _, analysis := range sifter.analyses {
-//		analysis.PostProcess(TrainFlag)
-//	}
+		for _, ac := range round.ac {
+			ac.a.PostProcess(ac.opt)
+		}
+		fmt.Print("================================================================================\n")
+	}
 }
 
 func fileNames(files []os.FileInfo) string {
