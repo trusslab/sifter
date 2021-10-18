@@ -38,7 +38,7 @@ func (e *Edge) String() string {
 type SequenceAnalysis struct {
 	seqLen         int
 	nodes          []*Node
-	prevs          map[uint32][]*Node
+	prevs          map[uint64][]*Node
 	seqGraph       map[*Node][]*Edge
 	unitOfAnalysis AnalysisUnit
 }
@@ -83,15 +83,15 @@ func (a SequenceAnalysis) edgesEqual(e1 *Edge, e2 *Edge) bool {
 
 func (a *SequenceAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.seqGraph = make(map[*Node][]*Edge)
-	a.prevs = make(map[uint32][]*Node)
+	a.prevs = make(map[uint64][]*Node)
 }
 
 func (a *SequenceAnalysis) Reset() {
-	a.prevs = make(map[uint32][]*Node)
+	a.prevs = make(map[uint64][]*Node)
 }
 
-func (a *SequenceAnalysis) key(te *TraceEvent) uint32 {
-	var key uint32
+func (a *SequenceAnalysis) key(te *TraceEvent) uint64 {
+	var key uint64
 	switch a.unitOfAnalysis {
 	case ProcessLevel:
 		key = te.id

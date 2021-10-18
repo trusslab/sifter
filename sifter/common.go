@@ -136,14 +136,14 @@ func (syscall *Syscall) AddVlrMap(arg *prog.ArrayType, parentArgMap *ArgMap, arg
 
 type Trace struct {
 	name    string
-	pidComm map[uint32]string
+	pidComm map[uint64]string
 	events  []*TraceEvent
 }
 
 func newTrace(name string) *Trace {
 	trace := new(Trace)
 	trace.name = name
-	trace.pidComm = make(map[uint32]string)
+	trace.pidComm = make(map[uint64]string)
 	return trace
 }
 
@@ -162,7 +162,7 @@ func (t *Trace) ClearEvents() {
 }
 
 func (t *Trace) ReadTracedPidComm() error {
-	pidCommFilePath := fmt.Sprintf("%v/traced_pid_comm_map.log", t.name)
+	pidCommFilePath := fmt.Sprintf("%v/traced_pid_tgid_comm_map.log", t.name)
 	pidCommFile, err := os.Open(pidCommFilePath)
 	if err != nil {
 		return fmt.Errorf("cannot open %v", pidCommFilePath)
@@ -175,7 +175,7 @@ func (t *Trace) ReadTracedPidComm() error {
 		entry := strings.SplitN(bs.Text(), " ", 2)
 		pid, err := strconv.Atoi(entry[0])
 		if err == nil {
-			t.pidComm[uint32(pid)] = entry[1]
+			t.pidComm[uint64(pid)] = entry[1]
 		} else {
 			return err
 		}
@@ -195,7 +195,7 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall) error {
 	br := bufio.NewReader(traceFile)
 	for {
 		var ts uint64
-		var id uint32
+		var id uint64
 		var nr uint32
 		if err = binary.Read(br, binary.LittleEndian, &ts); err != nil {
 			if err.Error() == "EOF" {
@@ -244,6 +244,74 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall) error {
 	}
 }
 
+func (t *Trace) FindEventBefore(id uint64, nr uint64, ts uint64, start int) int {
+	for i := start; i < len(t.events); i++ {
+		te := t.events[i]
+		if ts < te.ts {
+			return -1
+		}
+		if te.id == id && te.syscall.def.NR == nr {
+			return i
+		}
+	}
+	return -1
+}
+
+func (t *Trace) ReadSyscallReturnTrace() error {
+	traceFilePath := fmt.Sprintf("%v/raw_trace_syscall_return.dat", t.name)
+	traceFile, err := os.Open(traceFilePath)
+	if err != nil {
+		return fmt.Errorf("cannot open %v", traceFilePath)
+	}
+
+	defer traceFile.Close()
+
+	lastEvent := make(map[uint64]int)
+	br := bufio.NewReader(traceFile)
+	for {
+		var ts uint64
+		var id uint64
+		var nr uint64
+		var ret uint64
+		if err = binary.Read(br, binary.LittleEndian, &ts); err != nil {
+			if err.Error() == "EOF" {
+				return nil
+			} else {
+				return fmt.Errorf("%v ended unexpectedly (1): %v", traceFilePath, err)
+			}
+		}
+		if err = binary.Read(br, binary.LittleEndian, &id); err != nil {
+			return fmt.Errorf("%v ended unexpectedly (2): %v", traceFilePath, err)
+		}
+		if id & 0x8000000000000000 != 0 {
+			data := make([]byte, (id & 0x00000000ffffffff))
+			_, err = io.ReadFull(br, data)
+			continue
+		}
+		if err = binary.Read(br, binary.LittleEndian, &nr); err != nil {
+			return fmt.Errorf("%v ended unexpectedly (3): %v", traceFilePath, err)
+		}
+		if err = binary.Read(br, binary.LittleEndian, &ret); err != nil {
+			return fmt.Errorf("%v ended unexpectedly (4): %v", traceFilePath, err)
+		}
+
+		start := 0
+		if idx, ok := lastEvent[id]; ok {
+			start = idx+1
+		}
+		i := t.FindEventBefore(id, nr, ts, start)
+		if i == -1 {
+			if nr != 0xffffffffffffffff {
+			fmt.Printf("[%.9f] (%d:%d) nr:%d ret:0x%x. cannot resolve the calling syscall\n", float64(ts)/1000000000.0, uint32(id), id>>32, nr, ret)
+			}
+		} else {
+			t.events[i].ret = ret
+			t.events[i].retTs = ts
+			lastEvent[id] = i
+		}
+	}
+}
+
 const (
 	TraceEventFlagBadData = 1
 	TraceEventFlagUseFD = 2
@@ -251,7 +319,7 @@ const (
 
 type TraceEvent struct {
 	ts      uint64
-	id      uint32
+	id      uint64
 	syscall *Syscall
 	trace   *Trace
 	data    []byte
@@ -259,13 +327,14 @@ type TraceEvent struct {
 	flag    int
 	typ     int
 	ret     uint64
+	retTs   uint64
 
 	fdCached    uint64
 	fdIdxCached int
 
 }
 
-func newTraceEvent(ts uint64, id uint32, trace *Trace, syscall *Syscall) *TraceEvent {
+func newTraceEvent(ts uint64, id uint64, trace *Trace, syscall *Syscall) *TraceEvent {
 	traceEvent := new(TraceEvent)
 	traceEvent.ts = ts
 	traceEvent.id = id
@@ -273,14 +342,14 @@ func newTraceEvent(ts uint64, id uint32, trace *Trace, syscall *Syscall) *TraceE
 	traceEvent.syscall = syscall
 	traceEvent.fdIdxCached = -1
 
-	if (id & 0x80000000 != 0) {
-		traceEvent.data = make([]byte, (id & 0x0000ffff))
+	if (id & 0x8000000000000000 != 0) {
+		traceEvent.data = make([]byte, (id & 0x00000000ffffffff))
 		traceEvent.typ = 0
 	} else if syscall.def == nil {
 		traceEvent.data = make([]byte, 48)
 		traceEvent.typ = 2
-		if traceEvent.id & 0x40000000 != 0 {
-			traceEvent.id = traceEvent.id & 0x0fffffff
+		if traceEvent.id & 0x4000000000000000 != 0 {
+			traceEvent.id = traceEvent.id & 0x0fffffffffffffff
 			traceEvent.flag = TraceEventFlagUseFD
 		}
 	} else {
@@ -293,7 +362,7 @@ func newTraceEvent(ts uint64, id uint32, trace *Trace, syscall *Syscall) *TraceE
 func (te *TraceEvent) String() string {
 	s := fmt.Sprintf("[%v.%09d] ", te.ts/1000000000, te.ts%1000000000)
 	if te.typ == 0{
-		switch (te.id & 0x0fff0000) >> 16 {
+		switch (te.id & 0x0fffffff00000000) >> 32 {
 		case 1:
 			s += "trace start\n"
 		case 2:
@@ -305,9 +374,14 @@ func (te *TraceEvent) String() string {
 		if comm, ok := te.trace.pidComm[te.id]; ok {
 			s += comm
 		}
-		s += fmt.Sprintf("(%v) %v %v ", te.id, te.syscall.name, te.tags)
+		s += fmt.Sprintf("(%v:%v) %v %v ", uint32(te.id), uint32(te.id>>32), te.syscall.name, te.tags)
 		if regID, fd := te.GetFD(); regID != -1 {
 			s += fmt.Sprintf("fd(%d) ", fd)
+		}
+		if te.retTs != 0 {
+			s += fmt.Sprintf("ret 0x%x ", te.ret)
+		} else {
+			s += fmt.Sprintf("ret unresolved ")
 		}
 		s += "\n"
 		for bi, b := range te.data {
@@ -336,11 +410,9 @@ func (te *TraceEvent) GetFD() (int, uint64) {
 	}
 
 	for i, arg := range te.syscall.def.Args {
-		//if res, ok := arg.(*prog.ResourceType); ok && res.FldName == "fd" {
 		if _, ok := arg.(*prog.ResourceType); ok {
 			te.fdIdxCached = i
-			te.fdCached = uint64(binary.LittleEndian.Uint32(te.data[i*8+4:i*8+8]))
-			//return i, uint64(binary.LittleEndian.Uint32(te.data[i*8+4:i*8+8]))
+			te.fdCached = binary.LittleEndian.Uint64(te.data[i*8:i*8+8])
 			return te.fdIdxCached, te.fdCached
 		}
 	}
@@ -354,8 +426,7 @@ func (te *TraceEvent) GetFD2(name string) (int, uint64) {
 
 	for i, arg := range te.syscall.def.Args {
 		if res, ok := arg.(*prog.ResourceType); ok && res.FldName == name {
-		//if _, ok := arg.(*prog.ResourceType); ok {
-			return i, uint64(binary.LittleEndian.Uint32(te.data[i*8+4:i*8+8]))
+			return i, binary.LittleEndian.Uint64(te.data[i*8:i*8+8])
 		}
 	}
 	return -1, 0
@@ -374,11 +445,11 @@ func (te *TraceEvent) GetData(offset uint64, size uint64) (bool, uint64) {
 		case 4:
 			data = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+size]))
 		case 8:
-			if offset <= 40 {
-				data = uint64(binary.LittleEndian.Uint32(te.data[offset+4:offset+size]))
-			} else {
+//			if offset <= 40 {
+//				data = uint64(binary.LittleEndian.Uint32(te.data[offset+4:offset+size]))
+//			} else {
 				data = binary.LittleEndian.Uint64(te.data[offset:offset+size])
-			}
+//			}
 		}
 	}
 
