@@ -40,6 +40,11 @@ std::string g_traced_prog;
 
 std::string g_bpf_prog_name;
 
+struct trace_entry_ctr_t {
+    struct bpf_spin_lock lock;
+    uint32_t val;
+};
+
 struct rb_elem {
     struct bpf_spin_lock lock;
     uint8_t next;
@@ -283,29 +288,29 @@ int proc_bitness(std::vector<int> &proc_bitness, int pid, int verbose) {
 /*
  * Trace entry:
  *   User:
- *   |     64     |   32    |  8 * size ... |
- *     timestamp     event      data
- *                | 16 | 16 |
- *                  hdr size
+ *   |     64     |     64     |  8*size    |
+ *     timestamp      event        data
+ *                |  32  | 32  |
+ *                   hdr   size
  *
  *   Kernel syscall:
- *   |     64     |   32    |      ...      |
- *     timestamp      pid       arguments
+ *   |     64     |     64     |    ...     |
+ *     timestamp     pid tgid    arguments
  *
  */
-#define EVENT_USER                0x80000000
-#define EVENT_USER_SIZE_MASK      0x0000ffff
-#define EVENT_USER_HDR_MASK       0xffff0000
-#define DEF_EVENT_USER(id, size)  (EVENT_USER | (id << 16) | size)
-#define EVENT_USER_TRACE_START    DEF_EVENT_USER(1, 0)
-#define EVENT_USER_TRACE_LOST     DEF_EVENT_USER(2, sizeof(uint32_t))
+#define EVENT_USER                0x8000000000000000
+#define EVENT_USER_SIZE_MASK      0x00000000ffffffff
+#define EVENT_USER_HDR_MASK       0xffffffff00000000
+#define DEF_EVENT_USER(id, size)  (EVENT_USER | (id << 32) | size)
+#define EVENT_USER_TRACE_START    DEF_EVENT_USER(1UL, 0)
+#define EVENT_USER_TRACE_LOST     DEF_EVENT_USER(2UL, sizeof(uint32_t))
 
-void write_user_event(std::ofstream &ofs, uint32_t event, void *buf = NULL) {
+void write_user_event(std::ofstream &ofs, uint64_t event, void *buf = NULL) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t timestamp = ts.tv_sec * 1000000000 + ts.tv_nsec;
     ofs.write(reinterpret_cast<const char*>(&timestamp), sizeof(uint64_t));
-    ofs.write(reinterpret_cast<const char*>(&event), sizeof(uint32_t));
+    ofs.write(reinterpret_cast<const char*>(&event), sizeof(uint64_t));
 
     int size = event & EVENT_USER_SIZE_MASK;
     if (size > 0) {
@@ -436,6 +441,7 @@ private:
         steady_clock::time_point last_update_time = steady_clock::now();
         uint32_t last_update_period_ms = 0;
         uint32_t update_period_ms = 0;
+        trace_entry_ctr_t curr_ctr_struct;
         uint32_t curr_ctr;
         uint32_t last_ctr = 0;
         int zero_idx = 0;
@@ -450,7 +456,8 @@ private:
         write_user_event(ofs, EVENT_USER_TRACE_START);
 
         while (1) {
-            android::bpf::findMapEntry(sc->ctr_fd, &zero_idx, &curr_ctr);
+            android::bpf::findMapEntry(sc->ctr_fd, &zero_idx, &curr_ctr_struct);
+            curr_ctr = curr_ctr_struct.val;
 
             int start = 0, end = 0;
             uint32_t ctr_diff = curr_ctr - last_ctr;
@@ -656,8 +663,8 @@ public:
     }
 
     int save_traced_pid_comm() {
-        std::string path = "/sys/fs/bpf/map_" + m_name + "_traced_pid_comm_map";
-        std::ofstream ofs("traced_pid_comm_map.log");
+        std::string path = "/sys/fs/bpf/map_" + m_name + "_traced_pid_tgid_comm_map";
+        std::ofstream ofs("traced_pid_tgid_comm_map.log");
         int fd = bpf_obj_get(path.c_str());
         if (fd == -1 || !ofs)
             return -1;
