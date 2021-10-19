@@ -10,6 +10,8 @@ import (
 type FlagSet struct {
 	values map[uint64]map[*Trace]int
 	idx    int
+	offset uint64
+	size   uint64
 }
 
 func (flags *FlagSet) Update(v uint64, te *TraceEvent, f AnalysisFlag, opt int) (bool, bool) {
@@ -45,6 +47,11 @@ func (flags *FlagSet) Update(v uint64, te *TraceEvent, f AnalysisFlag, opt int) 
 		}
 	}
 
+	if (f == TestFlag) || (f == TrainFlag && !updateOL) {
+		te.tags = append(te.tags, int(v))
+	} else {
+		te.flag = te.flag | TraceEventFlagBadData
+	}
 	return update, updateOL
 }
 
@@ -72,10 +79,12 @@ func (flags *FlagSet) RemoveOutlier(traceNum int) bool {
 	return len(outliers) != 0
 }
 
-func newFlagSet(idx int) *FlagSet {
+func newFlagSet(idx int, offset uint64, size uint64) *FlagSet {
 	newFlags := new(FlagSet)
 	newFlags.values = make(map[uint64]map[*Trace]int)
 	newFlags.idx = idx
+	newFlags.offset = offset
+	newFlags.size = size
 	return newFlags
 }
 
@@ -126,28 +135,33 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.traces = make(map[*Trace]bool)
 	for _, syscalls := range *TracedSyscalls {
 		for _, syscall := range syscalls {
+			var offset uint64
 			idx := 0
 			a.regFlags[syscall] = make(map[prog.Type]*FlagSet)
 			for _, arg := range syscall.def.Args {
 				if a.isFlagsType(arg, syscall) {
-					a.regFlags[syscall][arg] = newFlagSet(idx)
+					a.regFlags[syscall][arg] = newFlagSet(idx, offset, 8)
 					idx += 1
 				}
+				offset += 8
 			}
+			offset = 48
 			for _, argMap := range syscall.argMaps {
 				a.argFlags[argMap] = make(map[prog.Type]*FlagSet)
 				if structArg, ok := argMap.arg.(*prog.StructType); ok {
 					for _, field := range structArg.Fields {
 						if a.isFlagsType(field, syscall) {
-							a.argFlags[argMap][field] = newFlagSet(idx)
+							a.argFlags[argMap][field] = newFlagSet(idx, offset, field.Size())
 							idx += 1
 						}
+						offset += field.Size()
 					}
 				} else {
 					if a.isFlagsType(argMap.arg, syscall) {
-						a.argFlags[argMap][argMap.arg] = newFlagSet(idx)
+						a.argFlags[argMap][argMap.arg] = newFlagSet(idx, offset, argMap.size)
 						idx += 1
 					}
+					offset += argMap.size
 				}
 			}
 			for _, vlr := range syscall.vlrMaps {
@@ -159,13 +173,13 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 							if structField, ok := f.(*prog.StructType); ok {
 								for _, ff := range structField.Fields {
 									if a.isFlagsType(ff, syscall) {
-										a.vlrFlags[vlr][record][ff] = newFlagSet(idx)
+										a.vlrFlags[vlr][record][ff] = newFlagSet(idx, offset, 0)
 										idx += 1
 									}
 								}
 							} else {
 								if a.isFlagsType(f, syscall) {
-									a.vlrFlags[vlr][record][f] = newFlagSet(idx)
+									a.vlrFlags[vlr][record][f] = newFlagSet(idx, offset, 0)
 									idx += 1
 								}
 							}
@@ -198,17 +212,12 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 	msgs := make([]string, 0)
 	var offset uint64
 	for i, arg := range te.syscall.def.Args {
-		if a.isFlagsType(arg, te.syscall) {
+		if flags, ok := a.regFlags[te.syscall][arg]; ok {
 			_, tr := te.GetData(offset, 8)
-			update, updateOL := a.regFlags[te.syscall][arg].Update(tr, te, flag, opt)
+			update, updateOL := flags.Update(tr, te, flag, opt)
 			if update || updateOL {
 				msgs = append(msgs, fmt.Sprintf("reg[%v] new flag %x", i, tr))
 				ol  = append(ol, updateOL)
-			}
-			if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
-				te.tags = append(te.tags, int(tr))
-			} else {
-				te.flag = te.flag | TraceEventFlagBadData
 			}
 		}
 		offset += 8
@@ -217,49 +226,39 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 	for _, argMap := range te.syscall.argMaps {
 		if structArg, ok := argMap.arg.(*prog.StructType); ok {
 			for _, field := range structArg.Fields {
-				if a.isFlagsType(field, te.syscall) {
+				if flags, ok := a.argFlags[argMap][field]; ok {
 					_, tr := te.GetData(offset, field.Size())
-					update, updateOL := a.argFlags[argMap][field].Update(tr, te, flag, opt)
+					update, updateOL := flags.Update(tr, te, flag, opt)
 					if update || updateOL {
 						msgs = append(msgs, fmt.Sprintf("%v::%v new flag %x", argMap.name, field.Name(), tr))
 						ol  = append(ol, updateOL)
-					}
-					if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
-						te.tags = append(te.tags, int(tr))
-					} else {
-						te.flag = te.flag | TraceEventFlagBadData
 					}
 				}
 				offset += field.Size()
 			}
 		} else {
-			if a.isFlagsType(argMap.arg, te.syscall) {
+			if flags, ok := a.argFlags[argMap][argMap.arg]; ok {
 				_, tr := te.GetData(offset, argMap.arg.Size())
-				update, updateOL := a.argFlags[argMap][argMap.arg].Update(tr, te, flag, opt)
+				update, updateOL := flags.Update(tr, te, flag, opt)
 				if update || updateOL {
 					msgs = append(msgs, fmt.Sprintf("%v new flag %x", argMap.name, tr))
 					ol  = append(ol, updateOL)
-				}
-				if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
-					te.tags = append(te.tags, int(tr))
-				} else {
-					te.flag = te.flag | TraceEventFlagBadData
 				}
 			}
 			offset += argMap.size
 		}
 	}
-	for _, vlr := range te.syscall.vlrMaps {
-		_, size := te.GetData(48+vlr.lenOffset, 8)
+	for _, vlrMap := range te.syscall.vlrMaps {
+		_, size := te.GetData(48+vlrMap.lenOffset, 8)
 		_, start := te.GetData(56, 8) // Special case for binder
 		offset += start
 		for {
 			_, tr := te.GetData(offset, 4)
 			var vlrRecord *VlrRecord
-			if offset < size+vlr.offset+48 {
-				for i, record := range vlr.records {
+			if offset < size+vlrMap.offset+48 {
+				for i, record := range vlrMap.records {
 					if tr == record.header {
-						vlrRecord = vlr.records[i]
+						vlrRecord = vlrMap.records[i]
 						break
 					}
 				}
@@ -274,33 +273,23 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 					if structField, ok := f.(*prog.StructType); ok {
 						fieldOffset := uint64(0)
 						for _, ff := range structField.Fields {
-							if a.isFlagsType(ff, te.syscall) {
+							if flags, ok := a.vlrFlags[vlrMap][vlrRecord][ff]; ok {
 								_, tr := te.GetData(offset+fieldOffset, ff.Size())
-								update, updateOL := a.vlrFlags[vlr][vlrRecord][ff].Update(tr, te, flag, opt)
+								update, updateOL := flags.Update(tr, te, flag, opt)
 								if update || updateOL {
 									msgs = append(msgs, fmt.Sprintf("%v_%v_%v new flag %x", vlrRecord.name, f.FieldName(), ff.FieldName(), tr))
 									ol  = append(ol, updateOL)
-								}
-								if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
-									te.tags = append(te.tags, int(tr))
-								} else {
-									te.flag = te.flag | TraceEventFlagBadData
 								}
 							}
 							fieldOffset += ff.Size()
 						}
 					} else {
-						if a.isFlagsType(f, te.syscall) {
+						if flags, ok := a.vlrFlags[vlrMap][vlrRecord][f]; ok {
 							_, tr := te.GetData(offset, f.Size())
-							update, updateOL := a.vlrFlags[vlr][vlrRecord][f].Update(tr, te, flag, opt)
+							update, updateOL := flags.Update(tr, te, flag, opt)
 							if update || updateOL {
 								msgs = append(msgs, fmt.Sprintf("%v_%v new flag %x", vlrRecord.name, f.FieldName(), tr))
 								ol  = append(ol, updateOL)
-							}
-							if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
-								te.tags = append(te.tags, int(tr))
-							} else {
-								te.flag = te.flag | TraceEventFlagBadData
 							}
 						}
 					}
