@@ -670,7 +670,7 @@ public:
             return -1;
 
         unique_fd ufd = unique_fd(fd);
-        uint32_t pid;
+        uint64_t pid;
         char comm[16];
 
         if (android::bpf::getFirstMapKey(ufd, &pid))
