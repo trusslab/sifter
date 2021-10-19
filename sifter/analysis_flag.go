@@ -113,6 +113,9 @@ func (a *FlagAnalysis) String() string {
 }
 
 func (a *FlagAnalysis) isFlagsType(arg prog.Type, syscall *Syscall) bool {
+	if arg.Dir() == prog.DirOut {
+		return false
+	}
 	if syscall.def.CallName == "ioctl" && arg == syscall.def.Args[1] {
 		return true
 	}

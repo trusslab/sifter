@@ -230,6 +230,9 @@ func (a *LenAnalysis) String() string {
 }
 
 func (a *LenAnalysis) isLenType(arg prog.Type) bool {
+	if arg.Dir() == prog.DirOut {
+		return false
+	}
 	if _, isLenArg := arg.(*prog.LenType); isLenArg {
 		return true
 	}
