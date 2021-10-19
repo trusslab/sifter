@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/google/syzkaller/prog"
 )
@@ -210,8 +211,8 @@ func (r *LenRange) RemoveOutlier() bool {
 	median1 := median(r.values, vKeys)
 	medianAbsDev1 := medianAbsDev(r.values, median1)
 	fmt.Printf("1 median: %v mad: %v mean: %v mad: %v\n", median1, medianAbsDev1, mean1, meanAbsDev1)
-	r.lower, r.upper = genRange(mean1, meanAbsDev1, 100)
-	r.lowerOL, r.upperOL = genRange(mean1, meanAbsDev1, 10000)
+	r.lower, r.upper = genRange(mean1, meanAbsDev1, 100000)
+	r.lowerOL, r.upperOL = genRange(mean1, meanAbsDev1, 10000000)
 	fmt.Printf("new lower:%d upper:%d lowerOL:%d upperOL:%d\n", r.lower, r.upper, r.lowerOL, r.upperOL)
 
 	return update
@@ -228,6 +229,19 @@ func (a *LenAnalysis) String() string {
 	return "length analysis"
 }
 
+func (a *LenAnalysis) isLenType(arg prog.Type) bool {
+	if _, isLenArg := arg.(*prog.LenType); isLenArg {
+		return true
+	}
+	lenStrings := []string{"size", "len", "length"}
+	for _, lenString := range lenStrings {
+		if strings.Contains(arg.FieldName(), lenString) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.argLenRanges = make(map[*ArgMap]map[prog.Type]*LenRange)
 	a.regLenRanges = make(map[*Syscall]map[prog.Type]*LenRange)
@@ -238,7 +252,7 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 		for _, syscall := range syscalls {
 			a.regLenRanges[syscall] = make(map[prog.Type]*LenRange)
 			for _, arg := range syscall.def.Args {
-				if _, ok := arg.(*prog.LenType); ok {
+				if a.isLenType(arg) {
 					a.regLenRanges[syscall][arg] = newLenRange()
 				}
 			}
@@ -246,12 +260,12 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 				a.argLenRanges[argMap] = make(map[prog.Type]*LenRange)
 				if structArg, ok := argMap.arg.(*prog.StructType); ok {
 					for _, field := range structArg.Fields {
-						if _, ok := field.(*prog.LenType); ok {
+						if a.isLenType(field) {
 							a.argLenRanges[argMap][field] = newLenRange()
 						}
 					}
 				} else {
-					if _, ok := argMap.arg.(*prog.LenType); ok {
+					if a.isLenType(argMap.arg) {
 						a.argLenRanges[argMap][argMap.arg] = newLenRange()
 					}
 				}
@@ -264,12 +278,12 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 						for _, f := range structArg.Fields {
 							if structField, ok := f.(*prog.StructType); ok {
 								for _, ff := range structField.Fields {
-									if _, ok := ff.(*prog.LenType); ok {
+									if a.isLenType(ff) {
 										a.vlrLenRanges[vlrMap][vlrRecord][ff] = newLenRange()
 									}
 								}
 							} else {
-								if _, ok := f.(*prog.LenType); ok {
+								if a.isLenType(f) {
 									a.vlrLenRanges[vlrMap][vlrRecord][f] = newLenRange()
 								}
 							}
@@ -295,9 +309,9 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 	msgs := make([]string, 0)
 	var offset uint64
 	for i, arg := range te.syscall.def.Args {
-		if _, ok := arg.(*prog.LenType); ok {
+		if lenRange, ok := a.regLenRanges[te.syscall][arg]; ok {
 			_, tr := te.GetData(uint64(i*8), arg.Size())
-			updateLower, updateUpper, lowerOL, upperOL := a.regLenRanges[te.syscall][arg].Update(tr, te, flag, opt)
+			updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
 			if updateLower {
 				msgs = append(msgs, fmt.Sprintf("reg[%v]:l %x", i, tr))
 				ol = append(ol, lowerOL)
@@ -312,9 +326,9 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 	for _, argMap := range te.syscall.argMaps {
 		if structArg, ok := argMap.arg.(*prog.StructType); ok {
 			for _, field := range structArg.Fields {
-				if _, ok := field.(*prog.LenType); ok {
+				if lenRange, ok := a.argLenRanges[argMap][field]; ok {
 					_, tr := te.GetData(offset, field.Size())
-					updateLower, updateUpper, lowerOL, upperOL := a.argLenRanges[argMap][field].Update(tr, te, flag, opt)
+					updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
 					if updateLower {
 						msgs = append(msgs, fmt.Sprintf("%v_%v:l %x", argMap.name, field.FieldName(), tr))
 						ol = append(ol, lowerOL)
@@ -327,9 +341,9 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 				offset += field.Size()
 			}
 		} else {
-			if _, ok := argMap.arg.(*prog.LenType); ok {
+			if lenRange, ok := a.argLenRanges[argMap][argMap.arg]; ok {
 				_, tr := te.GetData(offset, argMap.arg.Size())
-				updateLower, updateUpper, lowerOL, upperOL := a.argLenRanges[argMap][argMap.arg].Update(tr, te, flag, opt)
+				updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
 				if updateLower {
 					msgs = append(msgs, fmt.Sprintf("%v:l %x", argMap.name, tr))
 					ol = append(ol, lowerOL)
@@ -366,9 +380,9 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 					}
 					if structField, isStructArg := f.(*prog.StructType); isStructArg {
 						for _, ff := range structField.Fields {
-							if _, ok := ff.(*prog.LenType); ok {
+							if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][ff]; ok {
 								_, tr = te.GetData(offset, ff.Size())
-								updateLower, updateUpper, lowerOL, upperOL := a.vlrLenRanges[vlrMap][vlrRecord][ff].Update(tr, te, flag, opt)
+								updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
 								if updateLower {
 									msgs = append(msgs, fmt.Sprintf("%v_%v_%v:l %x", vlrRecord.name, f.FieldName(), ff.FieldName(), tr))
 									ol = append(ol, lowerOL)
@@ -381,9 +395,9 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 							offset += ff.Size()
 						}
 					} else {
-						if _, ok := f.(*prog.LenType); ok {
+						if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][f]; ok {
 							_, tr = te.GetData(offset, f.Size())
-							updateLower, updateUpper, lowerOL, upperOL := a.vlrLenRanges[vlrMap][vlrRecord][f].Update(tr, te, flag, opt)
+							updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
 							if updateLower {
 								msgs = append(msgs, fmt.Sprintf("%v_%v:l %x", vlrRecord.name, f.FieldName(), tr))
 								ol = append(ol, lowerOL)
