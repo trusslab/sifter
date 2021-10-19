@@ -2,6 +2,7 @@ package sifter
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/google/syzkaller/prog"
 )
@@ -85,7 +86,7 @@ func (flags *FlagSet) String() string {
 		for _, count := range traceCounts {
 			counts += count
 		}
-		s += fmt.Sprintf("%x(%d/%d) ", flag, counts, len(traceCounts))
+		s += fmt.Sprintf("0x%x(%d/%d) ", flag, counts, len(traceCounts))
 	}
 	return s
 }
@@ -102,6 +103,22 @@ func (a *FlagAnalysis) String() string {
 	return "flag analysis"
 }
 
+func (a *FlagAnalysis) isFlagsType(arg prog.Type, syscall *Syscall) bool {
+	if syscall.def.CallName == "ioctl" && arg == syscall.def.Args[1] {
+		return true
+	}
+	if _, isFlagsArg := arg.(*prog.FlagsType); isFlagsArg {
+		return true
+	}
+	flagStrings := []string{"flag", "flags", "type"}
+	for _, flagString := range flagStrings {
+		if strings.Contains(arg.FieldName(), flagString) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.argFlags = make(map[*ArgMap]map[prog.Type]*FlagSet)
 	a.regFlags = make(map[*Syscall]map[prog.Type]*FlagSet)
@@ -111,13 +128,8 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 		for _, syscall := range syscalls {
 			idx := 0
 			a.regFlags[syscall] = make(map[prog.Type]*FlagSet)
-			for i, arg := range syscall.def.Args {
-				if syscall.def.CallName == "ioctl" && i == 1 {
-					a.regFlags[syscall][arg] = newFlagSet(idx)
-					idx += 1
-				}
-
-				if _, isFlagsArg := arg.(*prog.FlagsType); isFlagsArg {
+			for _, arg := range syscall.def.Args {
+				if a.isFlagsType(arg, syscall) {
 					a.regFlags[syscall][arg] = newFlagSet(idx)
 					idx += 1
 				}
@@ -126,14 +138,16 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 				a.argFlags[argMap] = make(map[prog.Type]*FlagSet)
 				if structArg, ok := argMap.arg.(*prog.StructType); ok {
 					for _, field := range structArg.Fields {
-						if _, isFlagsArg := field.(*prog.FlagsType); isFlagsArg {
+						if a.isFlagsType(field, syscall) {
 							a.argFlags[argMap][field] = newFlagSet(idx)
 							idx += 1
 						}
 					}
 				} else {
-					a.argFlags[argMap][argMap.arg] = newFlagSet(idx)
-					idx += 1
+					if a.isFlagsType(argMap.arg, syscall) {
+						a.argFlags[argMap][argMap.arg] = newFlagSet(idx)
+						idx += 1
+					}
 				}
 			}
 			for _, vlr := range syscall.vlrMaps {
@@ -144,13 +158,13 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 						for _, f := range structArg.Fields {
 							if structField, ok := f.(*prog.StructType); ok {
 								for _, ff := range structField.Fields {
-									if _, isFlagsArg := ff.(*prog.FlagsType); isFlagsArg {
+									if a.isFlagsType(ff, syscall) {
 										a.vlrFlags[vlr][record][ff] = newFlagSet(idx)
 										idx += 1
 									}
 								}
 							} else {
-								if _, isFlagsArg := f.(*prog.FlagsType); isFlagsArg {
+								if a.isFlagsType(f, syscall) {
 									a.vlrFlags[vlr][record][f] = newFlagSet(idx)
 									idx += 1
 								}
@@ -184,20 +198,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 	msgs := make([]string, 0)
 	var offset uint64
 	for i, arg := range te.syscall.def.Args {
-		if te.syscall.def.CallName == "ioctl" && i == 1 {
-			_, tr := te.GetData(offset, 8)
-			update, updateOL := a.regFlags[te.syscall][arg].Update(tr, te, flag, opt)
-			if update || updateOL {
-				msgs = append(msgs, fmt.Sprintf("reg[%v] new flag %x", i, tr))
-				ol  = append(ol, updateOL)
-			}
-			if (flag == TestFlag) || (flag == TrainFlag && !updateOL) {
-				te.tags = append(te.tags, int(tr))
-			} else {
-				te.flag = te.flag | TraceEventFlagBadData
-			}
-		}
-		if _, isFlagsArg := arg.(*prog.FlagsType); isFlagsArg {
+		if a.isFlagsType(arg, te.syscall) {
 			_, tr := te.GetData(offset, 8)
 			update, updateOL := a.regFlags[te.syscall][arg].Update(tr, te, flag, opt)
 			if update || updateOL {
@@ -216,7 +217,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 	for _, argMap := range te.syscall.argMaps {
 		if structArg, ok := argMap.arg.(*prog.StructType); ok {
 			for _, field := range structArg.Fields {
-				if _, isFlagsArg := field.(*prog.FlagsType); isFlagsArg {
+				if a.isFlagsType(field, te.syscall) {
 					_, tr := te.GetData(offset, field.Size())
 					update, updateOL := a.argFlags[argMap][field].Update(tr, te, flag, opt)
 					if update || updateOL {
@@ -232,8 +233,8 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 				offset += field.Size()
 			}
 		} else {
-			if flagArg, isFlagsArg := argMap.arg.(*prog.FlagsType); isFlagsArg {
-				_, tr := te.GetData(offset, flagArg.Size())
+			if a.isFlagsType(argMap.arg, te.syscall) {
+				_, tr := te.GetData(offset, argMap.arg.Size())
 				update, updateOL := a.argFlags[argMap][argMap.arg].Update(tr, te, flag, opt)
 				if update || updateOL {
 					msgs = append(msgs, fmt.Sprintf("%v new flag %x", argMap.name, tr))
@@ -273,7 +274,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 					if structField, ok := f.(*prog.StructType); ok {
 						fieldOffset := uint64(0)
 						for _, ff := range structField.Fields {
-							if _, isFlagsArg := ff.(*prog.FlagsType); isFlagsArg {
+							if a.isFlagsType(ff, te.syscall) {
 								_, tr := te.GetData(offset+fieldOffset, ff.Size())
 								update, updateOL := a.vlrFlags[vlr][vlrRecord][ff].Update(tr, te, flag, opt)
 								if update || updateOL {
@@ -289,7 +290,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 							fieldOffset += ff.Size()
 						}
 					} else {
-						if _, isFlagsArg := f.(*prog.FlagsType); isFlagsArg {
+						if a.isFlagsType(f, te.syscall) {
 							_, tr := te.GetData(offset, f.Size())
 							update, updateOL := a.vlrFlags[vlr][vlrRecord][f].Update(tr, te, flag, opt)
 							if update || updateOL {
