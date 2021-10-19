@@ -396,6 +396,11 @@ func (te *TraceEvent) String() string {
 				s += fmt.Sprintf("\n")
 			}
 		}
+//		if ok, flag := te.GetData(0, 8); ok && te.syscall.def.NR == 220 {
+//			if flag & 0x00000400 == 0 {
+//				fmt.Printf("clone 0x%x without CLONE_FILES\n", flag)
+//			}
+//		}
 	}
 	return s
 }
@@ -445,12 +450,9 @@ func (te *TraceEvent) GetData(offset uint64, size uint64) (bool, uint64) {
 		case 4:
 			data = uint64(binary.LittleEndian.Uint32(te.data[offset:offset+size]))
 		case 8:
-//			if offset <= 40 {
-//				data = uint64(binary.LittleEndian.Uint32(te.data[offset+4:offset+size]))
-//			} else {
-				data = binary.LittleEndian.Uint64(te.data[offset:offset+size])
-//			}
+			data = binary.LittleEndian.Uint64(te.data[offset:offset+size])
 		}
+		ok = true
 	}
 
 	return ok, data
