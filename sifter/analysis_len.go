@@ -327,36 +327,47 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 	}
 	offset = 48
 	for _, argMap := range te.syscall.argMaps {
-		if structArg, ok := argMap.arg.(*prog.StructType); ok {
-			for _, field := range structArg.Fields {
-				if lenRange, ok := a.argLenRanges[argMap][field]; ok {
-					_, tr := te.GetData(offset, field.Size())
+		arrayLen := argMap.length
+		if arrayLen != 1 {
+			_, tr := te.GetData(48+argMap.lenOffset, 4)
+			if arrayLen < int(tr) {
+				fmt.Printf("number of elements in array %v, %x, exceeds the size of tracing buffer!\n", argMap.name, tr)
+			} else {
+				arrayLen = int(tr)
+			}
+		}
+		for i := 0; i < arrayLen; i++ {
+			if structArg, ok := argMap.arg.(*prog.StructType); ok {
+				for _, field := range structArg.Fields {
+					if lenRange, ok := a.argLenRanges[argMap][field]; ok {
+						_, tr := te.GetData(offset, field.Size())
+						updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
+						if updateLower {
+							msgs = append(msgs, fmt.Sprintf("%v_%v:l %x", argMap.name, field.FieldName(), tr))
+							ol = append(ol, lowerOL)
+						}
+						if updateUpper {
+							msgs = append(msgs, fmt.Sprintf("%v_%v:u %x", argMap.name, field.FieldName(), tr))
+							ol = append(ol, upperOL)
+						}
+					}
+					offset += field.Size()
+				}
+			} else {
+				if lenRange, ok := a.argLenRanges[argMap][argMap.arg]; ok {
+					_, tr := te.GetData(offset, argMap.arg.Size())
 					updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
 					if updateLower {
-						msgs = append(msgs, fmt.Sprintf("%v_%v:l %x", argMap.name, field.FieldName(), tr))
+						msgs = append(msgs, fmt.Sprintf("%v:l %x", argMap.name, tr))
 						ol = append(ol, lowerOL)
 					}
 					if updateUpper {
-						msgs = append(msgs, fmt.Sprintf("%v_%v:u %x", argMap.name, field.FieldName(), tr))
+						msgs = append(msgs, fmt.Sprintf("%v:u %x", argMap.name, tr))
 						ol = append(ol, upperOL)
 					}
 				}
-				offset += field.Size()
+				offset += argMap.arg.Size()
 			}
-		} else {
-			if lenRange, ok := a.argLenRanges[argMap][argMap.arg]; ok {
-				_, tr := te.GetData(offset, argMap.arg.Size())
-				updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
-				if updateLower {
-					msgs = append(msgs, fmt.Sprintf("%v:l %x", argMap.name, tr))
-					ol = append(ol, lowerOL)
-				}
-				if updateUpper {
-					msgs = append(msgs, fmt.Sprintf("%v:u %x", argMap.name, tr))
-					ol = append(ol, upperOL)
-				}
-			}
-			offset += argMap.size
 		}
 	}
 	for _, vlrMap := range te.syscall.vlrMaps {

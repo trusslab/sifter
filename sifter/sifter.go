@@ -490,6 +490,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 
 	fmt.Fprintf(s, "    %v", typeDebugInfo(arg))
 
+	parent := parentArgMap
 	accessOp := ""
 	derefOp := ""
 	dataInStack := true
@@ -500,13 +501,8 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		// Parent arg is a pointer and the userspace data hasn't been copied to stack
 		dataInStack = false
 
-		syscall.AddArgMap(arg, argName, srcPath, argType, 1)
-		for _, argMap := range syscall.argMaps {
-			if argMap.name == argName {
-				parentArgMap = argMap
-			}
-		}
-		parentArgMap = syscall.argMaps[len(syscall.argMaps)-1]
+		syscall.AddArgMap(arg, parent, argName, srcPath, argType, 1)
+		parent = syscall.argMaps[len(syscall.argMaps)-1]
 
 		dstPath = argName + "_p"
 		derefOp = "*"
@@ -537,7 +533,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 			}
 		}
 		*depth += 1
-		sifter.GenerateArgTracer(s, syscall, t.Type, srcPath, argName, "", parentArgMap, depth)
+		sifter.GenerateArgTracer(s, syscall, t.Type, srcPath, argName, "", parent, depth)
 		*depth -= 1
 	case *prog.StructType:
 		if !dataInStack {
@@ -551,7 +547,8 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		}
 		sifter.AddStruct(t)
 		for _, field := range t.Fields {
-			sifter.GenerateArgTracer(s, syscall, field, srcPath, argName, dstPath+accessOp, parentArgMap, depth)
+			fmt.Printf("struct %v field %v parent %v\n", t.Name(), field.FieldName(), parent.name)
+			sifter.GenerateArgTracer(s, syscall, field, srcPath, argName, dstPath+accessOp, parent, depth)
 		}
 	case *prog.LenType, *prog.IntType, *prog.ConstType, *prog.FlagsType:
 		if !dataInStack {
@@ -567,7 +564,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 			fmt.Fprintf(s, "    %v%v = %v;\n", derefOp, dstPath, srcPath)
 		}
 		if sifter.mode == FilterMode {
-			constraints := sifter.CheckArgConstraints(syscall, arg, parentArgMap, *depth)
+			constraints := sifter.CheckArgConstraints(syscall, arg, parent, *depth)
 			for _, c := range constraints {
 				fmt.Fprintf(s, "    %v", indent(c.String(srcPath, "ret", sifter.ctx.defaultRetVal, sifter.ctx.errorRetVal), 1))
 			}
@@ -577,7 +574,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 			isVLR := false
 			vlrHeaderSize := 0
 			if isVLR, vlrHeaderSize, _ = IsVarLenRecord(t); isVLR {
-				syscall.AddVlrMap(t, parentArgMap, argName)
+				syscall.AddVlrMap(t, parent, argName)
 			} else if structElem, ok := t.Type.(*prog.StructType); ok {
 				sifter.AddStruct(structElem)
 			}
@@ -593,19 +590,14 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 				elemBuffer.StructDesc = &prog.StructDesc{TypeCommon: prog.TypeCommon{TypeName: argName+"_buf"}}
 				elemBuffer.Fields = []prog.Type{elements}
 				sifter.AddStruct(elemBuffer)
-				syscall.AddArgMap(t.Type, argName, srcPath, argType, 10)
-				for _, argMap := range syscall.argMaps {
-					if argMap.name == argName {
-						parentArgMap = argMap
-					}
-				}
+				syscall.AddArgMap(t.Type, parentArgMap, argName, srcPath, argType, 10)
 				fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argType), 1))
 				fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, dstPath, "0", true), 1))
 			}
 			if sifter.mode == FilterMode {
 				parentVarName := strings.Split(srcPath, ".")[0]
 				arrayFieldName := strings.Split(srcPath, ".")[1]
-				arrayLen, arrayLenRangeEnd := sifter.GetArrayLen(syscall, parentArgMap, *depth, arrayFieldName)
+				arrayLen, arrayLenRangeEnd := sifter.GetArrayLen(syscall, parent, *depth, arrayFieldName)
 				arrayLenName := fmt.Sprintf("%v.%v", parentVarName, (*arrayLen).FieldName())
 				if !dataInStack {
 					stackVarName := ""
@@ -682,7 +674,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 					fmt.Fprintf(s, "    %v%v[%v] = %v[%v];\n", derefOp, dstPath, i, srcPath, i)
 				}
 				if sifter.mode == FilterMode {
-					constraints := sifter.CheckArgConstraints(syscall, arg, parentArgMap, *depth)
+					constraints := sifter.CheckArgConstraints(syscall, arg, parent, *depth)
 					for _, c := range constraints {
 						fmt.Fprintf(s, "    %v", indent(c.String(fmt.Sprintf("%v[%v]", srcPath, i), "ret", sifter.ctx.defaultRetVal, sifter.ctx.errorRetVal), 1))
 					}

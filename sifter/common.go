@@ -39,6 +39,7 @@ type ArgMap struct {
 	offset   uint64
 	arg      prog.Type
 	length   int
+	lenOffset uint64
 }
 
 type VlrRecord struct {
@@ -81,7 +82,20 @@ func (syscall *Syscall) TraceSize() int {
 	return int(math.Pow(2, float64(syscall.traceSizeBits)))
 }
 
-func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string, argType string, argLen int) {
+func findArrayLengthOffset(parent *ArgMap, arrayName string) (bool, uint64) {
+	if parentStructArg, isStructArg := parent.arg.(*prog.StructType); isStructArg {
+		var offset uint64
+		for _, field := range parentStructArg.Fields {
+			if lenArg, isLenArg := field.(*prog.LenType); isLenArg && parent.name+"_"+lenArg.Path[0] == arrayName {
+				return true, parent.offset + offset
+			}
+			offset += field.Size()
+		}
+	}
+	return false, 0
+}
+
+func (syscall *Syscall) AddArgMap(arg prog.Type, parentArgMap *ArgMap, argName string, srcPath string, argType string, argLen int) {
 	for _, argMap := range syscall.argMaps {
 		if argMap.name == argName {
 			return
@@ -102,6 +116,11 @@ func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string,
 		offset: syscall.size,
 		length: argLen,
 	}
+	if argLen != 1 {
+		if ok, lenOffset := findArrayLengthOffset(parentArgMap, argName); ok {
+			newArgMap.lenOffset = lenOffset
+		}
+	}
 	syscall.argMaps = append(syscall.argMaps, newArgMap)
 	syscall.size += size
 }
@@ -113,14 +132,8 @@ func (syscall *Syscall) AddVlrMap(arg *prog.ArrayType, parentArgMap *ArgMap, arg
 		size: 512,
 		offset: syscall.size,
 	}
-	if parentStructArg, isStructArg := parentArgMap.arg.(*prog.StructType); isStructArg {
-		var offset uint64
-		for _, field := range parentStructArg.Fields {
-			if lenArg, isLenArg := field.(*prog.LenType); isLenArg && parentArgMap.name+"_"+lenArg.Path[0] == argName {
-				newVlrMap.lenOffset = parentArgMap.offset + offset
-			}
-			offset += field.Size()
-		}
+	if ok, lenOffset := findArrayLengthOffset(parentArgMap, argName); ok {
+		newVlrMap.lenOffset = lenOffset
 	}
 	for _, record := range arg.Type.(*prog.UnionType).Fields {
 		structArg, _ := record.(*prog.StructType)
