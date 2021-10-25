@@ -38,6 +38,7 @@ type ArgMap struct {
 	size     uint64
 	offset   uint64
 	arg      prog.Type
+	length   int
 }
 
 type VlrRecord struct {
@@ -80,7 +81,7 @@ func (syscall *Syscall) TraceSize() int {
 	return int(math.Pow(2, float64(syscall.traceSizeBits)))
 }
 
-func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string, argType string) {
+func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string, argType string, argLen int) {
 	for _, argMap := range syscall.argMaps {
 		if argMap.name == argName {
 			return
@@ -90,7 +91,7 @@ func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string,
 	if arg.Varlen() {
 		return
 	} else {
-		size = arg.Size()
+		size = arg.Size() * uint64(argLen)
 	}
 	newArgMap := &ArgMap{
 		arg: arg,
@@ -99,6 +100,7 @@ func (syscall *Syscall) AddArgMap(arg prog.Type, argName string, srcPath string,
 		datatype: argType,
 		size: size,
 		offset: syscall.size,
+		length: argLen,
 	}
 	syscall.argMaps = append(syscall.argMaps, newArgMap)
 	syscall.size += size
@@ -307,6 +309,9 @@ func (t *Trace) ReadSyscallReturnTrace() error {
 		} else {
 			t.events[i].ret = ret
 			t.events[i].retTs = ts
+			if nr == 29 && ret != 0 {
+				t.events[i].flag = t.events[i].flag | TraceEventFlagBadData
+			}
 			lastEvent[id] = i
 		}
 	}

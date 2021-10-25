@@ -348,9 +348,13 @@ func (sifter *Sifter) GenerateStackVar(name *string, argType string) string {
 	return s.String()
 }
 
-func (sifter *Sifter) GenerateCopyFromUser(src string, dst string, off string) string {
+func (sifter *Sifter) GenerateCopyFromUser(src string, dst string, off string, dstIsPtr bool) string {
 	var s strings.Builder
-	fmt.Fprintf(&s, "if (bpf_probe_read_sleepable(&%v, sizeof(%v), (void *)%v+%v) < 0)\n", dst, dst, src, off)
+	if dstIsPtr {
+		fmt.Fprintf(&s, "if (bpf_probe_read_sleepable(%v, sizeof(*%v), (void *)%v+%v) < 0)\n", dst, dst, src, off)
+	} else {
+		fmt.Fprintf(&s, "if (bpf_probe_read_sleepable(&%v, sizeof(%v), (void *)%v+%v) < 0)\n", dst, dst, src, off)
+	}
 	fmt.Fprintf(&s, "    return %v;\n", sifter.ctx.errorRetVal)
 	return s.String()
 }
@@ -474,6 +478,10 @@ func minElementSize(arg prog.Type) int {
 	return minSize
 }
 
+func (sifter *Sifter) GenerateArrayTracer(s *bytes.Buffer, syscall *Syscall, arg prog.Type, srcPath string, argName string, dstPath string, parentArgMap *ArgMap, depth *int) {
+
+}
+
 func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg prog.Type, srcPath string, argName string, dstPath string, parentArgMap *ArgMap, depth *int) {
 	_, thisIsPtr := arg.(*prog.PtrType)
 	if *depth == 0 && !thisIsPtr || *depth >= sifter.depthLimit || isIgnoredArg(arg) {
@@ -492,7 +500,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		// Parent arg is a pointer and the userspace data hasn't been copied to stack
 		dataInStack = false
 
-		syscall.AddArgMap(arg, argName, srcPath, argType)
+		syscall.AddArgMap(arg, argName, srcPath, argType, 1)
 		for _, argMap := range syscall.argMaps {
 			if argMap.name == argName {
 				parentArgMap = argMap
@@ -517,7 +525,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		if !dataInStack {
 			stackVarName := ""
 			fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&stackVarName, argType), 1))
-			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "0"), 1))
+			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "0", false), 1))
 			srcPath = stackVarName
 			if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
 				fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argType), 1))
@@ -535,7 +543,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		if !dataInStack {
 			stackVarName := ""
 			fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&stackVarName, argType), 1))
-			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "0"), 1))
+			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "0", false), 1))
 			srcPath = stackVarName
 			if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
 				fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argType), 1))
@@ -549,7 +557,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		if !dataInStack {
 			stackVarName := ""
 			fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&stackVarName, argType), 1))
-			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "0"), 1))
+			fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "0", false), 1))
 			srcPath = stackVarName
 			if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
 				fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argType), 1))
@@ -569,9 +577,30 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 			isVLR := false
 			vlrHeaderSize := 0
 			if isVLR, vlrHeaderSize, _ = IsVarLenRecord(t); isVLR {
-				//syscall.AddVlrMap(t, parentArgMap, argName)
-			} else {
-				sifter.AddStruct(t.Type.(*prog.StructType))
+				syscall.AddVlrMap(t, parentArgMap, argName)
+			} else if structElem, ok := t.Type.(*prog.StructType); ok {
+				sifter.AddStruct(structElem)
+			}
+			if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
+				argType = "struct "+argName+"_buf"
+				elements := new(prog.ArrayType)
+				elements.TypeCommon = prog.TypeCommon{TypeName: "array", FldName: "elem", TypeSize: t.Type.Size() * 10}
+				elements.Type = t.Type
+				elements.RangeBegin = 10
+				elements.RangeEnd = 10
+				elemBuffer := new(prog.StructType)
+				elemBuffer.Key = prog.StructKey{Name: argName+"_buf"}
+				elemBuffer.StructDesc = &prog.StructDesc{TypeCommon: prog.TypeCommon{TypeName: argName+"_buf"}}
+				elemBuffer.Fields = []prog.Type{elements}
+				sifter.AddStruct(elemBuffer)
+				syscall.AddArgMap(t.Type, argName, srcPath, argType, 10)
+				for _, argMap := range syscall.argMaps {
+					if argMap.name == argName {
+						parentArgMap = argMap
+					}
+				}
+				fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argType), 1))
+				fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, dstPath, "0", true), 1))
 			}
 			if sifter.mode == FilterMode {
 				parentVarName := strings.Split(srcPath, ".")[0]
@@ -617,13 +646,13 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 					arrayLenRangeMax := 20
 					for i := 0; i < arrayLenRangeEnd && i < arrayLenRangeMax; i++ {
 						if isVLR {
-							fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, vlrHeaderVarName, "offset"), 1))
+							fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, vlrHeaderVarName, "offset", false), 1))
 							fmt.Fprintf(s, "    offset += sizeof(%v);\n", vlrHeaderVarName)
 							fmt.Fprintf(s, "    switch(%v) {\n", vlrHeaderVarName)
 							for _, field := range(t.Type.(*prog.UnionType).Fields) {
 								fmt.Fprintf(s, "    case 0x%x:\n", field.(*prog.StructType).Fields[0].(*prog.ConstType).Val)
 								if vlrRecordType, ok := vlrRecordTypes[field.FieldName()]; ok && vlrRecordType != "" {
-									fmt.Fprintf(s, "        %v\n", indent(sifter.GenerateCopyFromUser(srcPath, vlrTypeStackVarNames[vlrRecordType], "offset"), 2))
+									fmt.Fprintf(s, "        %v\n", indent(sifter.GenerateCopyFromUser(srcPath, vlrTypeStackVarNames[vlrRecordType], "offset", false), 2))
 									fmt.Fprintf(s, "        offset += sizeof(%v);\n", vlrTypeStackVarNames[vlrRecordType])
 								}
 								fmt.Fprintf(s, "        break;\n")
@@ -633,7 +662,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 							fmt.Fprintf(s, "        goto %v;\n", endLabelName)
 							fmt.Fprintf(s, "    }\n")
 						} else {
-							fmt.Fprintf(s, "    %v\n", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "offset"), 1))
+							fmt.Fprintf(s, "    %v\n", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, "offset", false), 1))
 							//sifter.AddStruct(t.Type.(*prog.StructType))
 							//for _, field := range t.Fields {
 							//	sifter.GenerateArgTracer(s, syscall, field, newSrcPath, argName, dstPath+accessOp, parentArgMap, depth)
@@ -983,6 +1012,9 @@ func (sifter *Sifter) GenerateMapSection() {
 		fmt.Fprintf(s, "DEFINE_BPF_MAP(comm_setting_pid_tgid_map, HASH, uint64_t, int, 1024);\n")
 		for _, syscalls := range sifter.moduleSyscalls {
 			for _, syscall := range syscalls {
+				if strings.Contains(syscall.name, "_compact_") {
+					continue
+				}
 				fmt.Fprintf(s, "DEFINE_BPF_MAP_F(%v_ctr, ARRAY, int, trace_entry_ctr_t, 1, BPF_F_LOCK)\n", syscall.name)
 				fmt.Fprintf(s, "DEFINE_BPF_MAP(%v_ent, ARRAY, int, sys_enter_ent_t, %v)\n", syscall.name, syscall.TraceSize())
 				for _, arg := range syscall.argMaps {
@@ -1055,11 +1087,11 @@ func (sifter *Sifter) GenerateStructSection() {
 				if field.(*prog.ArrayType).IsVarlen {
 					fieldLen = 0
 				} else {
-					fieldLen = (8 * tt.Size() / field.(*prog.ArrayType).Type.TypeBitSize())
+					fieldLen = tt.RangeBegin
 				}
 				//fieldLen = (field.Size())
 				//fieldType = fmt.Sprintf("uint%v_t", field.(*prog.ArrayType).Type.TypeBitSize())
-				fieldType = fmt.Sprintf("uint%v_t", tt.Type.TypeBitSize())
+				fieldType = fmt.Sprintf("%v", argTypeName(tt.Type))
 			case *prog.StructType:
 				//fmt.Fprintf(s, "    //arg %v %v %v %v %v\n", arg, arg.Name(), arg.FieldName(), arg.Size(), tt)
 				fieldType = fmt.Sprintf("struct %v", tt.String())
@@ -1606,6 +1638,9 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
+			if strings.Contains(syscall.name, "_compact_") {
+				continue
+			}
 			fmt.Fprintf(s, "s %v %v %v", syscall.TraceSizeBits(), len(syscall.argMaps)+1, syscall.name)
 			fmt.Fprintf(s, " 64 %v_ent", syscall.name)
 			for _, arg := range syscall.argMaps {
