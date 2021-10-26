@@ -122,12 +122,12 @@ func (a *TaggedSyscall) Equal(b *TaggedSyscall) bool {
 }
 
 type TaggedSyscallNode struct {
-	next    []*TaggedSyscallNode
-	syscall *TaggedSyscall
-	flag    AnalysisFlag
-	tag     int
-	events  []*TraceEvent
-	pt      int
+	next     []*TaggedSyscallNode
+	syscall  *TaggedSyscall
+	flag     AnalysisFlag
+	tag      int
+	events   []*TraceEvent
+	seqStart *TaggedSyscallNode
 }
 
 func NewTaggedSyscallNode(n *TaggedSyscallNode) *TaggedSyscallNode {
@@ -640,7 +640,6 @@ func (a *PatternAnalysis) _MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscall
 	if *depth != 1 {//&& dst.syscall.Equal(src.syscall) {
 		dst.events = append(dst.events, src.events...)
 	}
-	dst.pt = 0
 //	fmt.Printf("merge (%v to %v), ", src, dst)
 	for _, srcNext := range src.next {
 		if *depth == 1 && srcNext.syscall.syscall == nil {
@@ -694,13 +693,13 @@ func (a *PatternAnalysis) getPatternEnd(sn *TaggedSyscallNode, pn *TaggedSyscall
 	return nil
 }
 
-func (a *PatternAnalysis) PurgeTree2(osn *TaggedSyscallNode, opn *TaggedSyscallNode) bool {
+func (a *PatternAnalysis) purgeTree(osn *TaggedSyscallNode, opn *TaggedSyscallNode) bool {
 	purged := false
 	for _, sn := range osn.next {
 //		fmt.Printf("purge sn:%v opn:%v\n", sn, opn)
-		if ne := a.getPatternEnd(sn, a.patTreeRoot); ne != nil && ne.pt == 0 {
+		if ne := a.getPatternEnd(sn, a.patTreeRoot); ne != nil && ne.seqStart != sn {
 //			fmt.Printf("pattern end:%v\n", ne)
-			ne.pt = 1
+			ne.seqStart = sn
 			if idx := ne.findEndChild(); idx != -1 && len(ne.next) != 1 {
 				a.MergeTrees(a.seqTreeRoot, ne, a.seqTreeRoot)
 //				fmt.Printf("\n")
@@ -709,7 +708,7 @@ func (a *PatternAnalysis) PurgeTree2(osn *TaggedSyscallNode, opn *TaggedSyscallN
 				a.MergeTrees(a.seqTreeRoot, osn, a.seqTreeRoot)
 			}
 			purged = true
-		} else if a.PurgeTree2(sn, a.patTreeRoot) {
+		} else if a.purgeTree(sn, a.patTreeRoot) {
 			purged = true
 		}
 //		fmt.Printf("else\n")
@@ -1163,7 +1162,7 @@ func (a *PatternAnalysis) PostProcess(opt int) {
 //		fmt.Print("--------------------------------------------------------------------------------\n")
 //		fmt.Print("sequence tree\n")
 //		a.seqTreeRoot.Print(a)
-		purged := a.PurgeTree2(a.seqTreeRoot, a.patTreeRoot)
+		purged := a.purgeTree(a.seqTreeRoot, a.patTreeRoot)
 //		fmt.Print("--------------------------------------------------------------------------------\n")
 //		fmt.Printf("purging #%v purged=%v extracted=%v\n", i, purged, extracted)
 //		fmt.Print("--------------------------------------------------------------------------------\n")
