@@ -172,7 +172,7 @@ func (n *TaggedSyscallNode) String() string {
 	if n.syscall.syscall == nil {
 		return "*"
 	} else {
-		return fmt.Sprintf("%v%v", n.syscall.syscall.name, n.syscall.tags)
+		return fmt.Sprintf("%v%x", n.syscall.syscall.name, n.syscall.tags)
 	}
 }
 
@@ -637,11 +637,11 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, o
 
 func (a *PatternAnalysis) _MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallNode, root *TaggedSyscallNode, depth *int) {
 	*depth += 1
-	if dst.syscall.Equal(src.syscall) {
+	if *depth != 1 {//&& dst.syscall.Equal(src.syscall) {
 		dst.events = append(dst.events, src.events...)
 	}
 	dst.pt = 0
-	//fmt.Printf("merge (%v to %v), ", src, dst)
+//	fmt.Printf("merge (%v to %v), ", src, dst)
 	for _, srcNext := range src.next {
 		if *depth == 1 && srcNext.syscall.syscall == nil {
 			continue
@@ -651,13 +651,23 @@ func (a *PatternAnalysis) _MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscall
 			if dst.findEndChild() == -1 || dst == root {
 				a._MergeTrees(dst.next[idx], srcNext, root, depth)
 			} else {
-				a._MergeTrees(root, src, root, depth)
+				newDepth := 0
+				a._MergeTrees(root, src, root, &newDepth)
 			}
 		} else {
 			dst.next = append(dst.next, srcNext)
 		}
 	}
-	//fmt.Printf("return ")
+	if *depth == 1 {
+		if idx := src.findEndChild(); idx >= 0 {
+			src.next = []*TaggedSyscallNode{src.next[idx]}
+		} else {
+			src.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
+			a.tagCounter += 1
+		}
+	}
+	*depth -= 1
+//	fmt.Printf("return %v", *depth)
 }
 
 func (a *PatternAnalysis) MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallNode, root *TaggedSyscallNode) {
@@ -666,12 +676,19 @@ func (a *PatternAnalysis) MergeTrees(dst *TaggedSyscallNode, src *TaggedSyscallN
 }
 
 func (a *PatternAnalysis) getPatternEnd(sn *TaggedSyscallNode, pn *TaggedSyscallNode) *TaggedSyscallNode {
+//	fmt.Printf("gp %v\n", sn)
 	if matchIdx := pn.findChild(sn.syscall); matchIdx >= 0 {
 		pn = pn.next[matchIdx]
 		if pn.findEndChild() >= 0 {
+//			fmt.Printf("gp match but has end\n")
 			return sn
 		} else if len(sn.next) == 1 {
+//			fmt.Printf("gp match one\n")
 			return a.getPatternEnd(sn.next[0], pn)
+		} else {
+			a.MergeTrees(a.patTreeRoot, pn, a.patTreeRoot)
+//			fmt.Printf("gp match but no end\n")
+			return sn
 		}
 	}
 	return nil
@@ -680,34 +697,22 @@ func (a *PatternAnalysis) getPatternEnd(sn *TaggedSyscallNode, pn *TaggedSyscall
 func (a *PatternAnalysis) PurgeTree2(osn *TaggedSyscallNode, opn *TaggedSyscallNode) bool {
 	purged := false
 	for _, sn := range osn.next {
-		//fmt.Printf("purge sn:%v opn:%v\n", sn, opn)
+//		fmt.Printf("purge sn:%v opn:%v\n", sn, opn)
 		if ne := a.getPatternEnd(sn, a.patTreeRoot); ne != nil && ne.pt == 0 {
-			//fmt.Printf("pattern end:%v\n", ne)
+//			fmt.Printf("pattern end:%v\n", ne)
 			ne.pt = 1
 			if idx := ne.findEndChild(); idx != -1 && len(ne.next) != 1 {
 				a.MergeTrees(a.seqTreeRoot, ne, a.seqTreeRoot)
-				//fmt.Printf("\n")
-				if idx := ne.findEndChild(); idx >= 0 {
-					ne.next = []*TaggedSyscallNode{ne.next[idx]}
-				} else {
-					ne.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
-					a.tagCounter += 1
-				}
+//				fmt.Printf("\n")
 			}
 			if osn != a.seqTreeRoot {
 				a.MergeTrees(a.seqTreeRoot, osn, a.seqTreeRoot)
-				if idx := osn.findEndChild(); idx >= 0 {
-					osn.next = []*TaggedSyscallNode{osn.next[idx]}
-				} else {
-					osn.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
-					a.tagCounter += 1
-				}
 			}
 			purged = true
 		} else if a.PurgeTree2(sn, a.patTreeRoot) {
 			purged = true
 		}
-		//fmt.Printf("else\n")
+//		fmt.Printf("else\n")
 	}
 	return purged
 }
@@ -716,26 +721,31 @@ func (a *PatternAnalysis) extractPattern(osn *TaggedSyscallNode, opn *TaggedSysc
 	extracted := false
 	for _, sn := range osn.next {
 		pn := opn
-		//fmt.Printf("extract sn:%v pn:%v ", sn, pn)
+//		fmt.Printf("extract sn:%v pn:%v ", sn, pn)
 		if matchIdx := pn.findChild(sn.syscall); matchIdx >= 0 {
 			pn = pn.next[matchIdx]
-			//fmt.Printf("c1 \n")
+//			fmt.Printf("c1 \n")
 		} else if pn.findEndChild() == -1 || pn == a.patTreeRoot {
-			//fmt.Printf("c2 \n")
+//			fmt.Printf("c2 \n")
 			extracted = true
 			if sn.syscall.syscall == nil && pn != a.patTreeRoot {
 				a.MergeTrees(a.patTreeRoot, pn, a.patTreeRoot)
-				//fmt.Printf("\n")
-				pn.next = []*TaggedSyscallNode{NewTaggedSyscallEndNode(TrainFlag, a.tagCounter)}
-				a.tagCounter += 1
+//				fmt.Printf("\n")
 				pn = pn.next[len(pn.next)-1]
 			} else {
 				pn.next = append(pn.next, NewTaggedSyscallNode(sn))
 				pn = pn.next[len(pn.next)-1]
 			}
 		} else {
-			//fmt.Printf("c3 \n")
-			pn = a.patTreeRoot
+//			fmt.Printf("c3 \n")
+			if sn.syscall.syscall != nil {
+				if idx := a.patTreeRoot.findChild(sn.syscall); idx >= 0 {
+					pn = a.patTreeRoot.next[idx]
+				} else {
+					pn.next = append(pn.next, NewTaggedSyscallNode(sn))
+					pn = pn.next[len(pn.next)-1]
+				}
+			}
 		}
 
 		if a.extractPattern(sn, pn) {
@@ -786,7 +796,7 @@ func (n *TaggedSyscallNode) print(depth *int, depthsWithChildren map[int]bool, h
 			}
 		}
 	} else {
-		s += fmt.Sprintf("[%v]%v%v (%v)", *depth, n.syscall.syscall.name, n.syscall.tags, len(n.events))
+		s += fmt.Sprintf("[%v]%v%x (%v)", *depth, n.syscall.syscall.name, n.syscall.tags, len(n.events))
 		s += fmt.Sprintf("%v", getPidsUniqueString(n))
 	}
 
@@ -1141,31 +1151,32 @@ func (a *PatternAnalysis) PostProcess(opt int) {
 	a.unitOfAnalysis = TraceLevel
 	a.seqInterval = make(map[AnalysisUnitKey]map[int][]uint64)
 	a.seqOccurence = make(map[AnalysisUnitKey]map[int]int)
-	//i := 0
+//	i := 0
 	for {
-		//i += 1
-		//fmt.Print("--------------------------------------------------------------------------------\n")
-		//fmt.Printf("purging #%v\n", i)
+//		i += 1
+//		fmt.Print("--------------------------------------------------------------------------------\n")
+//		fmt.Printf("purging #%v\n", i)
 		extracted := a.extractPattern(a.seqTreeRoot, a.patTreeRoot)
-		//fmt.Print("--------------------------------------------------------------------------------\n")
-		//fmt.Print("pattern tree\n")
-		//a.patTreeRoot.Print(a)
-		//fmt.Print("--------------------------------------------------------------------------------\n")
-		//fmt.Print("sequence tree\n")
-		//a.seqTreeRoot.Print(a)
+//		fmt.Print("--------------------------------------------------------------------------------\n")
+//		fmt.Print("pattern tree\n")
+//		a.patTreeRoot.Print(a)
+//		fmt.Print("--------------------------------------------------------------------------------\n")
+//		fmt.Print("sequence tree\n")
+//		a.seqTreeRoot.Print(a)
 		purged := a.PurgeTree2(a.seqTreeRoot, a.patTreeRoot)
-		//fmt.Print("--------------------------------------------------------------------------------\n")
-		//fmt.Printf("purging #%v purged=%v extracted=%v\n", i, purged, extracted)
-		//fmt.Print("--------------------------------------------------------------------------------\n")
-		//fmt.Print("pattern tree\n")
-		//a.patTreeRoot.Print(a)
-		//fmt.Print("--------------------------------------------------------------------------------\n")
-		//fmt.Print("sequence tree\n")
-		//a.seqTreeRoot.Print(a)
+//		fmt.Print("--------------------------------------------------------------------------------\n")
+//		fmt.Printf("purging #%v purged=%v extracted=%v\n", i, purged, extracted)
+//		fmt.Print("--------------------------------------------------------------------------------\n")
+//		fmt.Print("pattern tree\n")
+//		a.patTreeRoot.Print(a)
+//		fmt.Print("--------------------------------------------------------------------------------\n")
+//		fmt.Print("sequence tree\n")
+//		a.seqTreeRoot.Print(a)
 		if !purged && !extracted {
 			break
 		}
 	}
+	a.appendEndNode(a.seqTreeRoot)
 	fmt.Print("--------------------------------------------------------------------------------\n")
 	fmt.Print("pattern tree\n")
 	a.patTreeRoot.Print(a)
@@ -1186,7 +1197,7 @@ func (a *PatternAnalysis) GenSeqPolicy() {
 	a.genSeqSeqList()
 	fmt.Print("syscalls:\n")
 	for sci, sc := range a.uniqueSyscallList {
-		fmt.Printf("%2d: %v%v\n", sci, sc.syscall.name, sc.tags)
+		fmt.Printf("%2d: %v%x\n", sci, sc.syscall.name, sc.tags)
 	}
 	fmt.Print("syscall seq tree:\n")
 	for seqi, p := range a.seqTreeList {
