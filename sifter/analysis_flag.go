@@ -230,6 +230,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 	offset = 48
 	for _, argMap := range te.syscall.argMaps {
 		arrayLen := argMap.length
+		arrayLenEnd := arrayLen
 		isArray := (arrayLen != 1)
 		if isArray {
 			_, tr := te.GetData(48+argMap.lenOffset, 4)
@@ -238,6 +239,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 			} else {
 				arrayLen = int(tr)
 			}
+			arrayLenEnd = 10
 		}
 		for i := 0; i < arrayLen; i++ {
 			if structArg, ok := argMap.arg.(*prog.StructType); ok {
@@ -246,7 +248,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 						_, tr := te.GetData(offset, field.Size())
 						update, updateOL := flags.Update(tr, te, flag, opt, !isArray)
 						if update || updateOL {
-							msgs = append(msgs, fmt.Sprintf("%v::%v new flag %x", argMap.name, field.Name(), tr))
+							msgs = append(msgs, fmt.Sprintf("%v_%v new flag %x", argMap.name, field.FieldName(), tr))
 							ol  = append(ol, updateOL)
 						}
 					}
@@ -263,6 +265,9 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 				}
 				offset += argMap.arg.Size()
 			}
+		}
+		for i := arrayLen; i < arrayLenEnd; i++ {
+			offset += argMap.arg.Size()
 		}
 	}
 	for _, vlrMap := range te.syscall.vlrMaps {

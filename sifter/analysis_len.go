@@ -328,6 +328,7 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 	offset = 48
 	for _, argMap := range te.syscall.argMaps {
 		arrayLen := argMap.length
+		arrayLenEnd := arrayLen
 		if arrayLen != 1 {
 			_, tr := te.GetData(48+argMap.lenOffset, 4)
 			if arrayLen < int(tr) {
@@ -335,6 +336,7 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 			} else {
 				arrayLen = int(tr)
 			}
+			arrayLenEnd = 10
 		}
 		for i := 0; i < arrayLen; i++ {
 			if structArg, ok := argMap.arg.(*prog.StructType); ok {
@@ -368,6 +370,9 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 				}
 				offset += argMap.arg.Size()
 			}
+		}
+		for i := arrayLen; i < arrayLenEnd; i++ {
+			offset += argMap.arg.Size()
 		}
 	}
 	for _, vlrMap := range te.syscall.vlrMaps {
