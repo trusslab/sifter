@@ -12,6 +12,7 @@ type FlagSet struct {
 	idx    int
 	offset uint64
 	size   uint64
+	tag    bool
 }
 
 func (flags *FlagSet) Update(v uint64, te *TraceEvent, f AnalysisFlag, opt int, tag bool) (bool, bool) {
@@ -48,7 +49,7 @@ func (flags *FlagSet) Update(v uint64, te *TraceEvent, f AnalysisFlag, opt int, 
 	}
 
 	if (f == TestFlag) || (f == TrainFlag && !updateOL) {
-		if tag {
+		if tag && flags.tag {
 			te.tags = append(te.tags, int(v))
 		}
 	} else {
@@ -81,12 +82,13 @@ func (flags *FlagSet) RemoveOutlier(traceNum int) bool {
 	return len(outliers) != 0
 }
 
-func newFlagSet(idx int, offset uint64, size uint64) *FlagSet {
+func newFlagSet(idx int, offset uint64, size uint64, tag bool) *FlagSet {
 	newFlags := new(FlagSet)
 	newFlags.values = make(map[uint64]map[*Trace]int)
 	newFlags.idx = idx
 	newFlags.offset = offset
 	newFlags.size = size
+	newFlags.tag = tag
 	return newFlags
 }
 
@@ -108,10 +110,18 @@ type FlagAnalysis struct {
 	vlrFlags map[*VlrMap]map[*VlrRecord]map[prog.Type]*FlagSet
 	moduleSyscalls map[*Syscall]bool
 	traces map[*Trace]bool
+	noTagFlags map[string]bool
 }
 
 func (a *FlagAnalysis) String() string {
 	return "flag analysis"
+}
+
+func (a *FlagAnalysis) DisableTagging(arg string) {
+	if a.noTagFlags == nil {
+		a.noTagFlags = make(map[string]bool)
+	}
+	a.noTagFlags[arg] = false
 }
 
 func (a *FlagAnalysis) isFlagsType(arg prog.Type, syscall *Syscall) bool {
@@ -143,9 +153,10 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 			var offset uint64
 			idx := 0
 			a.regFlags[syscall] = make(map[prog.Type]*FlagSet)
-			for _, arg := range syscall.def.Args {
+			for argi, arg := range syscall.def.Args {
 				if a.isFlagsType(arg, syscall) {
-					a.regFlags[syscall][arg] = newFlagSet(idx, offset, 8)
+					_, noTag := a.noTagFlags[fmt.Sprintf("%v_reg[%v]", syscall.name, argi)]
+					a.regFlags[syscall][arg] = newFlagSet(idx, offset, 8, !noTag)
 					idx += 1
 				}
 				offset += 8
@@ -156,14 +167,18 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 				if structArg, ok := argMap.arg.(*prog.StructType); ok {
 					for _, field := range structArg.Fields {
 						if a.isFlagsType(field, syscall) {
-							a.argFlags[argMap][field] = newFlagSet(idx, offset, field.Size())
+							_, noTag := a.noTagFlags[fmt.Sprintf("%v_%v", argMap.name, field.FieldName())]
+							fmt.Printf("%v_%v_%v %v\n", syscall.name, argMap.name, field.FieldName(), noTag)
+							a.argFlags[argMap][field] = newFlagSet(idx, offset, field.Size(), !noTag)
 							idx += 1
 						}
 						offset += field.Size()
 					}
 				} else {
 					if a.isFlagsType(argMap.arg, syscall) {
-						a.argFlags[argMap][argMap.arg] = newFlagSet(idx, offset, argMap.size)
+						_, noTag := a.noTagFlags[fmt.Sprintf("%v", argMap.name)]
+						fmt.Printf("%v_%v %v\n", syscall.name, argMap.name, noTag)
+						a.argFlags[argMap][argMap.arg] = newFlagSet(idx, offset, argMap.size, !noTag)
 						idx += 1
 					}
 					offset += argMap.size
@@ -178,13 +193,15 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 							if structField, ok := f.(*prog.StructType); ok {
 								for _, ff := range structField.Fields {
 									if a.isFlagsType(ff, syscall) {
-										a.vlrFlags[vlr][record][ff] = newFlagSet(idx, offset, 0)
+										_, noTag := a.noTagFlags[fmt.Sprintf("%v_%v_%v_%v", syscall.name, vlr.name, f.FieldName(), ff.FieldName())]
+										a.vlrFlags[vlr][record][ff] = newFlagSet(idx, offset, 0, !noTag)
 										idx += 1
 									}
 								}
 							} else {
 								if a.isFlagsType(f, syscall) {
-									a.vlrFlags[vlr][record][f] = newFlagSet(idx, offset, 0)
+									_, noTag := a.noTagFlags[fmt.Sprintf("%v_%v_%v", syscall.name, vlr.name, f.FieldName())]
+									a.vlrFlags[vlr][record][f] = newFlagSet(idx, offset, 0, !noTag)
 									idx += 1
 								}
 							}
