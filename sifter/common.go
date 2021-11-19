@@ -40,6 +40,7 @@ type ArgMap struct {
 	arg      prog.Type
 	length   int
 	lenOffset uint64
+	parent   *ArgMap
 }
 
 type VlrRecord struct {
@@ -95,15 +96,15 @@ func findArrayLengthOffset(parent *ArgMap, arrayName string) (bool, uint64) {
 	return false, 0
 }
 
-func (syscall *Syscall) AddArgMap(arg prog.Type, parentArgMap *ArgMap, argName string, srcPath string, argType string, argLen int) {
+func (syscall *Syscall) AddArgMap(arg prog.Type, parentArgMap *ArgMap, argName string, srcPath string, argType string, argLen int) *ArgMap {
 	for _, argMap := range syscall.argMaps {
 		if argMap.name == argName {
-			return
+			return argMap
 		}
 	}
 	var size uint64
 	if arg.Varlen() {
-		return
+		return nil
 	} else {
 		size = arg.Size() * uint64(argLen)
 	}
@@ -115,6 +116,7 @@ func (syscall *Syscall) AddArgMap(arg prog.Type, parentArgMap *ArgMap, argName s
 		size: size,
 		offset: syscall.size,
 		length: argLen,
+		parent: parentArgMap,
 	}
 	if argLen != 1 {
 		if ok, lenOffset := findArrayLengthOffset(parentArgMap, argName); ok {
@@ -123,6 +125,7 @@ func (syscall *Syscall) AddArgMap(arg prog.Type, parentArgMap *ArgMap, argName s
 	}
 	syscall.argMaps = append(syscall.argMaps, newArgMap)
 	syscall.size += size
+	return newArgMap
 }
 
 func (syscall *Syscall) AddVlrMap(arg *prog.ArrayType, parentArgMap *ArgMap, argName string) {

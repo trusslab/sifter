@@ -191,7 +191,8 @@ func NewSifter(f Flags) (*Sifter, error) {
 		// Scan for syscalls using the kernel module
 		toModule := false
 		for _, arg := range syscall.Args {
-			if arg.Name() == s.fdName {
+			//if arg.Name() == s.fdName {
+			if arg.Name() == "fd_kgsl" || arg.Name() == "fd_binder" {
 				toModule = true
 			}
 //			if vma, ok := arg.(*prog.VmaType); ok {
@@ -444,6 +445,10 @@ func (sifter *Sifter) GetArrayLen(syscall *Syscall, parentArgMap *ArgMap, depth 
 	var arrayLen *prog.Type
 	if structArg, ok := parentArgMap.arg.(*prog.StructType); ok {
 		for i, field := range(structArg.Fields) {
+			fmt.Printf("%v %v %v\n", arrayFieldName, parentArgMap.name, field.FieldName())
+			if lenArg, ok := field.(*prog.LenType); ok {
+				fmt.Printf("%v\n", lenArg.Path[0])
+			}
 			if lenArg, ok := field.(*prog.LenType); ok && lenArg.Path[0] == arrayFieldName {
 				arrayLen = &parentArgMap.arg.(*prog.StructType).Fields[i]
 			}
@@ -501,8 +506,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		// Parent arg is a pointer and the userspace data hasn't been copied to stack
 		dataInStack = false
 
-		syscall.AddArgMap(arg, parent, argName, srcPath, argType, 1)
-		parent = syscall.argMaps[len(syscall.argMaps)-1]
+		parent = syscall.AddArgMap(arg, parent, argName, srcPath, argType, 1)
 
 		dstPath = argName + "_p"
 		derefOp = "*"
@@ -574,30 +578,43 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 			isVLR := false
 			vlrHeaderSize := 0
 			if isVLR, vlrHeaderSize, _ = IsVarLenRecord(t); isVLR {
-				syscall.AddVlrMap(t, parent, argName)
+				syscall.AddVlrMap(t, parentArgMap, argName)
 			} else if structElem, ok := t.Type.(*prog.StructType); ok {
 				sifter.AddStruct(structElem)
 			}
-			if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
-				argType = "struct "+argName+"_buf"
+			//if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
+			argBufType := "struct "+argName+"_buf"
 				elements := new(prog.ArrayType)
-				elements.TypeCommon = prog.TypeCommon{TypeName: "array", FldName: "elem", TypeSize: t.Type.Size() * 10}
-				elements.Type = t.Type
-				elements.RangeBegin = 10
-				elements.RangeEnd = 10
+				if isVLR {
+					elements.TypeCommon = prog.TypeCommon{TypeName: "array", FldName: "elem", TypeSize: 512}
+					elements.Type = &prog.IntType{IntTypeCommon: prog.IntTypeCommon{TypeCommon: prog.TypeCommon{TypeName: "int8", TypeSize: 1}}}
+					elements.RangeBegin = 512
+					elements.RangeEnd = 512
+				} else {
+					elements.TypeCommon = prog.TypeCommon{TypeName: "array", FldName: "elem", TypeSize: t.Type.Size() * 10}
+					elements.Type = t.Type
+					elements.RangeBegin = 10
+					elements.RangeEnd = 10
+				}
 				elemBuffer := new(prog.StructType)
 				elemBuffer.Key = prog.StructKey{Name: argName+"_buf"}
 				elemBuffer.StructDesc = &prog.StructDesc{TypeCommon: prog.TypeCommon{TypeName: argName+"_buf"}}
 				elemBuffer.Fields = []prog.Type{elements}
+
+			if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
 				sifter.AddStruct(elemBuffer)
-				syscall.AddArgMap(t.Type, parentArgMap, argName, srcPath, argType, 10)
-				fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argType), 1))
+				syscall.AddArgMap(t.Type, parentArgMap, argName, srcPath, argBufType, 10)
+				fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argBufType), 1))
 				fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, dstPath, "0", true), 1))
+			} else {
+				syscall.AddArgMap(t.Type, parentArgMap, argName, srcPath, argBufType, 10)
 			}
 			if sifter.mode == FilterMode {
 				parentVarName := strings.Split(srcPath, ".")[0]
 				arrayFieldName := strings.Split(srcPath, ".")[1]
-				arrayLen, arrayLenRangeEnd := sifter.GetArrayLen(syscall, parent, *depth, arrayFieldName)
+				arrayLen, arrayLenRangeEnd := sifter.GetArrayLen(syscall, parentArgMap, *depth, arrayFieldName)
+				fmt.Printf("%v\n", parentVarName)
+				fmt.Printf("%v\n", (*arrayLen).FieldName())
 				arrayLenName := fmt.Sprintf("%v.%v", parentVarName, (*arrayLen).FieldName())
 				if !dataInStack {
 					stackVarName := ""
@@ -1012,6 +1029,9 @@ func (sifter *Sifter) GenerateMapSection() {
 				for _, arg := range syscall.argMaps {
 					fmt.Fprintf(s, "DEFINE_BPF_MAP(%v, ARRAY, int, %v, %v)\n", arg.name, arg.datatype, syscall.TraceSize())
 				}
+				for _, vlr := range syscall.vlrMaps {
+					fmt.Fprintf(s, "DEFINE_BPF_MAP(%v, ARRAY, int, struct %v_buf, %v)\n", vlr.name, vlr.name, syscall.TraceSize())
+				}
 			}
 		}
 		fmt.Fprintf(s, "DEFINE_BPF_MAP_F(other_syscalls_ctr, ARRAY, int, trace_entry_ctr_t, 1, BPF_F_LOCK)\n")
@@ -1285,7 +1305,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 				for ssi, ss := range pa.seqTreeList[i] {
 					syscallID := 0
 					for usi, us := range pa.uniqueSyscallList {
-						if us.Equal(ss.syscall) {
+						if us.Equal(ss.syscall, nil) {
 							syscallID = usi
 							break
 						}
@@ -1381,7 +1401,7 @@ func (sifter *Sifter) GenerateHelperSection() {
 				for psi, ps := range pattern {
 					idx := 0
 					for usi, us := range pa.uniqueSyscallList {
-						if us.Equal(ps.syscall) {
+						if us.Equal(ps.syscall, nil) {
 							idx = usi
 							break
 						}
@@ -1597,6 +1617,9 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
 
 	for _, syscalls := range sifter.moduleSyscalls {
 		for _, syscall := range syscalls {
+			if strings.Contains(syscall.name, "_compact_") {
+				continue
+			}
 			if err := trace.ReadSyscallTrace(syscall); err != nil {
 				fmt.Printf("failed to read syscall trace: %v\n", err)
 				trace.ClearEvents()
@@ -1633,10 +1656,13 @@ func (sifter *Sifter) WriteAgentConfigFile() {
 			if strings.Contains(syscall.name, "_compact_") {
 				continue
 			}
-			fmt.Fprintf(s, "s %v %v %v", syscall.TraceSizeBits(), len(syscall.argMaps)+1, syscall.name)
+			fmt.Fprintf(s, "s %v %v %v", syscall.TraceSizeBits(), len(syscall.argMaps)+len(syscall.vlrMaps)+1, syscall.name)
 			fmt.Fprintf(s, " 64 %v_ent", syscall.name)
 			for _, arg := range syscall.argMaps {
 				fmt.Fprintf(s, " %v %v", arg.size, arg.name)
+			}
+			for _, vlr := range syscall.vlrMaps {
+				fmt.Fprintf(s, " 512 %v", vlr.name)
 			}
 			fmt.Fprintf(s, "\n")
 		}
@@ -1713,8 +1739,9 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	//var sa SequenceAnalysis
 	//sa.SetLen(0)
 	//sa.SetUnitOfAnalysis(ProcessLevel)
-	pa.SetGroupingThreshold(TimeGrouping, 1000000000)
-	pa.SetGroupingThreshold(SyscallGrouping, 1)
+	pa.SetGroupingThreshold(TimeGrouping, 200000000)
+	//pa.SetGroupingThreshold(TimeGrouping, 1000000000)
+	pa.SetGroupingThreshold(SyscallGrouping, 8)
 	pa.SetPatternOrderThreshold(0.8)
 	//pa.SetUnitOfAnalysis(TraceLevel)
 	pa.SetUnitOfAnalysis(ProcessLevel)
@@ -1770,11 +1797,26 @@ func (sifter *Sifter) TrainAndTest() {
 		var fa FlagAnalysis
 		var vlra VlrAnalysis
 		var pa PatternAnalysis
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_TIMESTAMP_EVENT_arg_type")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_flags")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_type")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_SETPROPERTY_arg_type")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_FREE_arg_flags")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_FREE_arg_type")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_flags")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_type")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_INFO_arg_flags")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_ALLOC_arg_flags")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_DRAWCTXT_CREATE_arg_flags")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_flags")
 		//var sa SequenceAnalysis
 		//sa.SetLen(0)
 		//sa.SetUnitOfAnalysis(TraceLevel)
-		pa.SetGroupingThreshold(TimeGrouping, 1000000000)
-		pa.SetGroupingThreshold(SyscallGrouping, 1)
+		pa.SetGroupingThreshold(TimeGrouping, 200000000)
+		pa.SetGroupingThreshold(SyscallGrouping, 8)
+		//pa.SetGroupingThreshold(TimeGrouping, 1000000)
+		//pa.SetGroupingThreshold(TimeGrouping, 500000000)
+		//pa.SetGroupingThreshold(SyscallGrouping, 1)
 		pa.SetPatternOrderThreshold(0.8)
 		//pa.SetUnitOfAnalysis(TraceLevel)
 		pa.SetUnitOfAnalysis(ProcessLevel)
