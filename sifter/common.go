@@ -204,10 +204,12 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall) error {
 	if err != nil {
 		return fmt.Errorf("cannot open %v", traceFilePath)
 	}
+	fmt.Printf("ReadSyscallTrace %v\n", traceFilePath)
 
 	defer traceFile.Close()
 
 	br := bufio.NewReader(traceFile)
+	//idx := 0
 	for {
 		var ts uint64
 		var id uint64
@@ -224,6 +226,7 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall) error {
 			return fmt.Errorf("%v ended unexpectedly (2): %v", traceFilePath, err)
 		}
 		te := newTraceEvent(ts, id, t, syscall)
+		//fmt.Printf("%d %.9f %x\n",idx, float64(te.ts)/1000000000, te.id)
 		switch (te.typ) {
 		case 0:
 			if _, err = io.ReadFull(br, te.data); err != nil {
@@ -260,8 +263,10 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall) error {
 }
 
 func (t *Trace) FindEventBefore(id uint64, nr uint64, ts uint64, start int) int {
+//	fmt.Printf("[%.9f] findEventBefore (%d:%d) nr:%v %v\n", float64(ts)/1000000000.0, uint32(id), id>>32, nr, start)
 	for i := start; i < len(t.events); i++ {
 		te := t.events[i]
+//		fmt.Printf("[%.9f] (%d:%d) %v\n", float64(te.ts)/1000000000.0, uint32(te.id), te.id>>32, te.syscall.name)
 		if ts < te.ts {
 			return -1
 		}
@@ -270,6 +275,13 @@ func (t *Trace) FindEventBefore(id uint64, nr uint64, ts uint64, start int) int 
 		}
 	}
 	return -1
+}
+
+type TraceRetEvent struct {
+	ts  uint64
+	id  uint64
+	nr  uint64
+	ret uint64
 }
 
 func (t *Trace) ReadSyscallReturnTrace() error {
@@ -281,6 +293,9 @@ func (t *Trace) ReadSyscallReturnTrace() error {
 
 	defer traceFile.Close()
 
+	idx := 0
+	chk := make(map[TraceRetEvent]int)
+	traceRetEvents := make([]TraceRetEvent, 0)
 	lastEvent := make(map[uint64]int)
 	br := bufio.NewReader(traceFile)
 	for {
@@ -290,7 +305,7 @@ func (t *Trace) ReadSyscallReturnTrace() error {
 		var ret uint64
 		if err = binary.Read(br, binary.LittleEndian, &ts); err != nil {
 			if err.Error() == "EOF" {
-				return nil
+				goto end
 			} else {
 				return fmt.Errorf("%v ended unexpectedly (1): %v", traceFilePath, err)
 			}
@@ -310,24 +325,44 @@ func (t *Trace) ReadSyscallReturnTrace() error {
 			return fmt.Errorf("%v ended unexpectedly (4): %v", traceFilePath, err)
 		}
 
-		start := 0
-		if idx, ok := lastEvent[id]; ok {
-			start = idx+1
-		}
-		i := t.FindEventBefore(id, nr, ts, start)
-		if i == -1 {
-			if nr != 0xffffffffffffffff {
-			fmt.Printf("[%.9f] (%d:%d) nr:%d ret:0x%x. cannot resolve the calling syscall\n", float64(ts)/1000000000.0, uint32(id), id>>32, nr, ret)
-			}
+		te := TraceRetEvent{ts, id, nr, ret}
+		//fmt.Printf("[%.9f] (%d:%d) %v %v\n", float64(te.ts)/1000000000.0, uint32(te.id), te.id>>32, te.nr, te.ret)
+		if ctr, ok := chk[te]; ok {
+			fmt.Printf("dup %d %d %v\n", idx, ctr, te)
+			chk[te] += 1
 		} else {
-			t.events[i].ret = ret
-			t.events[i].retTs = ts
-			if nr == 29 && ret != 0 {
-				t.events[i].flag = t.events[i].flag | TraceEventFlagBadData
-			}
-			lastEvent[id] = i
+			chk[te] = 1
+		}
+		idx += 1
+		if len(traceRetEvents) == 0 || te != traceRetEvents[len(traceRetEvents)-1] {
+			traceRetEvents = append(traceRetEvents, te)
 		}
 	}
+end:
+	sort.Slice(traceRetEvents, func(i, j int) bool {
+		return traceRetEvents[i].ts < traceRetEvents[j].ts
+	})
+
+	for _, te := range traceRetEvents {
+		start := 0
+		if idx, ok := lastEvent[te.id]; ok {
+			start = idx+1
+		}
+		i := t.FindEventBefore(te.id, te.nr, te.ts, start)
+		if i == -1 {
+			if te.nr != 0xffffffffffffffff {
+			fmt.Printf("[%.9f] (%d:%d) nr:%d ret:0x%x. cannot resolve the calling syscall\n", float64(te.ts)/1000000000.0, uint32(te.id), te.id>>32, te.nr, te.ret)
+			}
+		} else {
+			t.events[i].ret = te.ret
+			t.events[i].retTs = te.ts
+			if te.nr == 29 && te.ret != 0 {
+				t.events[i].flag = t.events[i].flag | TraceEventFlagBadData
+			}
+			lastEvent[te.id] = i
+		}
+	}
+	return nil
 }
 
 const (
@@ -367,7 +402,8 @@ func newTraceEvent(ts uint64, id uint64, trace *Trace, syscall *Syscall) *TraceE
 		traceEvent.data = make([]byte, 48)
 		traceEvent.typ = 2
 		if traceEvent.id & 0x4000000000000000 != 0 {
-			traceEvent.id = traceEvent.id & 0x0fffffffffffffff
+			fmt.Printf("[%.9f] other %x\n", float64(ts)/1000000000, traceEvent.id)
+			traceEvent.id = traceEvent.id & 0x00ffffffffffffff
 			traceEvent.flag = TraceEventFlagUseFD
 		}
 	} else {
@@ -378,7 +414,7 @@ func newTraceEvent(ts uint64, id uint64, trace *Trace, syscall *Syscall) *TraceE
 }
 
 func (te *TraceEvent) String() string {
-	s := fmt.Sprintf("[%v.%09d] ", te.ts/1000000000, te.ts%1000000000)
+	s := fmt.Sprintf("[%.9f] ", float64(te.ts)/1000000000)
 	if te.typ == 0{
 		switch (te.id & 0x0fffffff00000000) >> 32 {
 		case 1:
@@ -392,7 +428,7 @@ func (te *TraceEvent) String() string {
 		if comm, ok := te.trace.pidComm[te.id]; ok {
 			s += comm
 		}
-		s += fmt.Sprintf("(%v:%v) %v %v ", uint32(te.id), uint32(te.id>>32), te.syscall.name, te.tags)
+		s += fmt.Sprintf("(%v:%v) %v%x ", uint32(te.id), uint32(te.id>>32), te.syscall.name, te.tags)
 		if regID, fd := te.GetFD(); regID != -1 {
 			s += fmt.Sprintf("fd(%d) ", fd)
 		}
