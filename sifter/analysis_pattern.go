@@ -144,6 +144,7 @@ func NewTaggedSyscallNode(n *TaggedSyscallNode) *TaggedSyscallNode {
 	newNode.syscall = n.syscall
 	newNode.flag = n.flag
 	newNode.tag = n.tag
+	newNode.next = make([]*TaggedSyscallNode, 0)
 	return newNode
 }
 
@@ -229,6 +230,13 @@ func (a *PatternAnalysis) newAnalysisUnitKey(te *TraceEvent) (bool, AnalysisUnit
 	return false, AnalysisUnitKey{te.trace, 0, 0}
 }
 
+type FilterPolicy int
+
+const (
+	ShortSeqWithInterSeq FilterPolicy = iota
+	LongSeq
+)
+
 type FilterState struct {
 	lastSeqId        int
 	lastNode         *TaggedSyscallNode
@@ -248,6 +256,7 @@ type PatternAnalysis struct {
 	lastNodeOfPid     map[uint64]*TaggedSyscallNode
 	seqTreeRoot       *TaggedSyscallNode
 	patTreeRoot       *TaggedSyscallNode
+	seqSeqTreeRoot    *TaggedSyscallNode
 	tagCounter        int
 
 	unitOfAnalysis    AnalysisUnit
@@ -267,8 +276,10 @@ type PatternAnalysis struct {
 	seqOrderList      map[int]uint64
 	seqSeqList        map[int]uint64
 
+	filterPolicy      FilterPolicy
 	filterStates      map[AnalysisUnitKey]*FilterState
 	filterDelayedSyscalls  []*TraceEvent
+	seqPolicyTreeRoot *TaggedSyscallNode
 
 	debugEnable       bool
 }
@@ -284,11 +295,14 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.seqTreeRoot.syscall = new(TaggedSyscall)
 	a.patTreeRoot = new(TaggedSyscallNode)
 	a.patTreeRoot.syscall = new(TaggedSyscall)
+	a.seqSeqTreeRoot = new(TaggedSyscallNode)
+	a.seqSeqTreeRoot.syscall = new(TaggedSyscall)
 	a.seqInterval = make(map[AnalysisUnitKey]map[int][]uint64)
 	a.seqOccurence = make(map[AnalysisUnitKey]map[int]int)
 	a.seqOrder = make(map[int]map[int]int)
 	a.seqOrderCounter = make(map[int]map[int]int)
 	a.filterStates = make(map[AnalysisUnitKey]*FilterState)
+	a.SetFilterPolicy(a.filterPolicy)
 
 	a.seqTreeList = make([][]*TaggedSyscallNode, 0)
 	a.uniqueSyscallList = make([]*TaggedSyscall, 0)
@@ -299,6 +313,19 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.seqSeqGraph = make(map[int]map[int][]int)
 
 	a.debugEnable = false
+}
+
+func (a *PatternAnalysis) SetFilterPolicy(p FilterPolicy) {
+	a.filterPolicy = p
+
+	switch p {
+	case ShortSeqWithInterSeq:
+		a.seqPolicyTreeRoot = a.seqTreeRoot
+	case LongSeq:
+		a.seqPolicyTreeRoot = a.seqSeqTreeRoot
+	default:
+		fmt.Printf("Invalid sequence policy!")
+	}
 }
 
 func (a *PatternAnalysis) SetPatternOrderThreshold(th float64) {
@@ -461,19 +488,19 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int, int) {
 	errMsg := ""
 	errNum := 0
 	delayNum := 0
+
 	if te.typ == 0 {
 		if te.id == 0x80010000 {
 			for pid, _ := range a.lastNodeOfPid {
-				a.lastNodeOfPid[pid] = a.seqTreeRoot
+				a.lastNodeOfPid[pid] = a.seqPolicyTreeRoot
 			}
 		}
 	} else if te.typ == 1 && strings.Contains(te.syscall.name, "kgsl") {
 start:
 		_, key := a.newAnalysisUnitKey(te)
-		//key.fd = 0
 		if _, ok := a.filterStates[key]; !ok {
 			a.filterStates[key] = new(FilterState)
-			a.filterStates[key].lastNode = a.seqTreeRoot
+			a.filterStates[key].lastNode = a.seqPolicyTreeRoot
 			a.filterStates[key].recordedSeqs = make(map[int]bool)
 		}
 
@@ -494,6 +521,9 @@ start:
 					}
 				}
 
+				if a.filterPolicy == LongSeq {
+					hasValidSeq = true
+				}
 				if !hasValidSeq {
 					var recordedSeqIds []int
 					for k, _ := range filterState.recordedSeqs {
@@ -504,7 +534,7 @@ start:
 				} else {
 					if endIdx := filterState.lastNode.next[idx].findEndChild(); endIdx != -1 {
 						filterState.recordedSeqs[seqIds[0]] = true
-						filterState.lastNode = a.seqTreeRoot
+						filterState.lastNode = a.seqPolicyTreeRoot
 						filterState.lastSeqId = seqIds[0]
 						filterState.pid = 0
 
@@ -1126,8 +1156,77 @@ func (a *PatternAnalysis) addSeqToSeqs(n *TaggedSyscallNode) {
 	}
 }
 
+func (a *PatternAnalysis) getSeqNodes(node *TaggedSyscallNode, seq int) (*TaggedSyscallNode, *TaggedSyscallNode) {
+	this := NewTaggedSyscallNode(node)
+	if this.syscall.syscall == nil && this.tag == seq {
+		return this, nil
+	}
+
+	for _, next := range node.next {
+		if child, end := a.getSeqNodes(next, seq); child != nil {
+			if child.syscall.syscall != nil {
+				this.next = append(this.next, child)
+				if this.syscall.syscall == nil {
+					fmt.Printf("gsn start %v\n", child.syscall.syscall.name)
+				} else {
+					fmt.Printf("gsn %v %v\n", this.syscall.syscall.name, child.syscall.syscall.name)
+				}
+				return this, end
+			} else {
+				fmt.Printf("gsn %v end\n", this.syscall.syscall.name)
+				return this, this
+			}
+		}
+	}
+
+	return nil, nil
+}
+
+func (a *PatternAnalysis) _buildSeqSeqTree(node *TaggedSyscallNode, seq int, seqsVisited *[]int) {
+	*seqsVisited = append(*seqsVisited, seq)
+
+	fmt.Printf("gsn %x \n", seq)
+	start, end := a.getSeqNodes(a.seqTreeRoot, seq)
+	if end != nil {
+		fmt.Printf("gsn ret %v %v %v %v\n", node, start, end, start.next)
+		a.MergeTrees(node, start, a.seqSeqTreeRoot)
+		node = end
+	}
+
+	_, nextHasEnd := a.seqSeqGraph[seq][-1]
+	_, nextHasSelf := a.seqSeqGraph[seq][seq]
+	if !(nextHasEnd || nextHasSelf) {
+		nextVisited := false
+		for next, _ := range a.seqSeqGraph[seq] {
+			for _, seqVisited := range *seqsVisited {
+				if seqVisited == next {
+					nextVisited = true
+				}
+			}
+		}
+		if !nextVisited {
+			for next, _ := range a.seqSeqGraph[seq] {
+				a._buildSeqSeqTree(node, next, seqsVisited)
+			}
+		}
+	}
+	*seqsVisited = (*seqsVisited)[:len(*seqsVisited)-1]
+}
+
+func (a *PatternAnalysis) buildSeqSeqTree() {
+	a.seqSeqGraph[-1] = make(map[int][]int)
+	for next, _ := range a.seqSeqGraph {
+		if next != -1 {
+			a.seqSeqGraph[-1][next] = make([]int, 2)
+		}
+	}
+
+	seqVisited := make([]int, 0)
+	a._buildSeqSeqTree(a.seqSeqTreeRoot, -1, &seqVisited)
+}
+
 func (a *PatternAnalysis) AnalyzeInterSeqSeq() {
-//	a.unitOfAnalysis = ProcessLevel
+	a.unitOfAnalysis = ProcessLevel
 	a.addSeqToSeqs(a.seqTreeRoot)
 
 	for key, _ := range a.keySeqs {
@@ -1157,7 +1256,8 @@ func (a *PatternAnalysis) AnalyzeInterSeqSeq() {
 
 	for srcSeq, dstSeqs := range a.seqSeqGraph {
 		for _, stat := range dstSeqs {
-			if stat[1] > 1000000 {
+			//if stat[1] > 1000000 {
+			if stat[1] > 250000000 {
 				a.seqSeqGraph[srcSeq][-1] = make([]int, 2)
 			}
 		}
@@ -1405,6 +1505,11 @@ func (a *PatternAnalysis) PostProcess(opt int) {
 	a.seqTreeRoot.Print(a)
 	a.AnalyzeInterSeqOrder()
 	a.AnalyzeInterSeqSeq()
+	a.buildSeqSeqTree()
+	a.appendEndNode(a.seqSeqTreeRoot, a.seqSeqTreeRoot)
+	fmt.Print("--------------------------------------------------------------------------------\n")
+	fmt.Print("sequence tree after rebuild\n")
+	a.seqSeqTreeRoot.Print(a)
 	a.GenSeqPolicy()
 }
 
