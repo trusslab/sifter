@@ -1736,10 +1736,22 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	var fa FlagAnalysis
 	var vlra VlrAnalysis
 	var pa PatternAnalysis
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_TIMESTAMP_EVENT_arg_type")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_flags")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_type")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_SETPROPERTY_arg_type")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_FREE_arg_flags")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_FREE_arg_type")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_flags")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_type")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_INFO_arg_flags")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_ALLOC_arg_flags")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_DRAWCTXT_CREATE_arg_flags")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_flags")
 	//var sa SequenceAnalysis
 	//sa.SetLen(0)
 	//sa.SetUnitOfAnalysis(ProcessLevel)
-	pa.SetGroupingThreshold(TimeGrouping, 200000000)
+	pa.SetGroupingThreshold(TimeGrouping, 250000000)
 	//pa.SetGroupingThreshold(TimeGrouping, 1000000000)
 	pa.SetGroupingThreshold(SyscallGrouping, 8)
 	pa.SetPatternOrderThreshold(0.8)
@@ -1812,7 +1824,7 @@ func (sifter *Sifter) TrainAndTest() {
 		//var sa SequenceAnalysis
 		//sa.SetLen(0)
 		//sa.SetUnitOfAnalysis(TraceLevel)
-		pa.SetGroupingThreshold(TimeGrouping, 200000000)
+		pa.SetGroupingThreshold(TimeGrouping, 250000000)
 		pa.SetGroupingThreshold(SyscallGrouping, 8)
 		//pa.SetGroupingThreshold(TimeGrouping, 1000000)
 		//pa.SetGroupingThreshold(TimeGrouping, 500000000)
@@ -1820,6 +1832,7 @@ func (sifter *Sifter) TrainAndTest() {
 		pa.SetPatternOrderThreshold(0.8)
 		//pa.SetUnitOfAnalysis(TraceLevel)
 		pa.SetUnitOfAnalysis(ProcessLevel)
+		pa.SetFilterPolicy(LongSeq)
 
 		trainFiles, testFiles := sifter.GetTrainTestFiles()
 
