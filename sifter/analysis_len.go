@@ -9,12 +9,19 @@ import (
 	"github.com/google/syzkaller/prog"
 )
 
+type RangeConfig struct {
+	rangeTh    float64
+	outlier0Th float64
+	outlier1Th float64
+}
+
 type LenRange struct {
 	values  map[uint64]int
 	upper   uint64
 	lower   uint64
 	upperOL uint64
 	lowerOL uint64
+	config  RangeConfig
 }
 
 func newLenRange() *LenRange {
@@ -22,6 +29,9 @@ func newLenRange() *LenRange {
 	lenRange.values = make(map[uint64]int)
 	lenRange.lower = math.MaxInt64
 	lenRange.upper = 0
+	lenRange.config.rangeTh = 10000
+	lenRange.config.outlier0Th = 100000
+	lenRange.config.outlier1Th = 10000000
 	return lenRange
 }
 
@@ -179,14 +189,14 @@ func (r *LenRange) RemoveOutlier() bool {
 	medianAbsDev0 := medianAbsDev(r.values, median0)
 	fmt.Printf("0 median: %v mad: %v mean: %v mad: %v\n", median0, medianAbsDev0, mean0, meanAbsDev0)
 
-	devThreshold := 10000.0
+	devThreshold := r.config.outlier0Th
 	update := false
 	if meanAbsDev0 != 0 {
 		outliers := make([]string, 0)
 		for _, v := range vKeys {
 			//z := 0.6745 * float64(diff(v, mean) / medianAbsDev)
 			z := math.Abs(float64(v) - mean0) / meanAbsDev0
-			if z > devThreshold {
+			if float64(z) > devThreshold {
 				outliers = append(outliers, fmt.Sprintf("%v %v\n", v, z))
 				delete(r.values, v)
 				update = true
@@ -211,8 +221,8 @@ func (r *LenRange) RemoveOutlier() bool {
 	median1 := median(r.values, vKeys)
 	medianAbsDev1 := medianAbsDev(r.values, median1)
 	fmt.Printf("1 median: %v mad: %v mean: %v mad: %v\n", median1, medianAbsDev1, mean1, meanAbsDev1)
-	r.lower, r.upper = genRange(mean1, meanAbsDev1, 100000)
-	r.lowerOL, r.upperOL = genRange(mean1, meanAbsDev1, 10000000)
+	r.lower, r.upper = genRange(mean1, meanAbsDev1, r.config.rangeTh)
+	r.lowerOL, r.upperOL = genRange(mean1, meanAbsDev1, r.config.outlier1Th)
 	fmt.Printf("new lower:%d upper:%d lowerOL:%d upperOL:%d\n", r.lower, r.upper, r.lowerOL, r.upperOL)
 
 	return update
@@ -223,10 +233,18 @@ type LenAnalysis struct {
 	regLenRanges map[*Syscall]map[prog.Type]*LenRange
 	vlrLenRanges map[*VlrMap]map[*VlrRecord]map[prog.Type]*LenRange
 	lenContainingSyscall map[*Syscall]bool
+	rangeConfigs map[string]RangeConfig
 }
 
 func (a *LenAnalysis) String() string {
 	return "length analysis"
+}
+
+func (a *LenAnalysis) SetRangeConfig(arg string, rangeTh float64, ol0Th float64, ol1Th float64) {
+	if a.rangeConfigs == nil {
+		a.rangeConfigs = make(map[string]RangeConfig)
+	}
+	a.rangeConfigs[arg] = RangeConfig{rangeTh, ol0Th, ol1Th}
 }
 
 func (a *LenAnalysis) isLenType(arg prog.Type) bool {
@@ -254,9 +272,12 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	for _, syscalls := range *TracedSyscalls {
 		for _, syscall := range syscalls {
 			a.regLenRanges[syscall] = make(map[prog.Type]*LenRange)
-			for _, arg := range syscall.def.Args {
+			for argi, arg := range syscall.def.Args {
 				if a.isLenType(arg) {
 					a.regLenRanges[syscall][arg] = newLenRange()
+					if config, ok := a.rangeConfigs[fmt.Sprintf("%v_reg[%v]", syscall.name, argi)]; ok {
+						a.regLenRanges[syscall][arg].config = config
+					}
 				}
 			}
 			for _, argMap := range syscall.argMaps {
@@ -265,11 +286,17 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 					for _, field := range structArg.Fields {
 						if a.isLenType(field) {
 							a.argLenRanges[argMap][field] = newLenRange()
+							if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v", argMap.name, field.FieldName())]; ok {
+								a.argLenRanges[argMap][field].config = config
+							}
 						}
 					}
 				} else {
 					if a.isLenType(argMap.arg) {
 						a.argLenRanges[argMap][argMap.arg] = newLenRange()
+						if config, ok := a.rangeConfigs[fmt.Sprintf("%v", argMap.name)]; ok {
+							a.argLenRanges[argMap][argMap.arg].config = config
+						}
 					}
 				}
 			}
@@ -283,11 +310,17 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 								for _, ff := range structField.Fields {
 									if a.isLenType(ff) {
 										a.vlrLenRanges[vlrMap][vlrRecord][ff] = newLenRange()
+										if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v_%v_%v", syscall.name, vlrMap.name, f.FieldName(), ff.FieldName())]; ok {
+											a.vlrLenRanges[vlrMap][vlrRecord][ff].config = config
+										}
 									}
 								}
 							} else {
 								if a.isLenType(f) {
 									a.vlrLenRanges[vlrMap][vlrRecord][f] = newLenRange()
+									if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v_%v", syscall.name, vlrMap.name, f.FieldName())]; ok {
+										a.vlrLenRanges[vlrMap][vlrRecord][f].config = config
+									}
 								}
 							}
 						}
