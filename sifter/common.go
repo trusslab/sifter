@@ -552,11 +552,11 @@ func (vc *ValuesConstraint) String(argName string, retName string, allowValue st
 	s := ""
 	s += fmt.Sprintf("if (")
 	for i, v := range vc.values {
-		s += fmt.Sprintf("%v != 0x%x\n", argName, v)
+		s += fmt.Sprintf("%v != 0x%x", argName, v)
 		if i != len(vc.values) - 1 {
-			s += fmt.Sprintf(" && ")
+			s += fmt.Sprintf("\n    && ")
 		} else {
-			s += fmt.Sprintf("{\n")
+			s += fmt.Sprintf(") {\n")
 		}
 	}
 	s += fmt.Sprintf("    %v = %v;\n", retName, rejectValue)

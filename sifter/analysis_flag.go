@@ -472,41 +472,43 @@ func (a *FlagAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap 
 		return nil
 	}
 
-	var constraint *TaggingConstraint
 	if depth == 0 {
 		if f, ok := a.regFlags[syscall][arg]; ok {
-			fmt.Printf("add tagging constraint to %v %v\n", syscall.name, arg.FieldName())
-			constraint = new(TaggingConstraint)
-			constraint.idx = f.idx
-			return constraint
+			if f.tag {
+				var constraint *TaggingConstraint
+				fmt.Printf("add tagging constraint to %v %v\n", syscall.name, arg.FieldName())
+				constraint = new(TaggingConstraint)
+				constraint.idx = f.idx
+				return constraint
+			} else {
+				var constraint *ValuesConstraint
+				fmt.Printf("add values constraint to %v %v\n", syscall.name, arg.FieldName())
+				constraint = new(ValuesConstraint)
+				for v, _ := range f.values {
+					constraint.values = append(constraint.values, v)
+				}
+				return constraint
+			}
 		}
 	} else {
 		if f, ok := a.argFlags[argMap][arg]; ok {
-			fmt.Printf("add tagging constraint to %v %v\n", syscall.name, arg.FieldName())
-			constraint = new(TaggingConstraint)
-			constraint.idx = f.idx
+			if f.tag {
+				var constraint *TaggingConstraint
+				fmt.Printf("add tagging constraint to %v %v %v\n", syscall.name, argMap.name, arg.FieldName())
+				constraint = new(TaggingConstraint)
+				constraint.idx = f.idx
+				return constraint
+			} else {
+				var constraint *ValuesConstraint
+				fmt.Printf("add values constraint to %v %v %v\n", syscall.name, argMap.name, arg.FieldName())
+				constraint = new(ValuesConstraint)
+				for v, _ := range f.values {
+					constraint.values = append(constraint.values, v)
+				}
+				return constraint
+			}
 		}
 	}
-//	var constraint *ValuesConstraint
-//	if depth == 0 {
-//		if f, ok := a.regFlags[syscall][arg]; ok {
-//			fmt.Printf("add values constraint to %v %v\n", syscall.name, arg.FieldName())
-//			constraint = new(ValuesConstraint)
-//			for v, _ := range f.values {
-//				constraint.values = append(constraint.values, v)
-//			}
-//			return constraint
-//		}
-//	} else {
-//		if f, ok := a.argFlags[argMap][arg]; ok {
-//			fmt.Printf("add values constraint to %v %v\n", syscall.name, arg.FieldName())
-//			constraint = new(ValuesConstraint)
-//			for v, _ := range f.values {
-//				constraint.values = append(constraint.values, v)
-//			}
-//			return constraint
-//		}
-//	}
 	return nil
 }
 
