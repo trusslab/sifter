@@ -460,6 +460,15 @@ func (sifter *Sifter) GetArrayLen(syscall *Syscall, parentArgMap *ArgMap, depth 
 				if rangeConstraint, ok := c.(*RangeConstraint); ok {
 					return arrayLen, int(rangeConstraint.u)
 				}
+				if valuesConstraint, ok := c.(*ValuesConstraint); ok {
+					max := uint64(0)
+					for _, v := range valuesConstraint.values {
+						if v > max {
+							max = v
+						}
+					}
+					return arrayLen, int(max)
+				}
 			}
 			return arrayLen, -1
 		}
@@ -614,10 +623,8 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 				parentVarName := strings.Split(srcPath, ".")[0]
 				arrayFieldName := strings.Split(srcPath, ".")[1]
 				arrayLen, arrayLenRangeEnd := sifter.GetArrayLen(syscall, parentArgMap, *depth, arrayFieldName)
-				fmt.Printf("%v\n", parentVarName)
-				fmt.Printf("%v\n", (*arrayLen).FieldName())
-				arrayLenName := fmt.Sprintf("%v.%v", parentVarName, (*arrayLen).FieldName())
-				if !dataInStack {
+
+				if arrayLenRangeEnd > 0 {
 					stackVarName := ""
 					vlrHeaderVarName := ""
 					vlrRecordTypes := make(map[string]string)
@@ -647,6 +654,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 					endLabelName := fmt.Sprintf("array_%v_end", stackVarName)
 					offName := fmt.Sprintf("array_%v_offset", stackVarName)
 					endName := fmt.Sprintf("array_%v_end", stackVarName)
+					arrayLenName := fmt.Sprintf("%v.%v", parentVarName, (*arrayLen).FieldName())
 					//newSrcPath := stackVarName
 					fmt.Fprintf(s, "    int %v = 0;\n", offName)
 					if (*arrayLen).(*prog.LenType).BitSize == 0 {
@@ -1716,6 +1724,8 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	var fa FlagAnalysis
 	var vlra VlrAnalysis
 	var pa PatternAnalysis
+	la.SetGenValuesConstraintThreshold(8);
+
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_TIMESTAMP_EVENT_arg_type")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_flags")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_type")
@@ -1789,6 +1799,8 @@ func (sifter *Sifter) TrainAndTest() {
 		var fa FlagAnalysis
 		var vlra VlrAnalysis
 		var pa PatternAnalysis
+		la.SetGenValuesConstraintThreshold(8);
+
 		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_TIMESTAMP_EVENT_arg_type")
 		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_flags")
 		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_type")
