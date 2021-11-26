@@ -108,7 +108,7 @@ type FlagAnalysis struct {
 	argFlags map[*ArgMap]map[prog.Type]*FlagSet
 	regFlags map[*Syscall]map[prog.Type]*FlagSet
 	vlrFlags map[*VlrMap]map[*VlrRecord]map[prog.Type]*FlagSet
-	moduleSyscalls map[*Syscall]bool
+	tracedSyscalls map[*Syscall]bool
 	traces map[*Trace]bool
 	noTagFlags map[string]bool
 }
@@ -147,7 +147,9 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.argFlags = make(map[*ArgMap]map[prog.Type]*FlagSet)
 	a.regFlags = make(map[*Syscall]map[prog.Type]*FlagSet)
 	a.vlrFlags = make(map[*VlrMap]map[*VlrRecord]map[prog.Type]*FlagSet)
+	a.tracedSyscalls = make(map[*Syscall]bool)
 	a.traces = make(map[*Trace]bool)
+
 	for _, syscalls := range *TracedSyscalls {
 		for _, syscall := range syscalls {
 			var offset uint64
@@ -211,13 +213,6 @@ func (a *FlagAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 			}
 		}
 	}
-
-	a.moduleSyscalls = make(map[*Syscall]bool)
-	for _, syscalls := range *TracedSyscalls {
-		for _, syscall := range syscalls {
-			a.moduleSyscalls[syscall] = true
-		}
-	}
 }
 
 func (a *FlagAnalysis) Reset() {
@@ -228,6 +223,7 @@ func (a *FlagAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt 
 		return "", 0, 0
 	}
 
+	a.tracedSyscalls[te.syscall] = true
 	a.traces[te.trace] = true
 
 	var ol []bool
@@ -367,7 +363,7 @@ func (a *FlagAnalysis) PostProcess(opt int) {
 func (a *FlagAnalysis) RemoveOutliers() {
 	fmt.Printf("removing outlier flag:\n")
 	traceNum := len(a.traces)
-	for syscall, _ := range a.moduleSyscalls {
+	for syscall, _ := range a.tracedSyscalls {
 		fmt.Printf("%v\n", syscall.name)
 		for i, arg := range syscall.def.Args {
 			if flags, ok := a.regFlags[syscall][arg]; ok {
@@ -425,7 +421,7 @@ func (a *FlagAnalysis) RemoveOutliers() {
 }
 
 func (a *FlagAnalysis) PrintResult(v Verbose) {
-	for syscall, _ := range a.moduleSyscalls {
+	for syscall, _ := range a.tracedSyscalls {
 		s := ""
 		for i, arg := range syscall.def.Args {
 			if flags, ok := a.regFlags[syscall][arg]; ok {
@@ -472,6 +468,10 @@ func (a *FlagAnalysis) PrintResult(v Verbose) {
 }
 
 func (a *FlagAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {
+	if _, ok := a.tracedSyscalls[syscall]; !ok {
+		return nil
+	}
+
 	var constraint *TaggingConstraint
 	if depth == 0 {
 		if f, ok := a.regFlags[syscall][arg]; ok {

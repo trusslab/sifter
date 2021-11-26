@@ -232,7 +232,7 @@ type LenAnalysis struct {
 	argLenRanges map[*ArgMap]map[prog.Type]*LenRange
 	regLenRanges map[*Syscall]map[prog.Type]*LenRange
 	vlrLenRanges map[*VlrMap]map[*VlrRecord]map[prog.Type]*LenRange
-	lenContainingSyscall map[*Syscall]bool
+	tracedSyscalls map[*Syscall]bool
 	rangeConfigs map[string]RangeConfig
 }
 
@@ -267,7 +267,7 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.argLenRanges = make(map[*ArgMap]map[prog.Type]*LenRange)
 	a.regLenRanges = make(map[*Syscall]map[prog.Type]*LenRange)
 	a.vlrLenRanges = make(map[*VlrMap]map[*VlrRecord]map[prog.Type]*LenRange)
-	a.lenContainingSyscall = make(map[*Syscall]bool)
+	a.tracedSyscalls = make(map[*Syscall]bool)
 
 	for _, syscalls := range *TracedSyscalls {
 		for _, syscall := range syscalls {
@@ -339,7 +339,7 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 		return "", 0, 0
 	}
 
-	a.lenContainingSyscall[te.syscall] = true
+	a.tracedSyscalls[te.syscall] = true
 
 	var ol []bool
 	msgs := make([]string, 0)
@@ -495,7 +495,7 @@ func (a *LenAnalysis) PostProcess(opt int) {
 
 func (a *LenAnalysis) RemoveOutliers() {
 	fmt.Printf("removing outlier len:\n")
-	for syscall, _ := range a.lenContainingSyscall {
+	for syscall, _ := range a.tracedSyscalls {
 		fmt.Printf("%v\n", syscall.name)
 		for i, arg := range syscall.def.Args {
 			if lenRange, ok := a.regLenRanges[syscall][arg]; ok {
@@ -553,7 +553,7 @@ func (a *LenAnalysis) RemoveOutliers() {
 }
 
 func (a *LenAnalysis) PrintResult(v Verbose) {
-	for syscall, _ := range a.lenContainingSyscall {
+	for syscall, _ := range a.tracedSyscalls {
 		s := ""
 		for i, arg := range syscall.def.Args {
 			if lenRange, ok := a.regLenRanges[syscall][arg]; ok {
@@ -600,6 +600,10 @@ func (a *LenAnalysis) PrintResult(v Verbose) {
 }
 
 func (a *LenAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *ArgMap, depth int) ArgConstraint {
+	if _, ok := a.tracedSyscalls[syscall]; !ok {
+		return nil
+	}
+
 	var constraint *RangeConstraint
 	if depth == 0 {
 		if r, ok := a.regLenRanges[syscall][arg]; ok {
