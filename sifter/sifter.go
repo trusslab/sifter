@@ -42,7 +42,6 @@ type Context struct {
 type AnalysisRound struct {
 	flag   AnalysisFlag
 	ac     []AnalysisConfig
-//	traces []*Trace
 	files []os.FileInfo
 }
 
@@ -144,7 +143,7 @@ func NewSifter(f Flags) (*Sifter, error) {
 			syscallArgs: "args",
 			defaultRetType: "int",
 			defaultRetVal: "SECCOMP_RET_ALLOW",
-			errorRetVal: "SECCOMP_RET_ERRNO",
+			errorRetVal: "SECCOMP_RET_ERRNO | EINVAL",
 		}
 	} else if f.Mode == "analyzer" {
 		s.mode = AnalyzerMode
@@ -659,6 +658,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 						fmt.Fprintf(s, "    int %v = %v;\n", endName, arrayLenName)
 						arrayLenRangeEnd = arrayLenRangeEnd / minElementSize(t.Type)
 					}
+
 					arrayLenRangeMax := 20
 					for i := 0; i < arrayLenRangeEnd && i < arrayLenRangeMax; i++ {
 						if isVLR {
@@ -734,7 +734,7 @@ func (sifter *Sifter) GenerateOtherSyscallsTracer() {
 	fmt.Fprintf(s, "    int idx;\n")
 	fmt.Fprintf(s, "    get_and_inc_ctr(idx, other_syscalls, %v);\n", sifter.otherSyscall.TraceSizeBits())
 	fmt.Fprintf(s, "    if (idx == -1)\n")
-	fmt.Fprintf(s, "        return 1;\n")
+	fmt.Fprintf(s, "        return %v;\n", sifter.ctx.errorRetVal)
 	fmt.Fprintf(s, "\n")
 	fmt.Fprintf(s, "    sys_enter_ent_t *ent = bpf_other_syscalls_ent_lookup_elem(&idx);\n")
 	fmt.Fprintf(s, "    if (ent) {\n")
@@ -761,11 +761,12 @@ func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 	s := sifter.GetSection("level2_tracing")
 	fmt.Fprintf(s, "%v __always_inline trace_%v(%v *ctx, uint64_t pid_tgid) {\n", sifter.ctx.defaultRetType, syscall.name, sifter.ctx.name)
 	fmt.Fprintf(s, "    %v ret = %v;\n", sifter.ctx.defaultRetType, sifter.ctx.defaultRetVal)
+
 	if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
 		fmt.Fprintf(s, "    int idx;\n")
 		fmt.Fprintf(s, "    get_and_inc_ctr(idx, %v, %v);\n", syscall.name, syscall.TraceSizeBits())
 		fmt.Fprintf(s, "    if (idx == -1)\n")
-		fmt.Fprintf(s, "        return 1;\n")
+		fmt.Fprintf(s, "        return %v;\n", sifter.ctx.errorRetVal)
 		fmt.Fprintf(s, "\n")
 		fmt.Fprintf(s, "    sys_enter_ent_t *ent = bpf_%v_ent_lookup_elem(&idx);\n", syscall.name)
 		fmt.Fprintf(s, "    if (ent) {\n")
@@ -783,8 +784,7 @@ func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 			offset := 0
 			sifter.GenerateArgTracer(s, syscall, arg, path, syscall.name, "", nil, &offset)
 		}
-	}
-	if sifter.mode == FilterMode {
+	} else if sifter.mode == FilterMode {
 		syscallUnused := true;
 		if a := sifter.GetAnalysis("pattern analysis"); a != nil {
 			pa, _ := a.(*PatternAnalysis)
@@ -796,7 +796,7 @@ func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 			}
 		}
 		if sifter.run == 1 && syscallUnused {
-			fmt.Fprintf(s, "    ret = %v | EINVAL;\n", sifter.ctx.errorRetVal)
+			fmt.Fprintf(s, "    ret = %v;\n", sifter.ctx.errorRetVal)
 		} else {
 			fmt.Fprintf(s, "    struct syscall_id_key id_key;\n")
 			fmt.Fprintf(s, "    id_key.nr = ctx->nr;\n")
@@ -817,6 +817,7 @@ func (sifter *Sifter) GenerateSyscallTracer(syscall *Syscall) {
 			fmt.Fprintf(s, "    bpf_syscall_id_curr_update_elem(&pid_tgid, &id_key, BPF_ANY);\n")
 		}
 	}
+
 	fmt.Fprintf(s, "    return ret;\n")
 	fmt.Fprintf(s, "}\n\n")
 }
@@ -844,7 +845,7 @@ func (sifter *Sifter) GenerateIoctlTracer(syscalls []*Syscall) {
 	}
 	fmt.Fprintf(s, "    default:\n")
 	if sifter.mode == FilterMode {
-		fmt.Fprintf(s, "        ret = %v | EINVAL;\n", sifter.ctx.errorRetVal)
+		fmt.Fprintf(s, "        ret = %v;\n", sifter.ctx.errorRetVal)
 	} else {
 		fmt.Fprintf(s, "        ret = trace_other_syscalls(ctx, pid_tgid, 0x400000000000000);\n")
 	}
@@ -1006,7 +1007,7 @@ func (sifter *Sifter) GenerateProgSection() {
 		fmt.Fprintf(s, "{\n")
 		fmt.Fprintf(s, "    uint32_t nr = ctx->nr;\n")
 		fmt.Fprintf(s, "    uint64_t pid_tgid = bpf_get_current_pid_tgid();\n")
-		fmt.Fprintf(s, "    int ret = SECCOMP_RET_ALLOW;\n")
+		fmt.Fprintf(s, "    int ret = %v;\n", sifter.ctx.defaultRetVal)
 		fmt.Fprintf(s, "    if (nr == %v) {\n", sifter.SyscallNumber("openat"))
 		fmt.Fprintf(s, "        check_dev_open(ctx);\n")
 		fmt.Fprintf(s, "    } else if (nr != %v) {\n", sifter.SyscallNumber("close"))
@@ -1021,14 +1022,14 @@ func (sifter *Sifter) GenerateProgSection() {
 			}
 		}
 		fmt.Fprintf(s, "            } else {\n")
-		fmt.Fprintf(s, "                ret = SECCOMP_RET_ERRNO | EINVAL;\n")
+		fmt.Fprintf(s, "                ret = %v;\n", sifter.ctx.errorRetVal)
 		fmt.Fprintf(s, "            }\n")
 		if a := sifter.GetAnalysis("pattern analysis"); a != nil {
-			fmt.Fprintf(s, "            if (ret == SECCOMP_RET_ALLOW) {\n")
+			fmt.Fprintf(s, "            if (ret == %v) {\n", sifter.ctx.defaultRetVal)
 			fmt.Fprintf(s, "                if (check_seq(pid_tgid, fd)) {\n")
-			fmt.Fprintf(s, "                    ret = SECCOMP_RET_ALLOW;\n")
+			fmt.Fprintf(s, "                    ret = %v;\n", sifter.ctx.defaultRetVal)
 			fmt.Fprintf(s, "                } else {\n")
-			fmt.Fprintf(s, "                    ret = SECCOMP_RET_ERRNO | EINVAL;\n")
+			fmt.Fprintf(s, "                    ret = %v;\n", sifter.ctx.errorRetVal)
 			fmt.Fprintf(s, "                }\n")
 			fmt.Fprintf(s, "            }\n")
 			fmt.Fprintf(s, "            bpf_syscall_id_curr_delete_elem(&pid_tgid);\n")
