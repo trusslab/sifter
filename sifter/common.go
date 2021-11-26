@@ -236,6 +236,9 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall) error {
 				return fmt.Errorf("%v ended unexpectedly (3): %v", traceFilePath, err)
 			}
 		case 1:
+			if !strings.Contains(te.syscall.name, "kgsl") {
+				te.typ = 2
+			}
 			if _, err = io.ReadFull(br, te.data); err != nil {
 				return fmt.Errorf("%v ended unexpectedly (4): %v", traceFilePath, err)
 			}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 
 	"github.com/google/syzkaller/prog"
 )
@@ -378,10 +377,8 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 				}
 			}
 		}
-//	} else if te.typ == 1 {
 	} else if te.typ == 1 || (te.typ == 2 && (te.flag & TraceEventFlagUseFD) != 0) {
 		_, key := a.newAnalysisUnitKey(te)
-//		_, fd := te.GetFD()
 		if _, ok := a.seqInterval[key]; !ok {
 //			fmt.Printf("new key %v %d\n", te.info.name, fd)
 			a.seqInterval[key] = make(map[int][]uint64)
@@ -417,23 +414,6 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 			a.lastNodeOfPid[te.id] = newNextNode
 		}
 		a.lastNodeOfPid[te.id].events = append(a.lastNodeOfPid[te.id].events, te)
-//	} else if te.typ == 2 && (te.flag & TraceEventFlagUseFD) != 0 {
-//		_, nr := te.GetNR()
-//		_, key := a.newAnalysisUnitKey(te)
-//		idx := -1
-//		fd := uint64(0)
-//		switch nr {
-//		case 21:
-//			idx, fd = te.GetFD2("fd")
-//		case 23, 24:
-//			idx, fd = te.GetFD2("oldfd")
-//		}
-//		if idx != -1 {
-//			key.fd = fd
-//		}
-//		if _, ok := a.seqInterval[key]; ok {
-//			fmt.Printf("%v %v kernel module fd(%d)\n", te.trace.name, te.syscall.name, key.fd)
-//		}
 	}
 
 	for _, gm := range a.groupingMethods {
@@ -495,7 +475,7 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int, int) {
 				a.lastNodeOfPid[pid] = a.seqPolicyTreeRoot
 			}
 		}
-	} else if te.typ == 1 && strings.Contains(te.syscall.name, "kgsl") {
+	} else if te.typ == 1 || (te.typ == 2 && (te.flag & TraceEventFlagUseFD) != 0) {
 start:
 		_, key := a.newAnalysisUnitKey(te)
 		if _, ok := a.filterStates[key]; !ok {
