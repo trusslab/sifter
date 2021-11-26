@@ -561,7 +561,6 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		}
 		sifter.AddStruct(t)
 		for _, field := range t.Fields {
-			fmt.Printf("struct %v field %v parent %v\n", t.Name(), field.FieldName(), parent.name)
 			sifter.GenerateArgTracer(s, syscall, field, srcPath, argName, dstPath+accessOp, parent, depth)
 		}
 	case *prog.LenType, *prog.IntType, *prog.ConstType, *prog.FlagsType:
@@ -592,8 +591,9 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 			} else if structElem, ok := t.Type.(*prog.StructType); ok {
 				sifter.AddStruct(structElem)
 			}
-			//if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
-			argBufType := "struct "+argName+"_buf"
+
+			if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
+				argBufType := "struct "+argName+"_buf"
 				elements := new(prog.ArrayType)
 				if isVLR {
 					elements.TypeCommon = prog.TypeCommon{TypeName: "array", FldName: "elem", TypeSize: 512}
@@ -610,16 +610,12 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 				elemBuffer.Key = prog.StructKey{Name: argName+"_buf"}
 				elemBuffer.StructDesc = &prog.StructDesc{TypeCommon: prog.TypeCommon{TypeName: argName+"_buf"}}
 				elemBuffer.Fields = []prog.Type{elements}
-
-			if sifter.mode == TracerMode || sifter.mode == AnalyzerMode {
 				sifter.AddStruct(elemBuffer)
 				syscall.AddArgMap(t.Type, parentArgMap, argName, srcPath, argBufType, 10)
 				fmt.Fprintf(s, "    %v", indent(sifter.GenerateArgMapLookup(argName, argBufType), 1))
 				fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, dstPath, "0", true), 1))
-			} else {
-				syscall.AddArgMap(t.Type, parentArgMap, argName, srcPath, argBufType, 10)
-			}
-			if sifter.mode == FilterMode {
+			} else if sifter.mode == FilterMode {
+				parent = syscall.AddArgMap(t.Type, parentArgMap, argName, srcPath, argTypeName(t.Type), 10)
 				parentVarName := strings.Split(srcPath, ".")[0]
 				arrayFieldName := strings.Split(srcPath, ".")[1]
 				arrayLen, arrayLenRangeEnd := sifter.GetArrayLen(syscall, parentArgMap, *depth, arrayFieldName)
@@ -655,7 +651,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 					offName := fmt.Sprintf("array_%v_offset", stackVarName)
 					endName := fmt.Sprintf("array_%v_end", stackVarName)
 					arrayLenName := fmt.Sprintf("%v.%v", parentVarName, (*arrayLen).FieldName())
-					//newSrcPath := stackVarName
+
 					fmt.Fprintf(s, "    int %v = 0;\n", offName)
 					if (*arrayLen).(*prog.LenType).BitSize == 0 {
 						fmt.Fprintf(s, "    int %v = %v * sizeof(%v);\n", endName, arrayLenName, stackVarName)
@@ -683,10 +679,11 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 							fmt.Fprintf(s, "    }\n")
 						} else {
 							fmt.Fprintf(s, "    %v\n", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, offName, false), 1))
-							//sifter.AddStruct(t.Type.(*prog.StructType))
-							//for _, field := range t.Fields {
-							//	sifter.GenerateArgTracer(s, syscall, field, newSrcPath, argName, dstPath+accessOp, parentArgMap, depth)
-							//}
+
+							for _, field := range t.Type.(*prog.StructType).Fields {
+								sifter.GenerateArgTracer(s, syscall, field, stackVarName, argName, dstPath+accessOp, parent, depth)
+							}
+
 							fmt.Fprintf(s, "    %v += sizeof(%v);\n", offName, stackVarName)
 							fmt.Fprintf(s, "    if (%v + sizeof(%v) > %v) {\n", offName, stackVarName, endName)
 							fmt.Fprintf(s, "        goto %v;\n", endLabelName)
@@ -1738,6 +1735,9 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_ALLOC_arg_flags")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_DRAWCTXT_CREATE_arg_flags")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_flags")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_cmdlist_flags")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_objlist_flags")
+	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_synclist_type")
 	//var sa SequenceAnalysis
 	//sa.SetLen(0)
 	//sa.SetUnitOfAnalysis(ProcessLevel)
@@ -1813,6 +1813,9 @@ func (sifter *Sifter) TrainAndTest() {
 		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_ALLOC_arg_flags")
 		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_DRAWCTXT_CREATE_arg_flags")
 		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_flags")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_cmdlist_flags")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_objlist_flags")
+		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_synclist_type")
 		//var sa SequenceAnalysis
 		//sa.SetLen(0)
 		//sa.SetUnitOfAnalysis(TraceLevel)
