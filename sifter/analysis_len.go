@@ -13,6 +13,7 @@ type RangeConfig struct {
 	rangeTh    float64
 	outlier0Th float64
 	outlier1Th float64
+	genValuesConstraint bool
 }
 
 type LenRange struct {
@@ -177,6 +178,7 @@ func (r *LenRange) RemoveOutlier() bool {
 		return false
 	}
 
+	// Calculate deviation of original values
 	var vKeys []uint64
 	for v, _ := range r.values {
 		vKeys = append(vKeys, v)
@@ -189,12 +191,12 @@ func (r *LenRange) RemoveOutlier() bool {
 	medianAbsDev0 := medianAbsDev(r.values, median0)
 	fmt.Printf("0 median: %v mad: %v mean: %v mad: %v\n", median0, medianAbsDev0, mean0, meanAbsDev0)
 
+	// Remove outliers
 	devThreshold := r.config.outlier0Th
 	update := false
 	if meanAbsDev0 != 0 {
 		outliers := make([]string, 0)
 		for _, v := range vKeys {
-			//z := 0.6745 * float64(diff(v, mean) / medianAbsDev)
 			z := math.Abs(float64(v) - mean0) / meanAbsDev0
 			if float64(z) > devThreshold {
 				outliers = append(outliers, fmt.Sprintf("%v %v\n", v, z))
@@ -210,6 +212,7 @@ func (r *LenRange) RemoveOutlier() bool {
 		}
 	}
 
+	// Calculate deviation of values after cleanup
 	vKeys = make([]uint64, 0)
 	for v, _ := range r.values {
 		vKeys = append(vKeys, v)
@@ -221,6 +224,7 @@ func (r *LenRange) RemoveOutlier() bool {
 	median1 := median(r.values, vKeys)
 	medianAbsDev1 := medianAbsDev(r.values, median1)
 	fmt.Printf("1 median: %v mad: %v mean: %v mad: %v\n", median1, medianAbsDev1, mean1, meanAbsDev1)
+
 	r.lower, r.upper = genRange(mean1, meanAbsDev1, r.config.rangeTh)
 	r.lowerOL, r.upperOL = genRange(mean1, meanAbsDev1, r.config.outlier1Th)
 	fmt.Printf("new lower:%d upper:%d lowerOL:%d upperOL:%d\n", r.lower, r.upper, r.lowerOL, r.upperOL)
@@ -234,17 +238,22 @@ type LenAnalysis struct {
 	vlrLenRanges map[*VlrMap]map[*VlrRecord]map[prog.Type]*LenRange
 	tracedSyscalls map[*Syscall]bool
 	rangeConfigs map[string]RangeConfig
+	valuesConstraintTh int
 }
 
 func (a *LenAnalysis) String() string {
 	return "length analysis"
 }
 
-func (a *LenAnalysis) SetRangeConfig(arg string, rangeTh float64, ol0Th float64, ol1Th float64) {
+func (a *LenAnalysis) SetArgRangeConfig(arg string, rangeTh float64, ol0Th float64, ol1Th float64, genValuesConstraint bool) {
 	if a.rangeConfigs == nil {
 		a.rangeConfigs = make(map[string]RangeConfig)
 	}
-	a.rangeConfigs[arg] = RangeConfig{rangeTh, ol0Th, ol1Th}
+	a.rangeConfigs[arg] = RangeConfig{rangeTh, ol0Th, ol1Th, genValuesConstraint}
+}
+
+func (a *LenAnalysis) SetGenValuesConstraintThreshold(th int) {
+	a.valuesConstraintTh = th
 }
 
 func (a *LenAnalysis) isLenType(arg prog.Type) bool {
@@ -604,22 +613,43 @@ func (a *LenAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *
 		return nil
 	}
 
-	var constraint *RangeConstraint
 	if depth == 0 {
 		if r, ok := a.regLenRanges[syscall][arg]; ok {
-			fmt.Printf("add constraint to %v %v\n", syscall.name, arg.FieldName())
-			constraint = new(RangeConstraint)
-			constraint.l = r.lower
-			constraint.u = r.upper
-			return constraint
+			if r.config.genValuesConstraint || len(r.values) <= a.valuesConstraintTh {
+				var constraint *ValuesConstraint
+				fmt.Printf("add values constraint to %v %v\n", syscall.name, arg.FieldName())
+				constraint = new(ValuesConstraint)
+				for v, _ := range r.values {
+					constraint.values = append(constraint.values, v)
+				}
+				return constraint
+			} else {
+				var constraint *RangeConstraint
+				fmt.Printf("add range constraint to %v %v\n", syscall.name, arg.FieldName())
+				constraint = new(RangeConstraint)
+				constraint.l = r.lower
+				constraint.u = r.upper
+				return constraint
+			}
 		}
 	} else {
 		if r, ok := a.argLenRanges[argMap][arg]; ok {
-			fmt.Printf("add constraint to %v %v %v\n", syscall.name, argMap.name, arg.FieldName())
-			constraint = new(RangeConstraint)
-			constraint.l = r.lower
-			constraint.u = r.upper
-			return constraint
+			if r.config.genValuesConstraint || len(r.values) <= a.valuesConstraintTh {
+				var constraint *ValuesConstraint
+				fmt.Printf("add values constraint to %v %v %v\n", syscall.name, argMap.name, arg.FieldName())
+				constraint = new(ValuesConstraint)
+				for v, _ := range r.values {
+					constraint.values = append(constraint.values, v)
+				}
+				return constraint
+			} else {
+				var constraint *RangeConstraint
+				fmt.Printf("add range constraint to %v %v %v\n", syscall.name, argMap.name, arg.FieldName())
+				constraint = new(RangeConstraint)
+				constraint.l = r.lower
+				constraint.u = r.upper
+				return constraint
+			}
 		}
 	}
 	return nil
