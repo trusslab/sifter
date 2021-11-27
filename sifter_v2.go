@@ -39,12 +39,14 @@ func main() {
 		s.WriteSourceFile()
 		s.WriteAgentConfigFile()
 	} else if s.Mode() == sifter.AnalyzerMode {
-		s.TrainAndTest()
-		//s.AnalyzeSinlgeTrace()
+		//s.TrainAndTest()
+		s.AnalyzeSinlgeTrace()
 	} else if s.Mode() == sifter.FilterMode {
 		s.TrainAndTest()
 		s.CleanSections()
-		s.GenerateSource()
-		s.WriteSourceFile()
+		//s.GenerateSource()
+		//s.WriteSourceFile()
+		s.GenerateFilterSource()
+		s.WriteFilterSourceFile()
 	}
 }

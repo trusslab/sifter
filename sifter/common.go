@@ -69,6 +69,18 @@ type Syscall struct {
 	traceFile		*os.File
 	traceReader		*bufio.Reader
 	syscalls        map[uint64]*Syscall
+	structs         []*prog.StructType
+	taggingArgs     map[int]string
+}
+
+func (syscall *Syscall) GetFDIndex() []int {
+	var FDIdx []int
+	for i, arg := range syscall.def.Args {
+		if _, ok := arg.(*prog.ResourceType); ok {
+			FDIdx = append(FDIdx, i)
+		}
+	}
+	return FDIdx
 }
 
 func (syscall *Syscall) TraceSizeBits() int {
@@ -570,7 +582,7 @@ type TaggingConstraint struct {
 
 func (tc *TaggingConstraint) String(argName string, retName string, allowValue string, rejectValue string) string {
 	s := ""
-	s += fmt.Sprintf("id_key.tag[%v] = %v;\n", tc.idx, argName)
+	//s += fmt.Sprintf("id_key.tag[%v] = %v;\n", tc.idx, argName)
 	return s
 }
 
