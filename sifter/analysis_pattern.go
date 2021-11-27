@@ -270,6 +270,7 @@ type PatternAnalysis struct {
 	seqSeqGraph       map[int]map[int][]int
 
 	uniqueSyscallList []*TaggedSyscall
+	uniqueSyscallIDMap map[*TaggedSyscall]int
 	seqTags           []int
 	seqTreeList       [][]*TaggedSyscallNode
 	seqOrderList      map[int]uint64
@@ -305,6 +306,7 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 
 	a.seqTreeList = make([][]*TaggedSyscallNode, 0)
 	a.uniqueSyscallList = make([]*TaggedSyscall, 0)
+	a.uniqueSyscallIDMap = make(map[*TaggedSyscall]int)
 	a.seqOrderList = make(map[int]uint64)
 	a.seqSeqList = make(map[int]uint64)
 
@@ -884,6 +886,28 @@ func (n *TaggedSyscallNode) Print(a *PatternAnalysis) {
 	n.print(&depth, depthsWithOtherChildren, false, a)
 }
 
+func (a *PatternAnalysis) genTreeEdgeList(node *TaggedSyscallNode, nodeID map[*TaggedSyscallNode]int, nodeEdgeNext *[][]int) {
+	for _, next := range node.next {
+		if idx := next.findEndChild(); idx != -1 {
+			*nodeEdgeNext = append(*nodeEdgeNext, []int{nodeID[node], a.uniqueSyscallIDMap[next.syscall], 0})
+		} else {
+			if _, ok := nodeID[next]; !ok {
+				nodeID[next] = len(nodeID)
+			}
+			*nodeEdgeNext = append(*nodeEdgeNext, []int{nodeID[node], a.uniqueSyscallIDMap[next.syscall], nodeID[next]})
+			a.genTreeEdgeList(next, nodeID, nodeEdgeNext)
+		}
+	}
+}
+
+func (a *PatternAnalysis) GetTreeEdgeList(root *TaggedSyscallNode) [][]int {
+	nodeEdgeNext := make([][]int, 0)
+	nodeID := make(map[*TaggedSyscallNode]int)
+	nodeID[root] = 0
+	a.genTreeEdgeList(root, nodeID, &nodeEdgeNext)
+	return nodeEdgeNext
+}
+
 func (a *PatternAnalysis) genSeqTreeList(node *TaggedSyscallNode, nodeStack []*TaggedSyscallNode) {
 	nodeStack = append(nodeStack, node)
 	if idx := node.findEndChild(); idx != -1 && node != a.seqTreeRoot {
@@ -905,14 +929,9 @@ func (a *PatternAnalysis) genSeqTreeList(node *TaggedSyscallNode, nodeStack []*T
 
 func (a *PatternAnalysis) genUniqueNodeList(node *TaggedSyscallNode) {
 	if node.syscall.syscall != nil {
-		found := false
-		for _, syscall := range a.uniqueSyscallList {
-			if syscall.Equal(node.syscall, nil) {
-				found = true
-			}
-		}
-		if !found {
+		if _, ok := a.uniqueSyscallIDMap[node.syscall]; !ok {
 			a.uniqueSyscallList = append(a.uniqueSyscallList, node.syscall)
+			a.uniqueSyscallIDMap[node.syscall] = len(a.uniqueSyscallList)
 		}
 	}
 	for _, next := range node.next {

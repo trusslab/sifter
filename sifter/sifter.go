@@ -788,13 +788,18 @@ func (sifter *Sifter) GenerateOtherSyscallsTracer() {
 	fmt.Fprintf(s, "}\n\n")
 }
 
-func (sifter *Sifter) GenerateSequenceFilter() {
-	var pa *PatternAnalysis
-	if a := sifter.GetAnalysis("pattern analysis"); a != nil {
-		pa, _ = a.(*PatternAnalysis)
-	}
+func (sifter *Sifter) GenerateSequenceFilter(seqTreeEdgeList [][]int) {
 	s := sifter.GetSection("filter_seq")
-	fmt.Fprintf(s, "#define SC_SEQ_MAX %v\n", len(pa.seqTreeList))
+	fmt.Fprintf(s, "void __always_inline init_seq_tree_map() {\n")
+	fmt.Fprintf(s, "    struct node_edge ne;\n")
+	fmt.Fprintf(s, "    uint16_t next_node_id;\n")
+	fmt.Fprintf(s, "\n")
+	for _, nodeEdgeNext := range seqTreeEdgeList {
+		fmt.Fprintf(s, "    ne.node_id = %v; ne.syscall_id = %v; next_node_id = %v;\n", nodeEdgeNext[0], nodeEdgeNext[1], nodeEdgeNext[2])
+		fmt.Fprintf(s, "    bpf_seq_tree_map_update_elem(&ne, &next_node_id, BPF_ANY);\n")
+	}
+	fmt.Fprintf(s, "}\n")
+	fmt.Fprintf(s, "\n")
 	fmt.Fprintf(s, "SEC(\"seccomp\")\n")
 	fmt.Fprintf(s, "%v __always_inline filter_seq(%v *ctx) {\n", sifter.ctx.defaultRetType, sifter.ctx.name)
 	fmt.Fprintf(s, "    %v ret = %v;\n", sifter.ctx.defaultRetType, sifter.ctx.defaultRetVal)
@@ -803,78 +808,46 @@ func (sifter *Sifter) GenerateSequenceFilter() {
 	fmt.Fprintf(s, "    if (!info)\n")
 	fmt.Fprintf(s, "        return ret;\n")
 	fmt.Fprintf(s, "\n")
-	fmt.Fprintf(s, "    struct thread_syscall_stat *sc_stat = bpf_thread_syscall_stat_lookup_elem(&pid_tgid);\n")
-	fmt.Fprintf(s, "    if (!sc_stat) {\n")
-	fmt.Fprintf(s, "        struct thread_syscall_stat sc_stat_new = {};\n")
-	fmt.Fprintf(s, "        sc_stat_new.l = 0;\n")
-	fmt.Fprintf(s, "        sc_stat_new.u = SC_SEQ_MAX - 1;\n")
-	fmt.Fprintf(s, "        sc_stat_new.idx = 0;\n")
-	fmt.Fprintf(s, "        bpf_thread_syscall_stat_update_elem(&pid_tgid, &sc_stat_new, BPF_ANY);\n")
-	fmt.Fprintf(s, "        sc_stat = bpf_thread_syscall_stat_lookup_elem(&pid_tgid);\n")
-	fmt.Fprintf(s, "        if (!sc_stat) {\n")
+	fmt.Fprintf(s, "    int i = 0;\n")
+	fmt.Fprintf(s, "    int *inited = bpf_init_var_lookup_elem(&i);\n")
+	fmt.Fprintf(s, "    if (!inited) {\n")
+	fmt.Fprintf(s, "        init_seq_tree_map();\n")
+	fmt.Fprintf(s, "        bpf_init_var_update_elem(&i, &i, BPF_ANY);\n")
+	fmt.Fprintf(s, "    }\n")
+	fmt.Fprintf(s, "\n")
+	fmt.Fprintf(s, "    uint16_t *thread_curr_node_id = bpf_thread_node_id_lookup_elem(&pid_tgid);\n")
+	fmt.Fprintf(s, "    if (!thread_curr_node_id) {\n")
+	fmt.Fprintf(s, "        uint16_t init_node_id = 0;\n")
+	fmt.Fprintf(s, "        bpf_thread_node_id_update_elem(&pid_tgid, &init_node_id, BPF_ANY);\n")
+	fmt.Fprintf(s, "        thread_curr_node_id = bpf_thread_node_id_lookup_elem(&pid_tgid);\n")
+	fmt.Fprintf(s, "        if (!thread_curr_node_id) {\n")
 	fmt.Fprintf(s, "            ret = %v;\n", sifter.ctx.errorRetVal)
 	fmt.Fprintf(s, "            goto skip_seq_check;\n")
 	fmt.Fprintf(s, "        }\n")
 	fmt.Fprintf(s, "    }\n")
 	fmt.Fprintf(s, "\n")
-	fmt.Fprintf(s, "    int l = -1;\n")
-	fmt.Fprintf(s, "    int u = -1;\n")
-	fmt.Fprintf(s, "    bool ok = false;\n")
-	fmt.Fprintf(s, "    bool end = false;\n")
-	fmt.Fprintf(s, "    uint32_t idx = sc_stat->idx;\n")
-	fmt.Fprintf(s, "    uint32_t shift = idx * 6;\n")
-	fmt.Fprintf(s, "    uint64_t syscall_seq;\n")
-	for i := 0; i < len(pa.seqTreeList); i++ {
-		fmt.Fprintf(s, "    syscall_seq = ")
-		for ssi, ss := range pa.seqTreeList[i] {
-			syscallID := 0
-			for usi, us := range pa.uniqueSyscallList {
-				if us.Equal(ss.syscall, nil) {
-					syscallID = usi
-					break
-				}
-			}
-			fmt.Fprintf(s, "(%dUL << %d)", syscallID+1, ssi*6)
-			if ssi == len(pa.seqTreeList[i]) - 1 {
-				fmt.Fprintf(s, ";\n")
-			} else {
-				fmt.Fprintf(s, " | ")
-			}
-		}
-		fmt.Fprintf(s, "    if (info->id == ((syscall_seq >> shift) & 0x3f)) {\n")
-		fmt.Fprintf(s, "        if (l < 0)\n")
-		fmt.Fprintf(s, "            l = %v;\n", i)
-		fmt.Fprintf(s, "        if (idx == %v)\n", len(pa.seqTreeList[i])-1)
-		fmt.Fprintf(s, "            end = true;\n")
-		fmt.Fprintf(s, "        u = %v;\n", i)
-		fmt.Fprintf(s, "    }\n")
-	}
+	fmt.Fprintf(s, "    uint16_t curr_node_id = *thread_curr_node_id;\n")
+	fmt.Fprintf(s, "    struct node_edge ne;\n")
+	fmt.Fprintf(s, "    ne.node_id = curr_node_id;\n")
+	fmt.Fprintf(s, "    ne.syscall_id = info->id;\n")
 	fmt.Fprintf(s, "\n")
-	fmt.Fprintf(s, "    ok = (l != -1 && u != -1);\n")
-	fmt.Fprintf(s, "    if (ok) {\n")
-	fmt.Fprintf(s, "        if (end) {\n")
-	fmt.Fprintf(s, "            sc_stat->l = 0;\n")
-	fmt.Fprintf(s, "            sc_stat->u = SC_SEQ_MAX - 1;\n")
-	fmt.Fprintf(s, "            sc_stat->idx = 0;\n")
-	fmt.Fprintf(s, "        } else {\n")
-	fmt.Fprintf(s, "            sc_stat->l = l;\n")
-	fmt.Fprintf(s, "            sc_stat->u = u;\n")
-	fmt.Fprintf(s, "            sc_stat->idx += 1;\n")
-	fmt.Fprintf(s, "        }\n")
-	fmt.Fprintf(s, "\n")
-	fmt.Fprintf(s, "        if (idx == 0) {\n")
-	fmt.Fprintf(s, "            if (!end) {\n")
-	fmt.Fprintf(s, "                bpf_lock_fd(info->fd);\n")
-	fmt.Fprintf(s, "            } else {\n")
-	fmt.Fprintf(s, "                bpf_thread_syscall_stat_delete_elem(&pid_tgid);\n")
-	fmt.Fprintf(s, "                bpf_waitif_fd_locked(info->fd);\n")
-	fmt.Fprintf(s, "            }\n")
-	fmt.Fprintf(s, "        } else if (end) {\n")
-	fmt.Fprintf(s, "            bpf_thread_syscall_stat_delete_elem(&pid_tgid);\n")
-	fmt.Fprintf(s, "            bpf_unlock_fd(info->fd);\n")
-	fmt.Fprintf(s, "        }\n")
-	fmt.Fprintf(s, "    } else {\n")
+	fmt.Fprintf(s, "    uint16_t *next_node_id = bpf_seq_tree_map_lookup_elem(&ne);\n")
+	fmt.Fprintf(s, "    if (!next_node_id) {\n")
 	fmt.Fprintf(s, "        ret = %v;\n", sifter.ctx.errorRetVal)
+	fmt.Fprintf(s, "        goto skip_seq_check;\n")
+	fmt.Fprintf(s, "    }\n")
+	fmt.Fprintf(s, "\n")
+	fmt.Fprintf(s, "    *thread_curr_node_id = *next_node_id;\n")
+	fmt.Fprintf(s, "    if (curr_node_id == 0) {\n")
+	fmt.Fprintf(s, "        if (*next_node_id != 0) {\n")
+	fmt.Fprintf(s, "            bpf_lock_fd(info->fd);\n")
+	fmt.Fprintf(s, "        } else {\n")
+	fmt.Fprintf(s, "            bpf_thread_node_id_delete_elem(&pid_tgid);\n")
+	fmt.Fprintf(s, "            bpf_waitif_fd_locked(info->fd);\n")
+	fmt.Fprintf(s, "        }\n")
+	fmt.Fprintf(s, "    } else if (*next_node_id == 0) {\n")
+	fmt.Fprintf(s, "        bpf_thread_node_id_delete_elem(&pid_tgid);\n")
+	fmt.Fprintf(s, "        bpf_unlock_fd(info->fd);\n")
 	fmt.Fprintf(s, "    }\n")
 	fmt.Fprintf(s, "\n")
 	fmt.Fprintf(s, "skip_seq_check:\n")
@@ -1696,42 +1669,45 @@ func (sifter *Sifter) GenerateFilterSource() {
 				sifter.AddStructToSection(structure, s)
 			}
 		}
+
+		seqTreeEdgeList := pa.GetTreeEdgeList(pa.seqTreeRoot)
+		sifter.GenerateSequenceFilter(seqTreeEdgeList)
+
+		helperSec := sifter.GetSection("filter_helper")
+		fmt.Fprintf(helperSec, "#define bpf_printk(fmt, ...)                                   \\\n")
+		fmt.Fprintf(helperSec, "({                                                             \\\n")
+		fmt.Fprintf(helperSec, "    char ____fmt[] = fmt;                                      \\\n")
+		fmt.Fprintf(helperSec, "    bpf_trace_printk(____fmt, sizeof(____fmt), ##__VA_ARGS__); \\\n")
+		fmt.Fprintf(helperSec, "})\n")
+		fmt.Fprintf(helperSec, "\n")
+
+		sharedStructSec := sifter.GetSection("filter_struct_shared")
+		fmt.Fprintf(sharedStructSec, "struct syscall_info {\n")
+		fmt.Fprintf(sharedStructSec, "    uint8_t id;\n")
+		fmt.Fprintf(sharedStructSec, "    uint64_t fd;\n")
+		fmt.Fprintf(sharedStructSec, "};\n")
+		fmt.Fprintf(sharedStructSec, "\n")
+
+		seqStructSec := sifter.GetSection("filter_struct_seq")
+		fmt.Fprintf(seqStructSec, "struct node_edge {\n")
+		fmt.Fprintf(seqStructSec, "    uint16_t node_id;\n")
+		fmt.Fprintf(seqStructSec, "    uint16_t syscall_id;;\n")
+		fmt.Fprintf(seqStructSec, "};\n")
+		fmt.Fprintf(seqStructSec, "\n")
+
+		sharedMapsSec := sifter.GetSection("filter_maps_shared")
+		fmt.Fprintf(sharedMapsSec, "DEFINE_BPF_MAP(syscall_info_map, HASH, uint64_t, struct syscall_info, 512);\n")
+
+		seqMapsSec := sifter.GetSection("filter_maps_seq")
+		fmt.Fprintf(seqMapsSec, "DEFINE_BPF_MAP(thread_node_id, HASH, uint64_t, uint16_t, 512);\n")
+		fmt.Fprintf(seqMapsSec, "DEFINE_BPF_MAP(seq_tree_map, HASH, struct node_edge, uint16_t, %v);\n", len(seqTreeEdgeList))
+		fmt.Fprintf(seqMapsSec, "DEFINE_BPF_MAP(init_var, HASH, int, int, 1);\n")
+
+		sifter.GenerateHeaderSection()
+
+		licenseSec := sifter.GetSection("license")
+		fmt.Fprintf(licenseSec, "char _license[] SEC(\"license\") = \"GPL\";\n")
 	}
-	sifter.GenerateSequenceFilter()
-
-	helperSec := sifter.GetSection("filter_helper")
-	fmt.Fprintf(helperSec, "#define bpf_printk(fmt, ...)                                   \\\n")
-	fmt.Fprintf(helperSec, "({                                                             \\\n")
-	fmt.Fprintf(helperSec, "    char ____fmt[] = fmt;                                      \\\n")
-	fmt.Fprintf(helperSec, "    bpf_trace_printk(____fmt, sizeof(____fmt), ##__VA_ARGS__); \\\n")
-	fmt.Fprintf(helperSec, "})\n")
-	fmt.Fprintf(helperSec, "\n")
-
-	sharedStructSec := sifter.GetSection("filter_struct_shared")
-	fmt.Fprintf(sharedStructSec, "struct syscall_info {\n")
-	fmt.Fprintf(sharedStructSec, "    uint8_t id;\n")
-	fmt.Fprintf(sharedStructSec, "    uint64_t fd;\n")
-	fmt.Fprintf(sharedStructSec, "};\n")
-	fmt.Fprintf(sharedStructSec, "\n")
-
-	seqStructSec := sifter.GetSection("filter_struct_seq")
-	fmt.Fprintf(seqStructSec, "struct thread_syscall_stat {\n")
-	fmt.Fprintf(seqStructSec, "    int l;\n")
-	fmt.Fprintf(seqStructSec, "    int u;\n")
-	fmt.Fprintf(seqStructSec, "    uint32_t idx;\n")
-	fmt.Fprintf(seqStructSec, "};\n")
-	fmt.Fprintf(seqStructSec, "\n")
-
-	sharedMapsSec := sifter.GetSection("filter_maps_shared")
-	fmt.Fprintf(sharedMapsSec, "DEFINE_BPF_MAP(syscall_info_map, HASH, uint64_t, struct syscall_info, 512);\n")
-
-	seqMapsSec := sifter.GetSection("filter_maps_seq")
-	fmt.Fprintf(seqMapsSec, "DEFINE_BPF_MAP(thread_syscall_stat, HASH, uint64_t, struct thread_syscall_stat, 512);\n")
-
-	sifter.GenerateHeaderSection()
-
-	licenseSec := sifter.GetSection("license")
-	fmt.Fprintf(licenseSec, "char _license[] SEC(\"license\") = \"GPL\";\n")
 }
 
 func (sifter *Sifter) WriteFilterSourceFile() {
