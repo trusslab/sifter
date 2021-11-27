@@ -709,6 +709,9 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 							fmt.Fprintf(s, "        goto %v;\n", endLabelName)
 							fmt.Fprintf(s, "    }\n")
 						} else {
+							fmt.Fprintf(s, "    if (%v + sizeof(%v) >= %v) {\n", offName, stackVarName, endName)
+							fmt.Fprintf(s, "        goto %v;\n", endLabelName)
+							fmt.Fprintf(s, "    }\n")
 							fmt.Fprintf(s, "    %v\n", indent(sifter.GenerateCopyFromUser(srcPath, stackVarName, offName, false), 1))
 
 							for _, field := range t.Type.(*prog.StructType).Fields {
@@ -716,9 +719,6 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 							}
 
 							fmt.Fprintf(s, "    %v += sizeof(%v);\n", offName, stackVarName)
-							fmt.Fprintf(s, "    if (%v + sizeof(%v) > %v) {\n", offName, stackVarName, endName)
-							fmt.Fprintf(s, "        goto %v;\n", endLabelName)
-							fmt.Fprintf(s, "    }\n")
 						}
 					}
 					fmt.Fprintf(s, "%v:\n", endLabelName)
@@ -800,6 +800,8 @@ func (sifter *Sifter) GenerateSequenceFilter() {
 	fmt.Fprintf(s, "    %v ret = %v;\n", sifter.ctx.defaultRetType, sifter.ctx.defaultRetVal)
 	fmt.Fprintf(s, "    uint64_t pid_tgid = bpf_get_current_pid_tgid();\n")
 	fmt.Fprintf(s, "    struct syscall_info *info = bpf_syscall_info_map_lookup_elem(&pid_tgid);\n")
+	fmt.Fprintf(s, "    if (!info)\n")
+	fmt.Fprintf(s, "        return ret;\n")
 	fmt.Fprintf(s, "\n")
 	fmt.Fprintf(s, "    struct thread_syscall_stat *sc_stat = bpf_thread_syscall_stat_lookup_elem(&pid_tgid);\n")
 	fmt.Fprintf(s, "    if (!sc_stat) {\n")
@@ -896,7 +898,7 @@ func (sifter *Sifter) GenerateSyscallFilter(syscall *Syscall) {
 		cmd := syscall.def.Args[1].(*prog.ConstType).Val
 		fmt.Fprintf(s, "    if (ctx->nr == %v && ctx->args[1] == 0x%x && bpf_check_fd(dev, ctx->args[0])) {\n", syscall.def.NR, cmd)
 	} else {
-		fmt.Fprintf(s, "    if (ctx->nr == %v && bpf_check_fd(dev, ctx->args[0])) {\n", syscall.def.NR)
+		fmt.Fprintf(s, "    if (ctx->nr == %v && bpf_check_fd(dev, ctx->args[%v])) {\n", syscall.def.NR, syscall.GetFDIndex()[0])
 	}
 	fmt.Fprintf(s, "        struct syscall_info info = {};\n")
 	fmt.Fprintf(s, "        info.fd = ctx->args[%v];\n", syscall.GetFDIndex()[0])
