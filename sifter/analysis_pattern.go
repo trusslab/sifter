@@ -314,6 +314,7 @@ func (a *PatternAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 	a.seqSeqGraph = make(map[int]map[int][]int)
 
 	a.debugEnable = false
+	a.tagCounter = 1
 }
 
 func (a *PatternAnalysis) SetFilterPolicy(p FilterPolicy) {
@@ -1213,6 +1214,7 @@ func (a *PatternAnalysis) _buildSeqSeqTree(node *TaggedSyscallNode, seq int, seq
 }
 
 func (a *PatternAnalysis) buildSeqSeqTree() {
+	// Add a psuedo node representing "start->seqs" of seq seq tree
 	a.seqSeqGraph[-1] = make(map[int][]int)
 	for next, _ := range a.seqSeqGraph {
 		if next != -1 {
