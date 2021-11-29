@@ -226,7 +226,8 @@ func NewSifter(f Flags) (*Sifter, error) {
 				fmt.Printf("trace syscall %v\n", callName)
 				tracedSyscall := new(Syscall)
 				tracedSyscall.name = fixName(syscall.Name)
-				tracedSyscall.def = s.target.SyscallMap[callName]
+				//tracedSyscall.def = s.target.SyscallMap[callName]
+				tracedSyscall.def = syscall
 				tracedSyscall.argMaps = []*ArgMap{}
 				tracedSyscall.traceSizeBits = 10
 				tracedSyscall.taggingArgs = make(map[int]string)
@@ -614,6 +615,7 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 		}
 	case *prog.ArrayType:
 		if t.IsVarlen {
+			vlra, _ := sifter.GetAnalysis("vlr analysis").(*VlrAnalysis)
 			isVLR := false
 			vlrHeaderSize := 0
 			if isVLR, vlrHeaderSize, _ = IsVarLenRecord(t); isVLR {
@@ -653,26 +655,31 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 				if arrayLenRangeEnd > 0 {
 					stackVarName := ""
 					vlrHeaderVarName := ""
-					vlrRecordTypes := make(map[string]string)
+					vlrRecordTypes := make(map[string][]string)
 					vlrTypeStackVarNames := make(map[string]string)
 					if isVLR {
 						headerType := fmt.Sprintf("uint%d_t", vlrHeaderSize*8)
 						fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&vlrHeaderVarName, headerType), 1))
+						// Generate stack variables for different VLRs
 						for _, field := range(t.Type.(*prog.UnionType).Fields) {
-							vlrRecordType := ""
-							if len(field.(*prog.StructType).Fields) > 1 {
-								//vlrRecordType = fmt.Sprintf("struct %v", field.(*prog.StructType).Fields[1].Name())
-								vlrRecordType = argTypeName(field.(*prog.StructType).Fields[1])
-								if _, ok := vlrTypeStackVarNames[vlrRecordType]; !ok {
-									if structArg, ok := field.(*prog.StructType).Fields[1].(*prog.StructType); ok {
-										sifter.AddStruct(syscall, structArg)
+							vlrRecordHeader := uint64(0)
+							for idx, vlrRecord := range field.(*prog.StructType).Fields {
+								if idx == 0 {
+									vlrRecordHeader = field.(*prog.StructType).Fields[0].(*prog.ConstType).Val
+								} else {
+									vlrRecordType := argTypeName(vlrRecord)
+									_, recorded := vlra.vlrHeaderCount[vlrRecordHeader]
+									if _, ok := vlrTypeStackVarNames[vlrRecordType]; !ok && recorded {
+										if structArg, ok := vlrRecord.(*prog.StructType); ok {
+											sifter.AddStruct(syscall, structArg)
+										}
+										newStackVarName := ""
+										fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&newStackVarName, vlrRecordType), 1))
+										vlrTypeStackVarNames[vlrRecordType] = newStackVarName
 									}
-									newStackVarName := ""
-									fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&newStackVarName, vlrRecordType), 1))
-									vlrTypeStackVarNames[vlrRecordType] = newStackVarName
+									vlrRecordTypes[field.FieldName()] = append(vlrRecordTypes[field.FieldName()], vlrRecordType)
 								}
 							}
-							vlrRecordTypes[field.FieldName()] = vlrRecordType
 						}
 					} else {
 						fmt.Fprintf(s, "    %v", indent(sifter.GenerateStackVar(&stackVarName, argType), 1))
@@ -690,20 +697,29 @@ func (sifter *Sifter) GenerateArgTracer(s *bytes.Buffer, syscall *Syscall, arg p
 						arrayLenRangeEnd = arrayLenRangeEnd / minElementSize(t.Type)
 					}
 
-					arrayLenRangeMax := 20
+					arrayLenRangeMax := 10
 					for i := 0; i < arrayLenRangeEnd && i < arrayLenRangeMax; i++ {
 						if isVLR {
 							fmt.Fprintf(s, "    %v", indent(sifter.GenerateCopyFromUser(srcPath, vlrHeaderVarName, offName, false), 1))
 							fmt.Fprintf(s, "    %v += sizeof(%v);\n", offName, vlrHeaderVarName)
 							fmt.Fprintf(s, "    switch(%v) {\n", vlrHeaderVarName)
 							for _, field := range(t.Type.(*prog.UnionType).Fields) {
-								fmt.Fprintf(s, "    case 0x%x:\n", field.(*prog.StructType).Fields[0].(*prog.ConstType).Val)
-								if vlrRecordType, ok := vlrRecordTypes[field.FieldName()]; ok && vlrRecordType != "" {
+								header := field.(*prog.StructType).Fields[0].(*prog.ConstType).Val
+								//fmt.Printf("vlr  %v\n", field.Name())
+								if _, recorded := vlra.vlrHeaderCount[header]; !recorded {
+									//fmt.Printf("%x nil\n", header)
+									continue
+								}
+								fmt.Printf("%x %v\n", header, vlra.vlrHeaderCount[header])
+								fmt.Fprintf(s, "    case 0x%x:\n", header)
+								for _, vlrRecordType := range vlrRecordTypes[field.FieldName()] {
 									fmt.Fprintf(s, "        %v\n", indent(sifter.GenerateCopyFromUser(srcPath, vlrTypeStackVarNames[vlrRecordType], offName, false), 2))
 									fmt.Fprintf(s, "        %v += sizeof(%v);\n", offName, vlrTypeStackVarNames[vlrRecordType])
 								}
 								fmt.Fprintf(s, "        break;\n")
 							}
+							fmt.Fprintf(s, "    default:\n")
+							fmt.Fprintf(s, "        ret = %v;\n", sifter.ctx.errorRetVal)
 							fmt.Fprintf(s, "    }\n")
 							fmt.Fprintf(s, "    if (%v >= %v) {\n", offName, endName)
 							fmt.Fprintf(s, "        goto %v;\n", endLabelName)
@@ -1088,11 +1104,13 @@ func (sifter *Sifter) GenerateProgSection() {
 		if key == "ioctl" {
 			sifter.GenerateIoctlTracer(syscalls)
 		} else {
-			syscall := syscalls[0]
-			if len(syscalls) > 1 {
-				fmt.Printf("%v has multiple variants. Only %v is traced!\n", syscall.def.CallName, syscall.name)
+			//syscall := syscalls[0]
+			//if len(syscalls) > 1 {
+			//	fmt.Printf("%v has multiple variants. Only %v is traced!\n", syscall.def.CallName, syscall.name)
+			//}
+			for _, syscall := range syscalls {
+				sifter.GenerateSyscallTracer(syscall)
 			}
-			sifter.GenerateSyscallTracer(syscall)
 		}
 	}
 	if sifter.mode == TracerMode {
@@ -1670,7 +1688,7 @@ func (sifter *Sifter) GenerateFilterSource() {
 			}
 		}
 
-		seqTreeEdgeList := pa.GetTreeEdgeList(pa.seqTreeRoot)
+		seqTreeEdgeList := pa.GetTreeEdgeList(pa.seqSeqTreeRoot)
 		sifter.GenerateSequenceFilter(seqTreeEdgeList)
 
 		helperSec := sifter.GetSection("filter_helper")
@@ -1885,14 +1903,18 @@ func (sifter *Sifter) ReadSyscallTrace(dirPath string) int {
 			if strings.Contains(syscall.name, "_compact_") {
 				continue
 			}
-			if err := trace.ReadSyscallTrace(syscall); err != nil {
+			ignore := false
+			if fd := syscall.GetFDIndex(); len(fd) > 0{
+				ignore = syscall.def.Args[fd[0]].(*prog.ResourceType).Name() != sifter.fdName
+			}
+			if err := trace.ReadSyscallTrace(syscall, ignore); err != nil {
 				fmt.Printf("failed to read syscall trace: %v\n", err)
 				trace.ClearEvents()
 				return 0
 			}
 		}
 	}
-	if err := trace.ReadSyscallTrace(sifter.otherSyscall); err != nil {
+	if err := trace.ReadSyscallTrace(sifter.otherSyscall, false); err != nil {
 		fmt.Printf("failed to read syscall trace: %v\n", err)
 		trace.ClearEvents()
 		return 0
@@ -2100,7 +2122,7 @@ func (sifter *Sifter) TrainAndTest() {
 		//sa.SetLen(0)
 		//sa.SetUnitOfAnalysis(TraceLevel)
 		pa.SetGroupingThreshold(TimeGrouping, 250000000)
-		pa.SetGroupingThreshold(SyscallGrouping, 8)
+		pa.SetGroupingThreshold(SyscallGrouping, 10)
 		//pa.SetGroupingThreshold(TimeGrouping, 1000000)
 		//pa.SetGroupingThreshold(TimeGrouping, 500000000)
 		//pa.SetGroupingThreshold(SyscallGrouping, 1)

@@ -213,7 +213,7 @@ func (t *Trace) ReadTracedPidComm() error {
 	return nil
 }
 
-func (t *Trace) ReadSyscallTrace(syscall *Syscall) error {
+func (t *Trace) ReadSyscallTrace(syscall *Syscall, ignore bool) error {
 	traceFilePath := fmt.Sprintf("%v/raw_trace_%v.dat", t.name, syscall.name)
 	traceFile, err := os.Open(traceFilePath)
 	if err != nil {
@@ -248,7 +248,8 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall) error {
 				return fmt.Errorf("%v ended unexpectedly (3): %v", traceFilePath, err)
 			}
 		case 1:
-			if !strings.Contains(te.syscall.name, "kgsl") {
+			if ignore {
+			//if !strings.Contains(te.syscall.name, "kgsl") {
 				te.typ = 2
 			}
 			if _, err = io.ReadFull(br, te.data); err != nil {
@@ -272,6 +273,10 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall) error {
 				syscall.syscalls[uint64(nr)] = newSyscall
 			}
 			te.syscall = syscall.syscalls[uint64(nr)]
+			if te.flag == TraceEventFlagUseFD {
+				te.typ = 1
+				fmt.Printf("%v\n", te.syscall.name)
+			}
 		}
 
 		if te.ts != 0 {

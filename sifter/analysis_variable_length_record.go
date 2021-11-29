@@ -17,6 +17,7 @@ type VlrSequenceNode struct {
 
 type VlrAnalysis struct {
 	vlrSequenceRoot []*VlrSequenceNode
+	vlrHeaderCount  map[uint64]int
 	tagCounter      int
 	check           int // 0: header; 1: seq; 2: seq and tag
 }
@@ -26,6 +27,7 @@ func (a VlrAnalysis) String() string {
 }
 
 func (a *VlrAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
+	a.vlrHeaderCount = make(map[uint64]int)
 	for _, syscalls := range *TracedSyscalls {
 		for _, syscall := range syscalls {
 			for _, _ = range syscall.vlrMaps {
@@ -40,6 +42,10 @@ func (a *VlrAnalysis) Reset() {
 
 func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt int) (string, int, int) {
 	if te.typ != 1 || te.syscall.vlrMaps == nil {
+		return "", 0, 0
+	}
+
+	if (te.flag & TraceEventFlagBadData) != 0 {
 		return "", 0, 0
 	}
 
@@ -67,6 +73,7 @@ func (a *VlrAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 			}
 
 			if matchedRecord != nil {
+				a.vlrHeaderCount[matchedRecord.header] += 1
 				updateMsg += matchedRecord.name
 			} else {
 				if offset < vlr.offset + size && a.check >= 0 {
