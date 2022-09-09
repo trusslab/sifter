@@ -14,6 +14,7 @@ type RangeConfig struct {
 	outlier0Th float64
 	outlier1Th float64
 	genValuesConstraint bool
+	valuesConstraintTh int
 }
 
 type LenRange struct {
@@ -174,7 +175,7 @@ func genRange(mean float64, dev float64, c float64) (uint64, uint64) {
 }
 
 func (r *LenRange) RemoveOutlier() bool {
-	if len(r.values) == 0 {
+	if len(r.values) <= r.config.valuesConstraintTh {
 		return false
 	}
 
@@ -249,7 +250,7 @@ func (a *LenAnalysis) SetArgRangeConfig(arg string, rangeTh float64, ol0Th float
 	if a.rangeConfigs == nil {
 		a.rangeConfigs = make(map[string]RangeConfig)
 	}
-	a.rangeConfigs[arg] = RangeConfig{rangeTh, ol0Th, ol1Th, genValuesConstraint}
+	a.rangeConfigs[arg] = RangeConfig{rangeTh, ol0Th, ol1Th, genValuesConstraint, 10}
 }
 
 func (a *LenAnalysis) SetGenValuesConstraintThreshold(th int) {
@@ -284,6 +285,7 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 			for argi, arg := range syscall.def.Args {
 				if a.isLenType(arg) {
 					a.regLenRanges[syscall][arg] = newLenRange()
+					a.regLenRanges[syscall][arg].config.valuesConstraintTh = a.valuesConstraintTh
 					if config, ok := a.rangeConfigs[fmt.Sprintf("%v_reg[%v]", syscall.name, argi)]; ok {
 						a.regLenRanges[syscall][arg].config = config
 					}
@@ -295,6 +297,7 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 					for _, field := range structArg.Fields {
 						if a.isLenType(field) {
 							a.argLenRanges[argMap][field] = newLenRange()
+							a.argLenRanges[argMap][field].config.valuesConstraintTh = a.valuesConstraintTh
 							if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v", argMap.name, field.FieldName())]; ok {
 								a.argLenRanges[argMap][field].config = config
 							}
@@ -303,6 +306,7 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 				} else {
 					if a.isLenType(argMap.arg) {
 						a.argLenRanges[argMap][argMap.arg] = newLenRange()
+						a.argLenRanges[argMap][argMap.arg].config.valuesConstraintTh = a.valuesConstraintTh
 						if config, ok := a.rangeConfigs[fmt.Sprintf("%v", argMap.name)]; ok {
 							a.argLenRanges[argMap][argMap.arg].config = config
 						}
@@ -319,6 +323,7 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 								for _, ff := range structField.Fields {
 									if a.isLenType(ff) {
 										a.vlrLenRanges[vlrMap][vlrRecord][ff] = newLenRange()
+										a.vlrLenRanges[vlrMap][vlrRecord][ff].config.valuesConstraintTh = a.valuesConstraintTh
 										if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v_%v_%v", syscall.name, vlrMap.name, f.FieldName(), ff.FieldName())]; ok {
 											a.vlrLenRanges[vlrMap][vlrRecord][ff].config = config
 										}
@@ -327,6 +332,7 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 							} else {
 								if a.isLenType(f) {
 									a.vlrLenRanges[vlrMap][vlrRecord][f] = newLenRange()
+									a.vlrLenRanges[vlrMap][vlrRecord][f].config.valuesConstraintTh = a.valuesConstraintTh
 									if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v_%v", syscall.name, vlrMap.name, f.FieldName())]; ok {
 										a.vlrLenRanges[vlrMap][vlrRecord][f].config = config
 									}
@@ -344,6 +350,16 @@ func (a *LenAnalysis) Reset() {
 }
 
 func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt int) (string, int, int) {
+	if _, nr := te.GetNR(); nr == 198 {
+		_, domain := te.GetData(0, 4)
+		_, protocol := te.GetData(16, 4)
+		if domain == 16 {
+			fmt.Printf("%v(%v, %v)\n", te.syscall.def.Name, domain, protocol)
+		}
+		if domain == 16 && protocol == 2 {
+			fmt.Printf("socket netlink !!\n")
+		}
+	}
 	if te.typ != 1 {
 		return "", 0, 0
 	}

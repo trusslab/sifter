@@ -68,6 +68,10 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag
 		return "", 0, 0
 	}
 
+	if (te.flag & TraceEventFlagBadData) != 0 {
+		return "", 0, 0
+	}
+
 	msgs := make([]string, 0)
 	var offset uint64
 	for i := 0; i < 6; i++ {

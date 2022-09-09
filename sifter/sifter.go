@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/prog"
@@ -2027,12 +2028,12 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_TIMESTAMP_EVENT_arg_type")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_flags")
-	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_type")
+	//fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_type")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_SETPROPERTY_arg_type")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_FREE_arg_flags")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_FREE_arg_type")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_flags")
-	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_type")
+	//fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_IMPORT_arg_type")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_INFO_arg_flags")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_ALLOC_arg_flags")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_DRAWCTXT_CREATE_arg_flags")
@@ -2040,14 +2041,11 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_cmdlist_flags")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_objlist_flags")
 	fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_synclist_type")
-	//var sa SequenceAnalysis
-	//sa.SetLen(0)
-	//sa.SetUnitOfAnalysis(ProcessLevel)
+	fa.AddBitFields("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_ALLOC_arg_flags", [][]int{{4,24},{4,20},{8,16},{8,8},{8,0}})
 	pa.SetGroupingThreshold(TimeGrouping, 250000000)
-	//pa.SetGroupingThreshold(TimeGrouping, 1000000000)
-	pa.SetGroupingThreshold(SyscallGrouping, 8)
+	pa.SetGroupingThreshold(SyscallGrouping, 10)
+	pa.SetGroupingThreshold(SleepableSyscallGrouping, 1000000)
 	pa.SetPatternOrderThreshold(0.8)
-	//pa.SetUnitOfAnalysis(TraceLevel)
 	pa.SetUnitOfAnalysis(ProcessLevel)
 
 	fi, err := os.Stat(sifter.traceDir)
@@ -2059,12 +2057,12 @@ func (sifter *Sifter) AnalyzeSinlgeTrace() {
 	r = sifter.CreateAnalysisRound(0, TrainFlag, []os.FileInfo{fi})
 	sifter.AddAnalysisToRound(r, &la, 0)
 	sifter.AddAnalysisToRound(r, &fa, 0)
+	sifter.AddAnalysisToRound(r, &pa, 0)
 	r = sifter.CreateAnalysisRound(0, TrainFlag, []os.FileInfo{fi})
 	sifter.AddAnalysisToRound(r, &la, 1)
 	sifter.AddAnalysisToRound(r, &fa, 1)
 	sifter.AddAnalysisToRound(r, &vlra, 0)
 	sifter.AddAnalysisToRound(r, &pa, 1)
-	//sifter.AddAnalysisToRound(1, &sa, 0)
 
 	for ri, round := range sifter.analysisRounds {
 		fmt.Print("================================================================================\n")
@@ -2118,16 +2116,11 @@ func (sifter *Sifter) TrainAndTest() {
 		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_cmdlist_flags")
 		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_objlist_flags")
 		fa.DisableTagging("ioctl_kgsl_IOCTL_KGSL_GPU_COMMAND_arg_synclist_type")
-		//var sa SequenceAnalysis
-		//sa.SetLen(0)
-		//sa.SetUnitOfAnalysis(TraceLevel)
+		fa.AddBitFields("ioctl_kgsl_IOCTL_KGSL_GPUOBJ_ALLOC_arg_flags", [][]int{{4,28},{4,24},{8,16},{8,8},{8,0}})
 		pa.SetGroupingThreshold(TimeGrouping, 250000000)
 		pa.SetGroupingThreshold(SyscallGrouping, 10)
-		//pa.SetGroupingThreshold(TimeGrouping, 1000000)
-		//pa.SetGroupingThreshold(TimeGrouping, 500000000)
-		//pa.SetGroupingThreshold(SyscallGrouping, 1)
+		pa.SetGroupingThreshold(SleepableSyscallGrouping, 1000000)
 		pa.SetPatternOrderThreshold(0.8)
-		//pa.SetUnitOfAnalysis(TraceLevel)
 		pa.SetUnitOfAnalysis(ProcessLevel)
 		pa.SetFilterPolicy(LongSeq)
 
@@ -2137,12 +2130,12 @@ func (sifter *Sifter) TrainAndTest() {
 		r = sifter.CreateAnalysisRound(0, TrainFlag, trainFiles)
 		sifter.AddAnalysisToRound(r, &la, 0)
 		sifter.AddAnalysisToRound(r, &fa, 0)
+		sifter.AddAnalysisToRound(r, &pa, 0)
 		r = sifter.CreateAnalysisRound(1, TrainFlag, trainFiles)
 		sifter.AddAnalysisToRound(r, &la, 1)
 		sifter.AddAnalysisToRound(r, &fa, 1)
 		sifter.AddAnalysisToRound(r, &vlra, 0)
 		sifter.AddAnalysisToRound(r, &pa, 1)
-		//sifter.AddAnalysisToRound(r, &sa, 0)
 		r = sifter.CreateAnalysisRound(2, TestFlag, testFiles)
 		sifter.AddAnalysisToRound(r, &la, 1)
 		sifter.AddAnalysisToRound(r, &fa, 1)
@@ -2154,9 +2147,11 @@ func (sifter *Sifter) TrainAndTest() {
 		tps := make([]int, len(sifter.analysisRounds))
 
 		fmt.Print("================================================================================\n")
+		fmt.Println(time.Now().Format(time.RFC3339))
 		fmt.Printf("#Iter %v\n", i)
 		for ri, round := range sifter.analysisRounds {
 			fmt.Print("================================================================================\n")
+			fmt.Println(time.Now().Format(time.RFC3339))
 			fmt.Printf("#Round %v: %v\n", ri, fileNames(round.files))
 			for fi, file := range round.files {
 				fmt.Printf("#Trace %v-%v-%v: %v\n", i, ri, fi, file.Name())
@@ -2178,10 +2173,11 @@ func (sifter *Sifter) TrainAndTest() {
 			fmt.Printf("#trace size: %v\n", traceSize[ri])
 			fmt.Printf("#updates: %v/%v\n", fps[ri], tps[ri])
 			fmt.Print("================================================================================\n")
+			fmt.Println(time.Now().Format(time.RFC3339))
 		}
 		fmt.Print("================================================================================\n")
 	}
 	fmt.Printf("#Testing error:\n")
-	fmt.Printf("#FP:%d TP:%d\n", fpsTotal[2], tpsTotal[2])
+	fmt.Printf("#FP:%d TN:%d\n", fpsTotal[2], tpsTotal[2])
 	fmt.Printf("#Avg FP: %.3f\n", float64(fpsTotal[2])/float64(sifter.Iter()))
 }

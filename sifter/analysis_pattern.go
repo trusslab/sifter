@@ -13,6 +13,7 @@ type Grouping int
 const (
 	TimeGrouping Grouping = iota
 	SyscallGrouping
+	SleepableSyscallGrouping
 )
 
 type GroupingMethod interface {
@@ -92,9 +93,41 @@ func (sg *SyscallGroupingMethod) reset() {
 	sg.counter = make(map[uint64]uint64)
 }
 
+type SleepableSyscallGroupingMethod struct {
+	threshold        uint64
+	avgSleep         map[*Syscall]map[string]uint64
+	lastSyscallSleep bool
+}
+
+func newSleepableSyscallGroupingMethod() *SleepableSyscallGroupingMethod {
+	sg := new(SleepableSyscallGroupingMethod)
+	sg.avgSleep = make(map[*Syscall]map[string]uint64)
+	return sg
+}
+
+func (sg *SleepableSyscallGroupingMethod) setThreshold(th uint64) {
+	sg.threshold = th
+}
+
+func (sg *SleepableSyscallGroupingMethod) toBreakDown(te *TraceEvent) bool {
+	thisSyscallSleep := sg.avgSleep[te.syscall][fmt.Sprint(te.tags)] > sg.threshold
+	breakDown := thisSyscallSleep || sg.lastSyscallSleep
+	sg.lastSyscallSleep = thisSyscallSleep
+	return breakDown
+}
+
+func (sg *SleepableSyscallGroupingMethod) update(te *TraceEvent) {
+}
+
+func (sg *SleepableSyscallGroupingMethod) reset() {
+	sg.avgSleep = make(map[*Syscall]map[string]uint64)
+	sg.lastSyscallSleep = false
+}
+
 type TaggedSyscall struct {
 	syscall *Syscall
 	tags	[]int
+	dur     []uint64
 }
 
 func (a *PatternAnalysis) NewTaggedSyscall(s *Syscall, t []int) *TaggedSyscall {
@@ -348,6 +381,8 @@ func (a *PatternAnalysis) SetGroupingThreshold (g Grouping, th uint64) {
 		a.groupingMethods[g] = newTimeGroupingMethod()
 	case SyscallGrouping:
 		a.groupingMethods[g] = newSyscallGroupingMethod()
+	case SleepableSyscallGrouping:
+		a.groupingMethods[g] = newSleepableSyscallGroupingMethod()
 	default:
 		fmt.Printf("Invalid grouping method!")
 	}
@@ -365,6 +400,13 @@ func (a *PatternAnalysis) toBreakDown(te *TraceEvent) bool {
 	return breakDown
 }
 
+func (a *PatternAnalysis) addTaggedSyscall(te *TraceEvent) {
+	if (te.typ == 1 || (te.typ == 2 && (te.flag & TraceEventFlagUseFD) != 0)) && te.syscall.def.CallName != "close" {
+		s := a.NewTaggedSyscall(te.syscall, te.tags)
+		s.dur = append(s.dur, te.retTs-te.ts)
+	}
+}
+
 func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 	if (te.flag & TraceEventFlagBadData) != 0 {
 		return
@@ -380,7 +422,7 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 				}
 			}
 		}
-	} else if te.typ == 1 || (te.typ == 2 && (te.flag & TraceEventFlagUseFD) != 0) {
+	} else if (te.typ == 1 || (te.typ == 2 && (te.flag & TraceEventFlagUseFD) != 0)) && te.syscall.def.CallName != "close" {
 		_, key := a.newAnalysisUnitKey(te)
 		if _, ok := a.seqInterval[key]; !ok {
 //			fmt.Printf("new key %v %d\n", te.info.name, fd)
@@ -429,6 +471,7 @@ func (a *PatternAnalysis) buildSeqTree(te *TraceEvent) {
 func (a *PatternAnalysis) Reset() {
 	a.lastNodeOfPid = make(map[uint64]*TaggedSyscallNode)
 	a.filterStates = make(map[AnalysisUnitKey]*FilterState)
+	a.filterDelayedSyscalls = make([]*TraceEvent, 0)
 	a.debugEnable = false
 
 	for _, gm := range a.groupingMethods {
@@ -478,7 +521,9 @@ func (a *PatternAnalysis) testFilterPolicy(te *TraceEvent) (string, int, int) {
 				a.lastNodeOfPid[pid] = a.seqPolicyTreeRoot
 			}
 		}
-	} else if te.typ == 1 || (te.typ == 2 && (te.flag & TraceEventFlagUseFD) != 0) {
+//	} else if te.typ == 1 || (te.typ == 2 && (te.flag & TraceEventFlagUseFD) != 0) {
+	} else if (te.typ == 1 || (te.typ == 2 && (te.flag & TraceEventFlagUseFD) != 0)) && te.syscall.def.CallName != "close" {
+		ts := te.ts
 start:
 		_, key := a.newAnalysisUnitKey(te)
 		if _, ok := a.filterStates[key]; !ok {
@@ -490,11 +535,41 @@ start:
 		filterState := a.filterStates[key]
 
 		if filterState.pid != 0 && filterState.pid != te.id {
-			errMsg += fmt.Sprintf("syscall delayed")
+			var seqIds []int
+			a.potentialSeqIds(filterState.lastNode, &seqIds)
+			errMsg += fmt.Sprintf("syscall delayed %v:%v node %v in seq %x", uint32(filterState.pid), filterState.pid >> 32, filterState.lastNode, seqIds)
 			delayNum += 1
 			a.filterDelayedSyscalls = append(a.filterDelayedSyscalls, te)
 		} else {
 			if idx := filterState.lastNode.findChild(a.NewTaggedSyscall(te.syscall, te.tags)); idx != -1 {
+				if endIdx := filterState.lastNode.next[idx].findEndChild(); endIdx != -1 {
+					filterState.lastNode = a.seqPolicyTreeRoot
+					filterState.pid = 0
+
+					if len(a.filterDelayedSyscalls) != 0 {
+						te, a.filterDelayedSyscalls = a.filterDelayedSyscalls[0], a.filterDelayedSyscalls[1:]
+						errMsg += fmt.Sprintf("process delayed syscall at [%.9f] after %v ns. ", float64(te.ts)/1000000000, ts-te.ts)
+						delayNum += 1
+						goto start
+					}
+				} else {
+					filterState.pid = te.id
+					filterState.lastNode = filterState.lastNode.next[idx]
+
+					if len(a.filterDelayedSyscalls) != 0 {
+						for i, delayedSyscall := range a.filterDelayedSyscalls {
+							if delayedSyscall.id == te.id {
+								te = a.filterDelayedSyscalls[i]
+								a.filterDelayedSyscalls = append(a.filterDelayedSyscalls[:i], a.filterDelayedSyscalls[i+1:]...)
+								errMsg += fmt.Sprintf("process delayed syscall at [%.9f] after %v ns. ", float64(te.ts)/1000000000, ts-te.ts)
+								delayNum += 1
+								goto start
+							}
+						}
+					}
+
+				}
+				/*
 				hasValidSeq := false
 				var seqIds []int
 				a.potentialSeqIds(filterState.lastNode.next[idx], &seqIds)
@@ -548,6 +623,7 @@ start:
 						}
 					}
 				}
+				*/
 			} else {
 				errMsg += fmt.Sprintf("%v->%v%v no matching pattern", filterState.lastNode, te.syscall.name, te.tags)
 				errMsg += fmt.Sprintf(" valid next(")
@@ -626,7 +702,11 @@ func (a *PatternAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, o
 	delay := 0
 
 	if flag == TrainFlag {
-		a.buildSeqTree(te)
+		if opt == 0 {
+			a.addTaggedSyscall(te)
+		} else if opt == 1 {
+			a.buildSeqTree(te)
+		}
 	} else if flag == TestFlag {
 		//msg, update = a.testSeqTreeModel(te)
 		a.unitOfAnalysis = TraceLevel
@@ -1194,8 +1274,9 @@ func (a *PatternAnalysis) _buildSeqSeqTree(node *TaggedSyscallNode, seq int, seq
 	}
 
 	_, nextHasEnd := a.seqSeqGraph[seq][-1]
+	_, nextHasNoCall := a.seqSeqGraph[seq][-2]
 	_, nextHasSelf := a.seqSeqGraph[seq][seq]
-	if !(nextHasEnd || nextHasSelf) {
+	if !(nextHasEnd || nextHasSelf || nextHasNoCall) {
 		nextVisited := false
 		for next, _ := range a.seqSeqGraph[seq] {
 			for _, seqVisited := range *seqsVisited {
@@ -1217,6 +1298,14 @@ func (a *PatternAnalysis) buildSeqSeqTree() {
 	// Add a psuedo node representing "start->seqs" of seq seq tree
 	a.seqSeqGraph[-1] = make(map[int][]int)
 	for next, _ := range a.seqSeqGraph {
+//		srcSeqs := make([]int, 0)
+//		for nn, _ := range a.seqSeqGraph {
+//			if _, ok := a.seqSeqGraph[nn][next]; nn != next && ok {
+//				srcSeqs = append(srcSeqs, nn)
+//			}
+//		}
+//
+//		if next != -1 && !(len(srcSeqs) == 1 && srcSeqs[0] != 0) {
 		if next != -1 {
 			a.seqSeqGraph[-1][next] = make([]int, 2)
 		}
@@ -1253,12 +1342,20 @@ func (a *PatternAnalysis) AnalyzeInterSeqSeq() {
 			}
 			lastSeq = seq
 		}
+		if _, ok := a.seqSeqGraph[lastSeq.id]; !ok {
+			a.seqSeqGraph[lastSeq.id] = make(map[int][]int)
+		}
+		if _, ok := a.seqSeqGraph[lastSeq.id][-2]; !ok {
+			a.seqSeqGraph[lastSeq.id][-2] = make([]int, 2)
+		}
+		a.seqSeqGraph[lastSeq.id][-2][0] += 1
 	}
 
 	for srcSeq, dstSeqs := range a.seqSeqGraph {
 		for _, stat := range dstSeqs {
+			if stat[1] > 50000000 {
+			//if stat[1] > 250000000 {
 			//if stat[1] > 1000000 {
-			if stat[1] > 250000000 {
 				a.seqSeqGraph[srcSeq][-1] = make([]int, 2)
 			}
 		}
@@ -1462,6 +1559,36 @@ func (a *PatternAnalysis) extractAndPurge() {
 
 func (a *PatternAnalysis) PostProcess(opt int) {
 	if opt == 0 {
+		if _, ok := a.groupingMethods[SleepableSyscallGrouping]; !ok {
+			return
+		}
+		for s, tss := range a.taggedSyscalls {
+			for t, ts := range tss {
+				if len(ts.dur) == 0 {
+					continue
+				}
+				fmt.Printf("avg dur %v[%v] (%d)\n", s, t, len(ts.dur))
+				sort.Slice(ts.dur, func(i, j int) bool { return ts.dur[i] < ts.dur[j] })
+				dis := make(map[uint64]int)
+				var sum uint64
+				for _, d := range ts.dur {
+					fmt.Printf("%v, ", d)
+					sum += d
+					dis[d/10000]+=1
+				}
+				fmt.Printf("\n")
+				avg := float64(sum)/float64(len(ts.dur))
+				fmt.Printf("avg dur %v[%v]: %.2f\n", s, t, avg)
+
+				for v, times := range dis{
+					fmt.Printf("%v, %v\n", v, times)
+				}
+				if _, ok := a.groupingMethods[SleepableSyscallGrouping].(*SleepableSyscallGroupingMethod).avgSleep[s]; !ok {
+					a.groupingMethods[SleepableSyscallGrouping].(*SleepableSyscallGroupingMethod).avgSleep[s] = make(map[string]uint64)
+				}
+				a.groupingMethods[SleepableSyscallGrouping].(*SleepableSyscallGroupingMethod).avgSleep[s][t] = uint64(avg)
+			}
+		}
 		return
 	}
 	a.dropTags()

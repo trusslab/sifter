@@ -29,6 +29,7 @@ using std::chrono::steady_clock;
 using std::chrono::duration;
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
+using std::chrono::microseconds;
 
 std::ofstream g_log_stream;
 std::atomic<bool> g_stop(false);
@@ -439,8 +440,8 @@ private:
     void update_arg_thread(sifter_syscall *sc) {
         steady_clock::time_point curr_time;
         steady_clock::time_point last_update_time = steady_clock::now();
-        uint32_t last_update_period_ms = 0;
-        uint32_t update_period_ms = 0;
+        uint64_t last_update_period = 0;
+        uint64_t update_period = 0;
         trace_entry_ctr_t curr_ctr_struct;
         uint32_t curr_ctr;
         uint32_t last_ctr = 0;
@@ -462,7 +463,7 @@ private:
             int start = 0, end = 0;
             uint32_t ctr_diff = curr_ctr - last_ctr;
             curr_time = steady_clock::now();
-            last_update_period_ms = duration_cast<milliseconds>(curr_time - last_update_time).count();
+            last_update_period = duration_cast<microseconds>(curr_time - last_update_time).count();
             if (ctr_diff > sc->ctr_size) {
                 std::cout << "lost events: " << sc->syscall_name << " "
                         << last_ctr << "-" << curr_ctr << "\n";
@@ -497,12 +498,11 @@ private:
                 }
                 i = ++i & (sc->ctr_size - 1);
             }
-
-            update_period_ms = (last_update_period_ms + update_period_ms) / 2;
-            if (update_period_ms > 100) {
-                update_period_ms = 100;
+            update_period = (last_update_period + update_period) / 2;
+            if (update_period > 10000) {
+                update_period = 10000;
             }
-            usleep(update_period_ms * 1000);
+            usleep(update_period);
 
             if (!m_args_update_start && ctr_diff == 0)
                 break;

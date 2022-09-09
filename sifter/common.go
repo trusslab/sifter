@@ -224,7 +224,7 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall, ignore bool) error {
 	defer traceFile.Close()
 
 	br := bufio.NewReader(traceFile)
-	//idx := 0
+	idx := 0
 	for {
 		var ts uint64
 		var id uint64
@@ -282,7 +282,10 @@ func (t *Trace) ReadSyscallTrace(syscall *Syscall, ignore bool) error {
 		if te.ts != 0 {
 			t.events = append(t.events, te)
 		}
+		idx += 1
 	}
+	fmt.Printf("ReadSyscallTrace %v %d\n", traceFilePath, idx)
+	return nil
 }
 
 func (t *Trace) FindEventBefore(id uint64, nr uint64, ts uint64, start int) int {
@@ -518,7 +521,7 @@ func (te *TraceEvent) GetData(offset uint64, size uint64) (bool, uint64) {
 	ok := false
 	var data uint64
 
-	if offset > 0 && offset+size <= uint64(len(te.data)) {
+	if offset >= 0 && offset+size <= uint64(len(te.data)) {
 		switch size {
 		case 1:
 			data = uint64(te.data[offset])

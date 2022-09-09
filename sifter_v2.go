@@ -19,7 +19,7 @@ func main() {
 	flag.StringVar(&flags.Trace,  "trace", "", "tracing result file")
 	flag.StringVar(&flags.Config, "config", "", "Syzkaller configuration file")
 	flag.StringVar(&flags.Fd,     "fd", "", "file descriptor name of the kernel module in Syzkaller")
-	flag.StringVar(&flags.Dev,    "dev", "", "device file of the kernel module")
+	flag.StringVar(&flags.Dev,    "dev", "", "device file of the kernel module (optional if fd is specified)")
 	flag.StringVar(&flags.Outdir, "outdir", "gen", "output file directory")
 	flag.StringVar(&flags.Out,    "out", "", "output file base name")
 	flag.IntVar(&flags.Unroll,    "unroll", 5, "loop unroll times")
