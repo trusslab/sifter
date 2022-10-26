@@ -220,3 +220,6 @@ After the desired trace is collected, you can analyze and generate eBPF/seccomp 
 ``` bash
 go run sifter.go -mode filter -config ../syzkalls/src/github.com/google/syzkaller/configs/adb_binder.cfg -fd fd_kgsl -out kgsl
 ```
+
+
+The work was supported in part by Google’s 2020 Android Security and PrIvacy REsearch (ASPIRE) Award
