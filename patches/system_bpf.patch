@@ -1,0 +1,84 @@
+diff --git a/libbpf_android/Loader.cpp b/libbpf_android/Loader.cpp
+index d02ed87..23c142e 100644
+--- a/libbpf_android/Loader.cpp
++++ b/libbpf_android/Loader.cpp
+@@ -66,6 +66,9 @@ typedef struct {
+  */
+ sectionType sectionNameTypes[] = {
+     {"kprobe", BPF_PROG_TYPE_KPROBE},
++//Hsin-Wei start
++    {"kretprobe", BPF_PROG_TYPE_KPROBE},
++//Hsin-Wei end
+     {"tracepoint", BPF_PROG_TYPE_TRACEPOINT},
+     {"skfilter", BPF_PROG_TYPE_SOCKET_FILTER},
+     {"cgroupskb", BPF_PROG_TYPE_CGROUP_SKB},
+@@ -272,8 +275,10 @@ static bool isRelSection(codeSection& cs, string& name) {
+ 
+         if (StartsWith(name, std::string(".rel") + st.name + "/"))
+             return true;
+-        else
+-            return false;
++//Hsin-Wei start
++//        else
++//            return false;
++//Hsin-Wei end
+     }
+     return false;
+ }
+diff --git a/progs/include/bpf_helpers.h b/progs/include/bpf_helpers.h
+index 408a981..85258aa 100644
+--- a/progs/include/bpf_helpers.h
++++ b/progs/include/bpf_helpers.h
+@@ -43,6 +43,15 @@ static int (*unsafe_bpf_map_update_elem)(void* map, void* key, void* value,
+ static int (*unsafe_bpf_map_delete_elem)(void* map, void* key) = (void*)BPF_FUNC_map_delete_elem;
+ 
+ /* type safe macro to declare a map and related accessor functions */
++#define DEFINE_BPF_MAP_NO_ACCESSORS_F(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries, flag) \
++    struct bpf_map_def SEC("maps") the_map = {                                                  \
++            .type = BPF_MAP_TYPE_##TYPE,                                                        \
++            .key_size = sizeof(TypeOfKey),                                                      \
++            .value_size = sizeof(TypeOfValue),                                                  \
++            .max_entries = (num_entries),                                                       \
++            .map_flags = (flag),                                                                \
++    };
++
+ #define DEFINE_BPF_MAP_NO_ACCESSORS(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries) \
+     struct bpf_map_def SEC("maps") the_map = {                                          \
+             .type = BPF_MAP_TYPE_##TYPE,                                                \
+@@ -51,6 +60,23 @@ static int (*unsafe_bpf_map_delete_elem)(void* map, void* key) = (void*)BPF_FUNC
+             .max_entries = (num_entries),                                               \
+     };
+ 
++#define DEFINE_BPF_MAP_F(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries, flag)         \
++    DEFINE_BPF_MAP_NO_ACCESSORS_F(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries, flag)\
++                                                                                           \
++    static inline __always_inline __unused TypeOfValue* bpf_##the_map##_lookup_elem(       \
++            TypeOfKey* k) {                                                                \
++        return unsafe_bpf_map_lookup_elem(&the_map, k);                                    \
++    };                                                                                     \
++                                                                                           \
++    static inline __always_inline __unused int bpf_##the_map##_update_elem(                \
++            TypeOfKey* k, TypeOfValue* v, unsigned long long flags) {                      \
++        return unsafe_bpf_map_update_elem(&the_map, k, v, flags);                          \
++    };                                                                                     \
++                                                                                           \
++    static inline __always_inline __unused int bpf_##the_map##_delete_elem(TypeOfKey* k) { \
++        return unsafe_bpf_map_delete_elem(&the_map, k);                                    \
++    };
++
+ #define DEFINE_BPF_MAP(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries)                 \
+     DEFINE_BPF_MAP_NO_ACCESSORS(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries)        \
+                                                                                            \
+@@ -68,6 +94,12 @@ static int (*unsafe_bpf_map_delete_elem)(void* map, void* key) = (void*)BPF_FUNC
+         return unsafe_bpf_map_delete_elem(&the_map, k);                                    \
+     };
+ 
++//Hsin-Wei start
++static int (*bpf_probe_read_sleepable)(void* dst, int size, void* unsafe_ptr) = (void*) BPF_FUNC_probe_read_sleepable;
++static int (*bpf_check_fd)(char* path, int fd) = (void*) BPF_FUNC_check_fd;
++static int (*bpf_spin_lock)(struct bpf_spin_lock *lock) = (void*) BPF_FUNC_spin_lock;
++static int (*bpf_spin_unlock)(struct bpf_spin_lock *lock) = (void*) BPF_FUNC_spin_unlock;
++//Hsin-Wei end
+ static int (*bpf_probe_read)(void* dst, int size, void* unsafe_ptr) = (void*) BPF_FUNC_probe_read;
+ static unsigned long long (*bpf_ktime_get_ns)(void) = (void*) BPF_FUNC_ktime_get_ns;
+ static int (*bpf_trace_printk)(const char* fmt, int fmt_size, ...) = (void*) BPF_FUNC_trace_printk;
