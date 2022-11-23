@@ -210,7 +210,7 @@ Reboot the device and the tracer will be loaded automatically during boot. You c
 ``` bash
 adb logcat -s bpfloader
 ```
-To start tracing syscalls of user programs, execute the agent, which will attach the eBPF tracer to the tracepoint hook and log the syscalls of the target program specified by its 16-charater-long command (<comm> can be found by running cat /proc/<pid>/comm). Now you can execute the target program in another terminal. The agent will store the results to the output file periodically. Note that if the output file already exist, the agent will restore the result from it at the beginning.
+To start tracing syscalls of user programs, execute the agent, which will attach the eBPF tracer to the tracepoint hook and log the syscalls of the target program specified by its 16-character-long command (<comm> can be found by running cat /proc/<pid>/comm). Now you can execute the target program in another terminal. The agent will store the results to the output file periodically. Note that if the output file already exist, the agent will restore the result from it at the beginning.
 ``` bash
 adb shell /data/sifter/agent -c <agent configuration file> -p <comm> -o <output file>
 ```
@@ -222,4 +222,5 @@ go run sifter.go -mode filter -config ../syzkalls/src/github.com/google/syzkalle
 ```
 
 
-The work was supported in part by Google’s 2020 Android Security and PrIvacy REsearch (ASPIRE) Award
+## Acknowledgment
+The work was supported in part by NSF Awards #1763172 and #1846230 as well as Google’s 2020 Android Security and PrIvacy REsearch (ASPIRE) Award.
