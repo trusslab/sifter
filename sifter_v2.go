@@ -15,7 +15,7 @@ func failf(msg string, args ...interface{}) {
 
 func main() {
 	var flags sifter.Flags
-	flag.StringVar(&flags.Mode,   "mode", "", "mode (tracer/filter)")
+	flag.StringVar(&flags.Mode,   "mode", "", "mode (tracer/filteri/dump)")
 	flag.StringVar(&flags.Trace,  "trace", "", "tracing result file")
 	flag.StringVar(&flags.Config, "config", "", "Syzkaller configuration file")
 	flag.StringVar(&flags.Fd,     "fd", "", "file descriptor name of the kernel module in Syzkaller")
@@ -48,5 +48,7 @@ func main() {
 		//s.WriteSourceFile()
 		s.GenerateFilterSource()
 		s.WriteFilterSourceFile()
+	} else if s.Mode()==sifter.DumpMode {
+		s.DumpSingleTrace()
 	}
 }

@@ -257,16 +257,17 @@ func (a *LenAnalysis) SetGenValuesConstraintThreshold(th int) {
 	a.valuesConstraintTh = th
 }
 
-func (a *LenAnalysis) isLenType(arg prog.Type) bool {
-	if arg.Dir() == prog.DirOut {
+
+func (a *LenAnalysis) isLenType(arg prog.Field) bool {
+	if arg.Direction == prog.DirOut {
 		return false
 	}
-	if _, isLenArg := arg.(*prog.LenType); isLenArg {
+	if _, isLenArg := arg.Type.(*prog.LenType); isLenArg {
 		return true
 	}
 	lenStrings := []string{"size", "len", "length"}
 	for _, lenString := range lenStrings {
-		if strings.Contains(arg.FieldName(), lenString) {
+		if strings.Contains(arg.Name, lenString) {
 			return true
 		}
 	}
@@ -284,10 +285,10 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 			a.regLenRanges[syscall] = make(map[prog.Type]*LenRange)
 			for argi, arg := range syscall.def.Args {
 				if a.isLenType(arg) {
-					a.regLenRanges[syscall][arg] = newLenRange()
-					a.regLenRanges[syscall][arg].config.valuesConstraintTh = a.valuesConstraintTh
+					a.regLenRanges[syscall][arg.Type] = newLenRange()
+					a.regLenRanges[syscall][arg.Type].config.valuesConstraintTh = a.valuesConstraintTh
 					if config, ok := a.rangeConfigs[fmt.Sprintf("%v_reg[%v]", syscall.name, argi)]; ok {
-						a.regLenRanges[syscall][arg].config = config
+						a.regLenRanges[syscall][arg.Type].config = config
 					}
 				}
 			}
@@ -296,15 +297,16 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 				if structArg, ok := argMap.arg.(*prog.StructType); ok {
 					for _, field := range structArg.Fields {
 						if a.isLenType(field) {
-							a.argLenRanges[argMap][field] = newLenRange()
-							a.argLenRanges[argMap][field].config.valuesConstraintTh = a.valuesConstraintTh
-							if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v", argMap.name, field.FieldName())]; ok {
-								a.argLenRanges[argMap][field].config = config
+							a.argLenRanges[argMap][field.Type] = newLenRange()
+							a.argLenRanges[argMap][field.Type].config.valuesConstraintTh = a.valuesConstraintTh
+							if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v", argMap.name, field.Name)]; ok {
+								a.argLenRanges[argMap][field.Type].config = config
 							}
 						}
 					}
 				} else {
-					if a.isLenType(argMap.arg) {
+					if _, ok := argMap.arg.(*prog.LenType); ok {
+						fmt.Printf("Debug: Analysis len: type is lentype \n")
 						a.argLenRanges[argMap][argMap.arg] = newLenRange()
 						a.argLenRanges[argMap][argMap.arg].config.valuesConstraintTh = a.valuesConstraintTh
 						if config, ok := a.rangeConfigs[fmt.Sprintf("%v", argMap.name)]; ok {
@@ -319,22 +321,22 @@ func (a *LenAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 					a.vlrLenRanges[vlrMap][vlrRecord] = make(map[prog.Type]*LenRange)
 					if structArg, ok := vlrRecord.arg.(*prog.StructType); ok {
 						for _, f := range structArg.Fields {
-							if structField, ok := f.(*prog.StructType); ok {
+							if structField, ok := f.Type.(*prog.StructType); ok {
 								for _, ff := range structField.Fields {
 									if a.isLenType(ff) {
-										a.vlrLenRanges[vlrMap][vlrRecord][ff] = newLenRange()
-										a.vlrLenRanges[vlrMap][vlrRecord][ff].config.valuesConstraintTh = a.valuesConstraintTh
-										if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v_%v_%v", syscall.name, vlrMap.name, f.FieldName(), ff.FieldName())]; ok {
-											a.vlrLenRanges[vlrMap][vlrRecord][ff].config = config
+										a.vlrLenRanges[vlrMap][vlrRecord][ff.Type] = newLenRange()
+										a.vlrLenRanges[vlrMap][vlrRecord][ff.Type].config.valuesConstraintTh = a.valuesConstraintTh
+										if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v_%v_%v", syscall.name, vlrMap.name, f.Name, ff.Name)]; ok {
+											a.vlrLenRanges[vlrMap][vlrRecord][ff.Type].config = config
 										}
 									}
 								}
 							} else {
 								if a.isLenType(f) {
-									a.vlrLenRanges[vlrMap][vlrRecord][f] = newLenRange()
-									a.vlrLenRanges[vlrMap][vlrRecord][f].config.valuesConstraintTh = a.valuesConstraintTh
-									if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v_%v", syscall.name, vlrMap.name, f.FieldName())]; ok {
-										a.vlrLenRanges[vlrMap][vlrRecord][f].config = config
+									a.vlrLenRanges[vlrMap][vlrRecord][f.Type] = newLenRange()
+									a.vlrLenRanges[vlrMap][vlrRecord][f.Type].config.valuesConstraintTh = a.valuesConstraintTh
+									if config, ok := a.rangeConfigs[fmt.Sprintf("%v_%v_%v", syscall.name, vlrMap.name, f.Name)]; ok {
+										a.vlrLenRanges[vlrMap][vlrRecord][f.Type].config = config
 									}
 								}
 							}
@@ -370,7 +372,7 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 	msgs := make([]string, 0)
 	var offset uint64
 	for i, arg := range te.syscall.def.Args {
-		if lenRange, ok := a.regLenRanges[te.syscall][arg]; ok {
+		if lenRange, ok := a.regLenRanges[te.syscall][arg.Type]; ok {
 			_, tr := te.GetData(uint64(i*8), arg.Size())
 			updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
 			if updateLower {
@@ -399,15 +401,15 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 		for i := 0; i < arrayLen; i++ {
 			if structArg, ok := argMap.arg.(*prog.StructType); ok {
 				for _, field := range structArg.Fields {
-					if lenRange, ok := a.argLenRanges[argMap][field]; ok {
+					if lenRange, ok := a.argLenRanges[argMap][field.Type]; ok {
 						_, tr := te.GetData(offset, field.Size())
 						updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
 						if updateLower {
-							msgs = append(msgs, fmt.Sprintf("%v_%v:l %x", argMap.name, field.FieldName(), tr))
+							msgs = append(msgs, fmt.Sprintf("%v_%v:l %x", argMap.name, field.Name, tr))
 							ol = append(ol, lowerOL)
 						}
 						if updateUpper {
-							msgs = append(msgs, fmt.Sprintf("%v_%v:u %x", argMap.name, field.FieldName(), tr))
+							msgs = append(msgs, fmt.Sprintf("%v_%v:u %x", argMap.name, field.Name, tr))
 							ol = append(ol, upperOL)
 						}
 					}
@@ -455,32 +457,32 @@ func (a *LenAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag, opt i
 					if i == 0 {
 						continue
 					}
-					if structField, isStructArg := f.(*prog.StructType); isStructArg {
+					if structField, isStructArg := f.Type.(*prog.StructType); isStructArg {
 						for _, ff := range structField.Fields {
-							if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][ff]; ok {
+							if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][ff.Type]; ok {
 								_, tr = te.GetData(offset, ff.Size())
 								updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
 								if updateLower {
-									msgs = append(msgs, fmt.Sprintf("%v_%v_%v:l %x", vlrRecord.name, f.FieldName(), ff.FieldName(), tr))
+									msgs = append(msgs, fmt.Sprintf("%v_%v_%v:l %x", vlrRecord.name, f.Name, ff.Name, tr))
 									ol = append(ol, lowerOL)
 								}
 								if updateUpper {
-									msgs = append(msgs, fmt.Sprintf("%v_%v_%v:u %x", vlrRecord.name, f.FieldName(), ff.FieldName(), tr))
+									msgs = append(msgs, fmt.Sprintf("%v_%v_%v:u %x", vlrRecord.name, f.Name, ff.Name, tr))
 									ol = append(ol, upperOL)
 								}
 							}
 							offset += ff.Size()
 						}
 					} else {
-						if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][f]; ok {
+						if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][f.Type]; ok {
 							_, tr = te.GetData(offset, f.Size())
 							updateLower, updateUpper, lowerOL, upperOL := lenRange.Update(tr, te, flag, opt)
 							if updateLower {
-								msgs = append(msgs, fmt.Sprintf("%v_%v:l %x", vlrRecord.name, f.FieldName(), tr))
+								msgs = append(msgs, fmt.Sprintf("%v_%v:l %x", vlrRecord.name, f.Name, tr))
 								ol = append(ol, lowerOL)
 							}
 							if updateUpper {
-								msgs = append(msgs, fmt.Sprintf("%v_%v:u %x", vlrRecord.name, f.FieldName(), tr))
+								msgs = append(msgs, fmt.Sprintf("%v_%v:u %x", vlrRecord.name, f.Name, tr))
 								ol = append(ol, upperOL)
 							}
 						}
@@ -523,7 +525,7 @@ func (a *LenAnalysis) RemoveOutliers() {
 	for syscall, _ := range a.tracedSyscalls {
 		fmt.Printf("%v\n", syscall.name)
 		for i, arg := range syscall.def.Args {
-			if lenRange, ok := a.regLenRanges[syscall][arg]; ok {
+			if lenRange, ok := a.regLenRanges[syscall][arg.Type]; ok {
 				fmt.Printf("reg[%v]:\n", i)
 				if lenRange.RemoveOutlier() {
 					fmt.Printf("%v\n", lenRange)
@@ -533,8 +535,8 @@ func (a *LenAnalysis) RemoveOutliers() {
 		for _, argMap := range syscall.argMaps {
 			if structField, ok := argMap.arg.(*prog.StructType); ok {
 				for _, field := range structField.Fields {
-					if lenRange, ok := a.argLenRanges[argMap][field]; ok {
-						fmt.Printf("%v_%v:\n", argMap.name, field.FieldName())
+					if lenRange, ok := a.argLenRanges[argMap][field.Type]; ok {
+						fmt.Printf("%v_%v:\n", argMap.name, field.Name)
 						if lenRange.RemoveOutlier() {
 							fmt.Printf("%v\n", lenRange)
 						}
@@ -554,18 +556,18 @@ func (a *LenAnalysis) RemoveOutliers() {
 			for _, vlrRecord := range vlrMap.records {
 				structArg, _ := vlrRecord.arg.(*prog.StructType)
 				for _, f := range structArg.Fields {
-					if structField, isStructArg := f.(*prog.StructType); isStructArg {
+					if structField, isStructArg := f.Type.(*prog.StructType); isStructArg {
 						for _, ff := range structField.Fields {
-							if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][ff]; ok {
-								fmt.Printf("%v_%v_%v:\n", vlrRecord.name, f.FieldName(), ff.FieldName())
+							if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][ff.Type]; ok {
+								fmt.Printf("%v_%v_%v:\n", vlrRecord.name, f.Name, ff.Name)
 								if lenRange.RemoveOutlier() {
 									fmt.Printf("%v\n", lenRange)
 								}
 							}
 						}
 					} else {
-						if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][f]; ok {
-							fmt.Printf("%v_%v:\n", vlrRecord.name, f.FieldName())
+						if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][f.Type]; ok {
+							fmt.Printf("%v_%v:\n", vlrRecord.name, f.Name)
 							if lenRange.RemoveOutlier() {
 								fmt.Printf("%v\n", lenRange)
 							}
@@ -581,15 +583,15 @@ func (a *LenAnalysis) PrintResult(v Verbose) {
 	for syscall, _ := range a.tracedSyscalls {
 		s := ""
 		for i, arg := range syscall.def.Args {
-			if lenRange, ok := a.regLenRanges[syscall][arg]; ok {
+			if lenRange, ok := a.regLenRanges[syscall][arg.Type]; ok {
 				s += fmt.Sprintf("reg[%v]: %v\n", i, lenRange)
 			}
 		}
 		for _, argMap := range syscall.argMaps {
 			if structField, ok := argMap.arg.(*prog.StructType); ok {
 				for _, field := range structField.Fields {
-					if lenRange, ok := a.argLenRanges[argMap][field]; ok {
-						s += fmt.Sprintf("%v_%v: %v\n", argMap.name, field.FieldName(), lenRange)
+					if lenRange, ok := a.argLenRanges[argMap][field.Type]; ok {
+						s += fmt.Sprintf("%v_%v: %v\n", argMap.name, field.Name, lenRange)
 					}
 				}
 			} else {
@@ -603,15 +605,15 @@ func (a *LenAnalysis) PrintResult(v Verbose) {
 			for _, vlrRecord := range vlrMap.records {
 				structArg, _ := vlrRecord.arg.(*prog.StructType)
 				for _, f := range structArg.Fields {
-					if structField, isStructArg := f.(*prog.StructType); isStructArg {
+					if structField, isStructArg := f.Type.(*prog.StructType); isStructArg {
 						for _, ff := range structField.Fields {
-							if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][ff]; ok {
-								s += fmt.Sprintf("%v_%v_%v: %v\n", vlrRecord.name, f.FieldName(), ff.FieldName(), lenRange)
+							if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][ff.Type]; ok {
+								s += fmt.Sprintf("%v_%v_%v: %v\n", vlrRecord.name, f.Name, ff.Name, lenRange)
 							}
 						}
 					} else {
-						if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][f]; ok {
-							s += fmt.Sprintf("%v_%v: %v\n", vlrRecord.name, f.FieldName(), lenRange)
+						if lenRange, ok := a.vlrLenRanges[vlrMap][vlrRecord][f.Type]; ok {
+							s += fmt.Sprintf("%v_%v: %v\n", vlrRecord.name, f.Name, lenRange)
 						}
 					}
 				}
@@ -633,7 +635,7 @@ func (a *LenAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *
 		if r, ok := a.regLenRanges[syscall][arg]; ok {
 			if r.config.genValuesConstraint || len(r.values) <= a.valuesConstraintTh {
 				var constraint *ValuesConstraint
-				fmt.Printf("add values constraint to %v %v\n", syscall.name, arg.FieldName())
+				fmt.Printf("add values constraint to %v %v\n", syscall.name, arg.Name)
 				constraint = new(ValuesConstraint)
 				for v, _ := range r.values {
 					constraint.values = append(constraint.values, v)
@@ -641,7 +643,7 @@ func (a *LenAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *
 				return constraint
 			} else {
 				var constraint *RangeConstraint
-				fmt.Printf("add range constraint to %v %v\n", syscall.name, arg.FieldName())
+				fmt.Printf("add range constraint to %v %v\n", syscall.name, arg.Name)
 				constraint = new(RangeConstraint)
 				constraint.l = r.lower
 				constraint.u = r.upper
@@ -652,7 +654,7 @@ func (a *LenAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *
 		if r, ok := a.argLenRanges[argMap][arg]; ok {
 			if r.config.genValuesConstraint || len(r.values) <= a.valuesConstraintTh {
 				var constraint *ValuesConstraint
-				fmt.Printf("add values constraint to %v %v %v\n", syscall.name, argMap.name, arg.FieldName())
+				fmt.Printf("add values constraint to %v %v %v\n", syscall.name, argMap.name, arg.Name)
 				constraint = new(ValuesConstraint)
 				for v, _ := range r.values {
 					constraint.values = append(constraint.values, v)
@@ -660,7 +662,7 @@ func (a *LenAnalysis) GetArgConstraint(syscall *Syscall, arg prog.Type, argMap *
 				return constraint
 			} else {
 				var constraint *RangeConstraint
-				fmt.Printf("add range constraint to %v %v %v\n", syscall.name, argMap.name, arg.FieldName())
+				fmt.Printf("add range constraint to %v %v %v\n", syscall.name, argMap.name, arg.Name)
 				constraint = new(RangeConstraint)
 				constraint.l = r.lower
 				constraint.u = r.upper

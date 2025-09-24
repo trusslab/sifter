@@ -43,7 +43,7 @@ func (a *ValueRangeAnalysis) Init(TracedSyscalls *map[string][]*Syscall) {
 				for _, record := range vlr.records {
 					if structArg, ok := record.arg.(*prog.StructType); ok {
 						for _, f := range structArg.Fields {
-							if structField, ok := f.(*prog.StructType); ok {
+							if structField, ok := f.Type.(*prog.StructType); ok {
 								for _, _ = range structField.Fields {
 									a.vlrRanges[vlr][record] = append(a.vlrRanges[vlr][record], math.MaxInt64)
 									a.vlrRanges[vlr][record] = append(a.vlrRanges[vlr][record], 0)
@@ -95,7 +95,7 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag
 	for _, arg := range te.syscall.argMaps {
 		if structArg, ok := arg.arg.(*prog.StructType); ok {
 			for i, field := range structArg.Fields {
-				if _, isPtrArg := field.(*prog.PtrType); !isPtrArg && field.FieldName() != "ptr" {
+				if _, isPtrArg := field.Type.(*prog.PtrType); !isPtrArg && field.Name != "ptr" {
 					_, tr := te.GetData(offset, field.Size())
 					if (a.argRanges[arg][2*i+0] > tr) {
 						if flag == TrainFlag {
@@ -113,20 +113,20 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag
 				offset += field.Size()
 			}
 		} else {
-			if _, isPtrArg := arg.arg.(*prog.PtrType); !isPtrArg && arg.arg.FieldName() != "ptr" {
-				_, tr := te.GetData(offset, arg.arg.Size())
-				if (a.argRanges[arg][0] > tr) {
-					if flag == TrainFlag {
-						a.argRanges[arg][0] = tr
+			if _, isPtrArg := arg.arg.(*prog.PtrType); !isPtrArg {
+					_, tr := te.GetData(offset, arg.arg.Size())
+					if (a.argRanges[arg][0] > tr) {
+						if flag == TrainFlag {
+							a.argRanges[arg][0] = tr
+						}
+						msgs = append(msgs, fmt.Sprintf("%v:l %x", arg.name, tr))
 					}
-					msgs = append(msgs, fmt.Sprintf("%v:l %x", arg.name, tr))
-				}
-				if (a.argRanges[arg][1] < tr) {
-					if flag == TrainFlag {
-						a.argRanges[arg][1] = tr
+					if (a.argRanges[arg][1] < tr) {
+						if flag == TrainFlag {
+							a.argRanges[arg][1] = tr
+						}
+						msgs = append(msgs, fmt.Sprintf("%v:u %x", arg.name, tr))
 					}
-					msgs = append(msgs, fmt.Sprintf("%v:u %x", arg.name, tr))
-				}
 			}
 			offset += arg.size
 		}
@@ -153,19 +153,19 @@ func (a *ValueRangeAnalysis) ProcessTraceEvent(te *TraceEvent, flag AnalysisFlag
 					if i == 0 {
 						continue
 					}
-					if _, isPtrArg := field.(*prog.PtrType); !isPtrArg && field.FieldName() != "ptr" && field.FieldName() != "cookie" && field.FieldName() != "ref" {
+					if _, isPtrArg := field.Type.(*prog.PtrType); !isPtrArg && field.Name != "ptr" && field.Name != "cookie" && field.Name != "ref" {
 						_, tr = te.GetData(offset, field.Size())
 						if (a.vlrRanges[vlr][matchedRecord][2*i+0] > tr) {
 							if flag == TrainFlag {
 								a.vlrRanges[vlr][matchedRecord][2*i+0] = tr
 							}
-							msgs = append(msgs, fmt.Sprintf("%v_%v:l [%v]:%x", matchedRecord.name, field.FieldName(), offset, tr))
+							msgs = append(msgs, fmt.Sprintf("%v_%v:l [%v]:%x", matchedRecord.name, field.Name, offset, tr))
 						}
 						if (a.vlrRanges[vlr][matchedRecord][2*i+1] < tr) {
 							if flag == TrainFlag {
 								a.vlrRanges[vlr][matchedRecord][2*i+1] = tr
 							}
-							msgs = append(msgs, fmt.Sprintf("%v_%v:u [%v]:%x", matchedRecord.name, field.FieldName(), offset, tr))
+							msgs = append(msgs, fmt.Sprintf("%v_%v:u [%v]:%x", matchedRecord.name, field.Name, offset, tr))
 						}
 					}
 					offset += field.Size()

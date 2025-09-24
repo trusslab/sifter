@@ -1,5 +1,7 @@
 #include <bpf/BpfMap.h>
 #include <bpf/BpfUtils.h>
+#include <bpf/bpf.h>
+#include <libbpf.h>
 #include <libbpf_android.h>
 #include <linux/android/binder.h>
 #include <atomic>
@@ -21,8 +23,16 @@
 #include <unistd.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
+#include <string>
+#include <memory>
+
+extern "C" {
+    #include <bpf/libbpf.h>
+}
 
 #include "tracer_id.h"
+
+int cleanup_bpf(const std::string& base_name);
 
 using android::base::unique_fd;
 using std::chrono::steady_clock;
@@ -169,18 +179,19 @@ struct sifter_arg {
     int         size;
     std::string name;
     unique_fd   fd;
-    char        *buf;
+    std::unique_ptr<char[]>         buf;
 
     sifter_arg(int s, std::string name, int fd):
         size(s), name(name), fd(unique_fd(fd)) {
 
-        buf = (char *)malloc(size);
-        if (!buf) {
-            std::cerr << "Failed to allocate memory for tracing " << name << "\n";
+        //buf = (char *)malloc(size);
+        buf = std::make_unique<char[]>(size); 
+	if (!buf) {
+            std::cerr << "Failed to allocate memory for tracing " << name << std::endl;
         }
     };
 
-    ~sifter_arg() { free(buf); }
+    //~sifter_arg() { free(buf); }
 };
 
 struct sifter_syscall {
@@ -191,7 +202,7 @@ struct sifter_syscall {
     std::string program_name;
     std::string syscall_name;
     unique_fd ctr_fd;
-    std::vector<sifter_arg *> args;
+    std::vector<std::unique_ptr<sifter_arg>> args;
 
     sifter_syscall(std::string prog_nm, std::string sc_nm, int ctr_bits):
         inited(false), program_name(prog_nm), syscall_name(sc_nm) {
@@ -217,8 +228,8 @@ struct sifter_syscall {
         if (fd == -1)
             return false;
 
-        sifter_arg *arg = new sifter_arg(size, arg_nm, fd);
-        args.push_back(arg);
+        //sifter_arg *arg = new sifter_arg(size, arg_nm, fd);
+        args.push_back(std::make_unique<sifter_arg>(size, arg_nm, fd));
         return true;
     }
 
@@ -263,7 +274,7 @@ int proc_bitness(std::vector<int> &proc_bitness, int pid, int verbose) {
     if (!ifs) {
         if (verbose > 3)
             std::cout << "Error checking bitness via ELF magic: cannot open "
-                    << target << " (" << pid << ")\n";
+                    << target << " (" << pid << ")"<<std::endl;
     } else {
         ifs.read(magic, 5);
         if (*(uint32_t *)(magic) == 0x464c457f) {
@@ -274,11 +285,11 @@ int proc_bitness(std::vector<int> &proc_bitness, int pid, int verbose) {
             } else if (verbose > 3){
                 std::cout << "Error checking bitness via ELF header: "
                         << target << " (" << pid << ") invalid EI_CLASS "
-                        << std::hex << (uint32_t)magic[4] << std::dec << "\n";
+                        << std::hex << (uint32_t)magic[4] << std::dec << std::endl;
             }
         } else if (verbose > 3) {
             std::cout << "Error checking bitness via ELF header: "
-                        << target << " (" << pid << ") invalid ELF magic number\n";
+                        << target << " (" << pid << ") invalid ELF magic number"<<std::endl;
         }
     }
     ifs.close();
@@ -318,7 +329,7 @@ void write_user_event(std::ofstream &ofs, uint64_t event, void *buf = NULL) {
         if (buf) {
             ofs.write(reinterpret_cast<const char*>(buf), size);
         } else {
-            std::cerr << "write_user_event got null source ptr\n";
+            std::cerr << "write_user_event got null source ptr"<<std::endl;
             buf = calloc(1, size);
             ofs.write(reinterpret_cast<const char*>(buf), size);
         }
@@ -345,8 +356,8 @@ private:
     std::vector<sifter_map> m_maps;
     std::vector<sifter_lut> m_luts;
     std::vector<sifter_rb> m_rbs;
-    std::vector<sifter_syscall *> m_syscalls;
-    std::vector<std::thread *> m_update_threads;
+    std::vector<std::unique_ptr<sifter_syscall>> m_syscalls;
+    std::vector<std::unique_ptr<std::thread>> m_update_threads;
     std::vector<int> m_proc_bitness;
     std::set<int> m_ignored_pids;
     std::vector<std::string> m_target_prog_comm_list;
@@ -412,10 +423,10 @@ private:
                         if (m_verbose > 0) {
                             if (missing_events)
                                 std::cout << "Update events pid[" << p << "] "
-                                    << (int)ctr << " - " << (int)last_ctr << "\n";
+                                    << (int)ctr << " - " << (int)last_ctr << std::endl;
                             else
                                 std::cout << "Update events pid[" << p << "] "
-                                    << (int)ctr <<"\n";
+                                    << (int)ctr <<std::endl;
                         }
                         rb_elem rbp;
                         android::bpf::findMapEntry(rb.fd, &p, &rbp);
@@ -428,10 +439,10 @@ private:
                 uint32_t dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(scan_time).count();
                 usleep(1000000-dur_ms*1000);
                 g_update_ts++;
-                g_log_stream << g_update_ts << "," << g_update_ctr << "\n";
+                g_log_stream << g_update_ts << "," << g_update_ctr << std::endl;
                 g_log_stream.flush();
                 if (m_verbose > 1) {
-                    std::cout << "finish seq update in " << dur_ms << " ms, #update = " << g_update_ctr << "\n";
+                    std::cout << "finish seq update in " << dur_ms << " ms, #update = " << g_update_ctr << std::endl;
                 }
             }
         }
@@ -447,14 +458,12 @@ private:
         uint32_t last_ctr = 0;
         int zero_idx = 0;
 
-        std::string trace = "raw_trace_" + sc->syscall_name + ".dat";
+        std::string trace = "/data/local/tmp/raw_trace_" + sc->syscall_name + ".dat";
         std::ofstream ofs(trace, std::ofstream::app);
         if (!ofs) {
-            std::cerr << "Failed to open trace file " << trace << "\n";
+            std::cerr << "Failed to open trace file " << trace << std::endl;
             return;
         }
-
-        write_user_event(ofs, EVENT_USER_TRACE_START);
 
         while (1) {
             android::bpf::findMapEntry(sc->ctr_fd, &zero_idx, &curr_ctr_struct);
@@ -466,7 +475,7 @@ private:
             last_update_period = duration_cast<microseconds>(curr_time - last_update_time).count();
             if (ctr_diff > sc->ctr_size) {
                 std::cout << "lost events: " << sc->syscall_name << " "
-                        << last_ctr << "-" << curr_ctr << "\n";
+                        << last_ctr << "-" << curr_ctr << std::endl;
                 write_user_event(ofs, EVENT_USER_TRACE_LOST, &ctr_diff);
 
                 start = sc->ctr_idx(curr_ctr - sc->ctr_size/8);
@@ -476,7 +485,7 @@ private:
             } else if (ctr_diff > sc->ctr_size/8 || !m_args_update_start) {
                 if (m_verbose > 2)
                     std::cout << "saving events: " << sc->syscall_name << " "
-                            << last_ctr << "-" << curr_ctr << "\n";
+                            << last_ctr << "-" << curr_ctr << std::endl;
 
                 start = sc->ctr_idx(last_ctr);
                 end = sc->ctr_idx(curr_ctr);
@@ -485,20 +494,27 @@ private:
             }
 
             int i = start;
-            while (i != end) {
+	     while (i != end) {
                 for (int a = 0; a < sc->args.size(); a++) {
-                    sifter_arg *arg = sc->args[a];
-                    android::bpf::findMapEntry(arg->fd, &i, arg->buf);
-                    ofs.write(reinterpret_cast<const char*>(arg->buf), arg->size);
-
+                    sifter_arg *arg = sc->args[a].get();
+		
+                    if (android::bpf::findMapEntry(arg->fd, &i, arg->buf.get()) != 0) {
+			    std::cerr<<"Error failed to read from BPF map for syscall "<< sc->syscall_name << " at index " << i << std::endl;
+		    }   
+		    ofs.write(reinterpret_cast<const char*>(arg->buf.get()), arg->size);
                     if (m_verbose > 3) {
-                        std::cout << "\n";
-                        print_buffer(arg->buf, arg->size);
+                        std::cout << std::endl;
+                        print_buffer(arg->buf.get(), arg->size);
                     }
                 }
                 i = ++i & (sc->ctr_size - 1);
             }
-            update_period = (last_update_period + update_period) / 2;
+	    ofs.flush();
+		
+	    if (!ofs) {
+		    std::cerr<<"ERROR: Failed to write to trace file for syscall "
+              << sc->syscall_name << ". Disk might be full." << std::endl;}
+	    update_period = (last_update_period + update_period) / 2;
             if (update_period > 10000) {
                 update_period = 10000;
             }
@@ -507,7 +523,6 @@ private:
             if (!m_args_update_start && ctr_diff == 0)
                 break;
         }
-
         ofs.close();
     }
 
@@ -535,9 +550,10 @@ public:
         }
         std::string path = "/sys/fs/bpf/prog_" + m_name + probe_name;
         if (access(path.c_str(), 0) != 0) {
-            int ret = android::bpf::loadProg(path.c_str());
+	    bool isCritical = true;
+            int ret = android::bpf::loadProg(path.c_str(), &isCritical);
             if (ret) {
-                std::cerr << path << " does not exist and attempt to load it failed\n";
+                std::cerr << path << " does not exist and attempt to load it failed"<<std::endl;
                 return ret;
             }
         }
@@ -580,18 +596,19 @@ public:
 
     int attach_prog() {
         for (auto &p : m_progs) {
+	    std::cout<<"Attaching prog type: "<<p.type<<std::endl;
             if (p.type == 0 || p.type == 1) {
                 bpf_probe_attach_type type = p.type == 1? BPF_PROBE_ENTRY : BPF_PROBE_RETURN;
-                int ret = bpf_attach_kprobe(p.fd, type, p.event.c_str(), p.entry.c_str(), 0);
+                int ret = bpf_attach_kprobe(p.fd, type, p.event.c_str(), p.entry.c_str(), 0, 10);
                 if (ret < 0) {
-                    std::cout << "bpf_attach_kprobe return " << ret << " " << errno << "\n";
+                    std::cout << "bpf_attach_kprobe return " << ret << " " << errno << std::endl;
                     return -1;
                 }
             } else if (p.type == 3 || p.type == 4) {
                 bpf_probe_attach_type type = p.type == 4? BPF_PROBE_ENTRY : BPF_PROBE_RETURN;
                 int delim_pos = p.entry.find(":");
                 if (delim_pos == std::string::npos) {
-                    std::cout << "bpf_attach_uprobe entry should be <path>:<offset>\n";
+                    std::cout << "bpf_attach_uprobe entry should be <path>:<offset>"<<std::endl;
                     return -1;
                 }
                 std::string path = p.entry.substr(0, delim_pos);
@@ -599,19 +616,19 @@ public:
                 size_t pos = 0;
                 uint64_t off = std::stoull(offset.c_str(), &pos, 16);
                 if (pos != offset.size()) {
-                    std::cout << "bpf_attach_uprobe offset " << offset << "is not a valid number\n";
+                    std::cout << "bpf_attach_uprobe offset " << offset << "is not a valid number"<<std::endl;
                     return -1;
                 }
 
-                int ret = bpf_attach_uprobe(p.fd, type, p.event.c_str(), path.c_str(), off, -1);
+                int ret = bpf_attach_uprobe(p.fd, type, p.event.c_str(), path.c_str(), off, -1, 0);
                 if (ret < 0) {
-                    std::cout << "bpf_attach_uprobe return " << ret << " " << errno << "\n";
+                    std::cout << "bpf_attach_uprobe return " << ret << " " << errno << std::endl;
                     return -1;
                 }
             } else if (p.type == 2) {
                 int ret = bpf_attach_tracepoint(p.fd, p.event.c_str(), p.entry.c_str());
                 if (ret < 0) {
-                    std::cout << "bpf_attach_tracepoint return " << ret << " " << errno << "\n";
+                    std::cout << "bpf_attach_tracepoint return " << ret << " " << errno << std::endl;
                     return -1;
                 }
             }
@@ -624,13 +641,13 @@ public:
             if (p.type == 0 || p.type == 1) {
                 int ret = bpf_detach_kprobe(p.event.c_str());
                 if (ret < 0) {
-                    std::cout << "bpf_detach_kprobe return " << ret << " " << errno << "\n";
+                    std::cout << "bpf_detach_kprobe return " << ret << " " << errno << std::endl;
                     return -1;
                 }
             } else if (p.type == 2) {
                 int ret = bpf_detach_tracepoint(p.event.c_str(), p.entry.c_str());
                 if (ret < 0) {
-                    std::cout << "bpf_detach_tracepoint return " << ret << " " << errno << "\n";
+                    std::cout << "bpf_detach_tracepoint return " << ret << " " << errno << std::endl;
                     return -1;
                 }
             }
@@ -656,35 +673,45 @@ public:
                     if (entry.second[2*ID_NR_SIZE+i])
                         std::cout << std::setw(5) << ((ID_HDR_EVENT << ID_HDR_SHIFT) | i) << " ";
                 }
-                std::cout << "\n";
+                std::cout << std::endl;
             }
-            std::cout << "Total: " << rb.tbl.size() << " sequences" << "\n";
+            std::cout << "Total: " << rb.tbl.size() << " sequences" << std::endl;
         }
     }
 
     int save_traced_pid_comm() {
         std::string path = "/sys/fs/bpf/map_" + m_name + "_traced_pid_tgid_comm_map";
-        std::ofstream ofs("traced_pid_tgid_comm_map.log");
+        std::ofstream ofs("/data/local/tmp/traced_pid_tgid_comm_map.log");
         int fd = bpf_obj_get(path.c_str());
-        if (fd == -1 || !ofs)
+        if (fd == -1 || !ofs) {
+		std::cerr<<"PID_COMM: Failed to get bpf object"<<std::endl;
             return -1;
+	}
 
         unique_fd ufd = unique_fd(fd);
         uint64_t pid;
         char comm[16];
 
-        if (android::bpf::getFirstMapKey(ufd, &pid))
+        if (android::bpf::getFirstMapKey(ufd, &pid)) {
+		fprintf(stderr, "getFirstMapKey failed: %s\n", strerror(errno));
+		std::cerr<<"PID_COMM: Failed to get first map key"<<std::endl;
             goto error;
+	}
 
-        if (android::bpf::findMapEntry(ufd, &pid, (void *)comm))
+        if (android::bpf::findMapEntry(ufd, &pid, (void *)comm)) {
+		std::cerr<<"PID_COMM: Failed to find map entry"<<std::endl;
             goto error;
+	}
 
-        ofs << pid << " " << comm << "\n";
+        ofs << pid << " " << comm << std::endl;
         while (android::bpf::getNextMapKey(ufd, &pid, &pid) == 0) {
-            if (android::bpf::findMapEntry(ufd, &pid, (void *)comm))
+            if (android::bpf::findMapEntry(ufd, &pid, (void *)comm)) {
+		    std::cerr<<"PID_COMM: Failed to get next map entry"<<std::endl;
                 goto error;
-            ofs << pid << " " << comm << "\n";
+	    }
+            ofs << pid << " " << comm << std::endl;
         }
+	std::cout<<"PID_COMM: Successfully saved map"<<std::endl;
         ofs.close();
         return 0;
 
@@ -696,7 +723,7 @@ error:
     void dump_rbs(std::string file) {
         std::ofstream ofs(file, std::ofstream::app);
         for (auto &rb : m_rbs) {
-            ofs << "r " << rb.tbl.size() << "\n";
+            ofs << "r " << rb.tbl.size() << std::endl;
             for (auto &entry : rb.tbl) {
                 ofs << std::setw(3) << entry.first.size()
                         << std::setw(4) << entry.second.count() << " ";
@@ -714,7 +741,7 @@ error:
                     if (entry.second[2*ID_NR_SIZE+i])
                         ofs << std::setw(5) << ((ID_HDR_EVENT << ID_HDR_SHIFT) | i) << " ";
                 }
-                ofs << "\n";
+                ofs << std::endl;
             }
         }
     }
@@ -757,7 +784,7 @@ error:
                 if (i != size-1)
                     std::cout << ", ";
             }
-            std::cout << "]\n";
+            std::cout << "]"<<std::endl;
         }
     }
 
@@ -766,11 +793,11 @@ error:
             return;
 
         std::ofstream ofs(file, std::ofstream::app);
-        ofs << "m\n";
+        ofs << "m"<<std::endl;
         for (auto &m : m_maps) {
             for (auto v : m.val)
                 ofs << v << " ";
-            ofs << "\n";
+            ofs << std::endl;
         }
     }
 
@@ -804,8 +831,9 @@ error:
 
     void start_update_maps() {
         m_maps_update_start = 1;
-        std::thread *th = new std::thread(&sifter_tracer::update_maps_thread, this);
-        m_update_threads.push_back(th);
+        //std::thread *th = new std::thread(&sifter_tracer::update_maps_thread, this);
+        //m_update_threads.push_back(th);
+	m_update_threads.push_back(std::make_unique<std::thread>(&sifter_tracer::update_maps_thread, this));    
     }
 
     void stop_update_maps() {
@@ -815,8 +843,9 @@ error:
     void start_update_rbs() {
         m_ignored_pids.insert(gettid());
         m_rbs_update_start = 1;
-        std::thread *th = new std::thread(&sifter_tracer::update_rbs_thread, this);
-        m_update_threads.push_back(th);
+        //std::thread *th = new std::thread(&sifter_tracer::update_rbs_thread, this);
+        //m_update_threads.push_back(th);
+	m_update_threads.push_back(std::make_unique<std::thread>(&sifter_tracer::update_rbs_thread, this));
     }
 
     void stop_update_rbs() {
@@ -825,16 +854,25 @@ error:
 
     void start_update_args() {
         m_args_update_start = 1;
-        for (auto s : m_syscalls) {
-            std::thread *th = new std::thread(&sifter_tracer::update_arg_thread, this, s);
-            m_update_threads.push_back(th);
+        for (const auto& s : m_syscalls) {
+            //std::thread *th = new std::thread(&sifter_tracer::update_arg_thread, this, s);
+            //m_update_threads.push_back(th);
+	    m_update_threads.push_back(std::make_unique<std::thread>(&sifter_tracer::update_arg_thread, this, s.get()));
         }
     }
 
     void stop_update_args() {
         m_args_update_start = 0;
     }
-    
+   
+    void waitForThreads() {
+        for (const auto& th : m_update_threads) {
+            if (th->joinable()) {
+                th->join();
+            }
+        }
+    }
+
     operator bool() const {
         return m_init == 1;
     }
@@ -847,7 +885,7 @@ error:
 
         if (!ifs) {
             std::cerr << "Failed to parse configuration. File \"" << file
-                << "\" does not exist\n";
+                << "\" does not exist"<<std::endl;
             return;
         }
 
@@ -862,13 +900,13 @@ error:
                     ifs >> type >> event >> entry;
                     if (add_prog(type, event, entry) == -1) {
                         std::cerr << "Failed to add prog (type:"
-                            << type << ", " << event << ", " << entry << ")\n";
+                            << type << ", " << event << ", " << entry << ")"<<std::endl;
                         return;
                     }
 
                     if (m_verbose > 0)
                         std::cout << "Added prog (type:"
-                            << type << ", " << event << ", " << entry << ")\n";
+                            << type << ", " << event << ", " << entry << ")"<<std::endl;
                     break;
                 }
                 case 'm': {
@@ -883,7 +921,7 @@ error:
 
                     if (m_verbose > 0)
                         std::cout << "Added map (type:"
-                            << type << ", name:" << name << ")\n";
+                            << type << ", name:" << name << ")"<< std::endl;
                     break;
                 }
                 case 'l': {
@@ -897,20 +935,20 @@ error:
                     if (i != size) {
                         std::cerr << "Failed to add lookup table (type:"
                             << type << ", name:" << name << ", size:" << size
-                            << "). Too few entries (" << i-1 << ")\n";
+                            << "). Too few entries (" << i-1 << ")"<<std::endl;
                         return;
                     }
 
                     if (add_lut(type, name, vals) == -1) {
                         std::cerr << "Failed to add lookup table (type:"
                             << type << ", name:" << name << ", size:" << size
-                            << "). errno(" << errno << ")\n";
+                            << "). errno(" << errno << ")"<<std::endl;
                         return;
                     }
 
                     if (m_verbose > 0)
                         std::cout << "Added lookup table (type:"
-                            << type << ", name:" << name << ", size:" << size << ")\n";
+                            << type << ", name:" << name << ", size:" << size << ")"<<std::endl;
                     break;
                 }
                 case 'r': {
@@ -918,11 +956,11 @@ error:
                     std::string name;
                     ifs >> length >> name;
                     if (add_rb(length, name) == -1) {
-                        std::cerr << "Failed to add ringbuffer (name:" << name << ")\n";
+                        std::cerr << "Failed to add ringbuffer (name:" << name << ")"<<std::endl;
                         return;
                     }
                     if (m_verbose > 0)
-                        std::cout << "Added ringbuffer (name:" << name << ")\n";
+                        std::cout << "Added ringbuffer (name:" << name << ")" <<std::endl;
                     break;
                 }
                 case 's': {
@@ -930,32 +968,34 @@ error:
                     int ctr_bits;
                     std::string name;
                     ifs >> ctr_bits >> arg_num >> name;
-                    sifter_syscall *syscall = new sifter_syscall(m_name, name, ctr_bits);
-                    if (!syscall->is_inited()) {
-                        std::cerr << "Failed to add syscall (name:" << name << ")\n";
+                    //sifter_syscall *syscall = new sifter_syscall(m_name, name, ctr_bits);
+                    m_syscalls.push_back(std::make_unique<sifter_syscall>(m_name, name, ctr_bits));
+
+		    auto& syscall = m_syscalls.back();
+		    if (!syscall->is_inited()) {
+                        std::cerr << "Failed to add syscall (name:" << name << ")"<<std::endl;
                         return;
                     }
                     if (m_verbose > 0)
-                        std::cout << "Added syscall (name:" << name << ")\n";
+                        std::cout << "Added syscall (name:" << name << ")"<<std::endl;
 
                     int arg_size;
                     std::string arg_name;
                     for (int i = 0; i < arg_num; i++) {
                         ifs >> arg_size >> arg_name;
                         if (!syscall->add_arg(arg_size, arg_name)) {
-                            std::cerr << "Failed to add argument (name:" << arg_name << ")\n";
+                            std::cerr << "Failed to add argument (name:" << arg_name << ")"<<std::endl;
                             return;
                         } else if (m_verbose > 0) {
-                            std::cout << "Added argument (name:" << arg_name << ")\n";
+                            std::cout << "Added argument (name:" << arg_name << ")"<<std::endl;
                         }
                     }
-                    m_syscalls.push_back(syscall);
-
-                    break;
+                    //m_syscalls.push_back(syscall);
+		    break;
                 }
                 default:
                     std::cerr << "Failed to parse configuration. Invalid cfg entry \'"
-                        << cfg_type << "\'\n";
+                        << cfg_type << "\'"<<std::endl;
                     return;
             }
         }
@@ -965,26 +1005,37 @@ error:
         g_update_ts = 0;
         std::stringstream ss;
         std::time_t t = std::time(nullptr);
-        ss << "tracing_agent_" << t << ".log";
+        ss << "/data/local/tmp/tracing_agent_" << t << ".log";
         g_log_stream.open(ss.str());
         if (!g_log_stream) {
-            std::cerr << "Failed to open update log\n";
+            std::cerr << "Failed to open update log"<<std::endl;
             return;
-        }
+        } else {
+		std::cout<<"Opened update log"<<std::endl;
+	}
 
         std::string path = "/sys/fs/bpf/map_" + m_name + "_target_prog_comm_map";
         int target_prog_comm_map_fd = bpf_obj_get(path.c_str());
-        if (target_prog_comm_map_fd != -1)
+        if (target_prog_comm_map_fd != -1){
+		std::cout<<"found the comm map "<<path<<std::endl;
             m_target_prog_comm_map_fd = unique_fd(target_prog_comm_map_fd);
+	} else {
+		std::cerr<<"failed to find comm map "<<path<<std::endl;
+	}	
 
         uint32_t dummy_val = 1;
         for (auto s : m_target_prog_comm_list) {
             char target_prog_comm[16] = {};
             strncpy(target_prog_comm, s.c_str(), 16);
-            android::bpf::writeToMapEntry(m_target_prog_comm_map_fd,
+            int res = android::bpf::writeToMapEntry(m_target_prog_comm_map_fd,
                     target_prog_comm, &dummy_val, BPF_ANY);
+	    if (res) {
+		    std::cerr<<"Error: failed to write to map "<< strerror(errno) << " (errno: " << errno << ")" << std::endl;
+	    } else {
+		    std::cout<<"Successfully wrote to comm map"<<std::endl;
+	    }
         }
-
+	std::cout<<"Created tracer, returning"<<std::endl;
         m_init = 1;
     }
 
@@ -992,9 +1043,9 @@ error:
         m_init = 0;
         stop_update_rbs();
         detach_prog();
-        for (auto th : m_update_threads) {
-            th->join();
-        }
+        //for (const auto& th : m_update_threads) {
+          //  th->join();
+        //}
     }
 
 };
@@ -1016,7 +1067,7 @@ std::string get_proc_name(int pid) {
 void get_proc_spawners(std::vector<int> &proc_spawners) {
     DIR *dir;
     if ((dir = opendir("/proc/")) == NULL) {
-        std::cerr << "Failed to open /proc/, which is needed to monitor processes of interest\n";
+        std::cerr << "Failed to open /proc/, which is needed to monitor processes of interest"<<std::endl;
         return;
     }
 
@@ -1032,7 +1083,7 @@ void get_proc_spawners(std::vector<int> &proc_spawners) {
         for (int i = 0; i < 3; i++) {
             if (proc_name.compare(proc_spawners_name[i]) == 0) {
                 proc_spawners.push_back(pid);
-                std::cout << "Monitoring process spawners [" << pid << "] " << proc_name << "\n";
+                std::cout << "Monitoring process spawners [" << pid << "] " << proc_name << std::endl;
                 break;
             }
         }
@@ -1047,7 +1098,7 @@ std::string ptrace_read_str(int pid, uint64_t addr) {
         uint32_t val;
         char chars[4];
     } data;
-    std::cout << "addr: "<< std::hex << addr << "\n";
+    std::cout << "addr: "<< std::hex << addr << std::endl;
     char path[256];
     for (int i = 0; i < 256; i+=4) {
         data.val = ptrace(PTRACE_PEEKDATA, pid, addr+i*4 , NULL);
@@ -1068,30 +1119,30 @@ bool loop_until_identified(int pid, std::string prog_name) {
     io.iov_base = &regs;
     io.iov_len = sizeof(regs);
     while (1) {
-        std::cout << "[" << pid << "] waitpid\n";
+        std::cout << "[" << pid << "] waitpid"<<std::endl;
         waitpid(pid, &status, 0);
-        std::cout << "[" << pid << "] status changed: " << std::hex << status << std::dec<<"\n";
+        std::cout << "[" << pid << "] status changed: " << std::hex << status << std::dec<<std::endl;
         if (WIFEXITED(status)) {
-            std::cout << "[" << pid << "] exit\n";
+            std::cout << "[" << pid << "] exit"<<std::endl;
             break;
         } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_FORK<<8))) {
             ret = ptrace(PTRACE_GETEVENTMSG, pid, NULL, &data);
-            std::cout << "[" << pid << "] fork [" << data << "] " << "\n";
+            std::cout << "[" << pid << "] fork [" << data << "] " << std::endl;
         } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_VFORK<<8))) {
             ret = ptrace(PTRACE_GETEVENTMSG, pid, NULL, &data);
-            std::cout << "[" << pid << "] vfork [" << data << "] " << "\n";
+            std::cout << "[" << pid << "] vfork [" << data << "] " << std::endl;
         } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_CLONE<<8))) {
             ret = ptrace(PTRACE_GETEVENTMSG, pid, NULL, &data);
-            std::cout << "[" << pid << "] clone [" << data << "]\n";
+            std::cout << "[" << pid << "] clone [" << data << "]"<<std::endl;
         } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_EXEC<<8))) {
             std::string new_prog_name = get_proc_name(pid);
-            std::cout << "[" << pid << "] execve " << new_prog_name << "\n";
+            std::cout << "[" << pid << "] execve " << new_prog_name << std::endl;
             if (prog_name.compare(new_prog_name) == 0)
                 return true;
             else
                 return false;
         }
-        std::cout << "[" << pid << "] cont \n";
+        std::cout << "[" << pid << "] cont "<<std::endl;
         ptrace(PTRACE_CONT, pid, NULL, NULL);
 
         if (g_stop.load()) break;
@@ -1106,7 +1157,7 @@ void proc_spawner_monitor_th(int spwaner_pid) {
     unsigned long data = 0;
     ret = ptrace(PTRACE_ATTACH, spwaner_pid, NULL, NULL);
     if (ret != 0) {
-        std::cerr << "[" << spwaner_pid << "] ptrace attach error: " << strerror(errno) << "\n";
+        std::cerr << "[" << spwaner_pid << "] ptrace attach error: " << strerror(errno) << std::endl;
         return;
     }
     waitpid(spwaner_pid, &status, 0);
@@ -1114,31 +1165,31 @@ void proc_spawner_monitor_th(int spwaner_pid) {
     data = PTRACE_O_TRACECLONE | PTRACE_O_TRACEFORK | PTRACE_O_TRACEVFORK | PTRACE_O_TRACEEXEC;
     ret = ptrace(PTRACE_SETOPTIONS, spwaner_pid, NULL, data);
     if (ret != 0) {
-        std::cerr << "[" << spwaner_pid << "] ptrace set option error: " << strerror(errno) << "\n";
+        std::cerr << "[" << spwaner_pid << "] ptrace set option error: " << strerror(errno) <<  std::endl;
         return;
     }
     ptrace(PTRACE_CONT, spwaner_pid, NULL, NULL);
 
     while (1) {
-        std::cout << "[" << spwaner_pid << "] waitpid\n";
+        std::cout << "[" << spwaner_pid << "] waitpid"<<std::endl;
         waitpid(spwaner_pid, &status, 0);
-        std::cout << "[" << spwaner_pid << "] status changed: " << status << "\n";
+        std::cout << "[" << spwaner_pid << "] status changed: " << status << std::endl;
         if (WIFEXITED(status)) {
-            std::cout << "[" << spwaner_pid << "] exit\n";
+            std::cout << "[" << spwaner_pid << "] exit"<<std::endl;
             break;
         } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_FORK<<8))) {
             ret = ptrace(PTRACE_GETEVENTMSG, spwaner_pid, NULL, &data);
-            std::cout << "[" << spwaner_pid << "] fork [" << data << "] " << "\n";
+            std::cout << "[" << spwaner_pid << "] fork [" << data << "] " << std::endl;
             loop_until_identified(data, g_traced_prog);
             ptrace(PTRACE_DETACH, data, NULL, NULL);
         } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_VFORK<<8))) {
             ret = ptrace(PTRACE_GETEVENTMSG, spwaner_pid, NULL, &data);
-            std::cout << "[" << spwaner_pid << "] vfork [" << data << "] " << "\n";
+            std::cout << "[" << spwaner_pid << "] vfork [" << data << "] " << std::endl;
         } else if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_CLONE<<8))) {
             ret = ptrace(PTRACE_GETEVENTMSG, spwaner_pid, NULL, &data);
-            std::cout << "[" << spwaner_pid << "] clone [" << data << "] " << "\n";
+            std::cout << "[" << spwaner_pid << "] clone [" << data << "] " << std::endl;
         }
-        std::cout << "[" << spwaner_pid << "] cont \n";
+        std::cout << "[" << spwaner_pid << "] cont "<<std::endl;
         ptrace(PTRACE_CONT, spwaner_pid, NULL, NULL);
 
         if (g_stop.load()) break;
@@ -1147,6 +1198,107 @@ void proc_spawner_monitor_th(int spwaner_pid) {
     ptrace(PTRACE_DETACH, spwaner_pid, NULL, NULL);
     return;
 }
+
+//priya
+int load_and_pin_bpf_object() {
+    struct bpf_object *obj;
+    struct bpf_program *prog1, *prog2;
+    struct bpf_map *map; 
+    int err;
+
+    obj = bpf_object__open_file("/etc/bpf/bifrostTracer.bpf", NULL);
+    if (!obj) {
+	    std::cerr<<"Error: Failed to open BPF object file"<<std::endl;
+	    return 1;
+    }
+
+    auto close_obj = [&]() {
+        if (obj) bpf_object__close(obj);
+    };
+
+    if (bpf_object__load(obj)) {
+        std::cerr << "ERROR: Failed to load BPF object" << std::endl;
+        close_obj();
+        return 1;
+    }
+
+    std::cout<<"BPF object loaded successfully!"<<std::endl;
+
+    prog1 = bpf_object__find_program_by_name(obj, "sys_enter_prog");
+    prog2 = bpf_object__find_program_by_name(obj, "sys_exit_prog");
+
+    if (prog1) {
+        bpf_program__pin(prog1, "/sys/fs/bpf/prog_bifrostTracer_tracepoint_raw_syscalls_sys_enter");
+    } else {
+	    std::cerr<<"Could not find prog1"<<std::endl;
+    }
+    if (prog2) {
+        bpf_program__pin(prog2, "/sys/fs/bpf/prog_bifrostTracer_tracepoint_raw_syscalls_sys_exit");
+    } else {
+	    std::cerr<<"Could not find prog2"<<std::endl;
+    }
+
+    bpf_object__for_each_map(map, obj) {
+        const char *map_name = bpf_map__name(map);
+        char pin_path[256];
+
+        snprintf(pin_path, sizeof(pin_path), "/sys/fs/bpf/map_bifrostTracer_%s", map_name);
+
+        err = bpf_map__pin(map, pin_path);
+        if (err) {
+            fprintf(stderr, "ERROR: failed to pin map '%s' at '%s': %s\n",
+                    map_name, pin_path, strerror(-err));
+        }
+    }
+    close_obj();
+    return 0;
+}
+
+int cleanup_bpf(const std::string& base_name) {
+    const std::string bpf_fs_path = "/sys/fs/bpf/";
+    int error_count = 0;
+
+    std::vector<std::string> programs_to_unpin = {
+        "prog_" + base_name + "_tracepoint_raw_syscalls_sys_enter",
+        "prog_" + base_name + "_tracepoint_raw_syscalls_sys_exit"
+    };
+
+    for (const auto& prog_name : programs_to_unpin) {
+        std::string full_path = bpf_fs_path + prog_name;
+        if (remove(full_path.c_str()) != 0) {
+	    std::cerr << "ERROR: Failed to unpin program '" << full_path << "': " << strerror(errno) << std::endl;
+            error_count++;
+        }
+    }
+
+
+    std::string map_prefix = "map_" + base_name + "_";
+    DIR *dir = opendir(bpf_fs_path.c_str());
+    if (!dir) {
+        std::cerr << "ERROR: Could not open BPF filesystem directory '" << bpf_fs_path << "': " << strerror(errno) << std::endl;
+        return -1;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != nullptr) {
+	if (strncmp(entry->d_name, map_prefix.c_str(), map_prefix.length()) == 0) {
+            std::string full_path = bpf_fs_path + entry->d_name;
+	    if (remove(full_path.c_str()) != 0) {
+                std::cerr << "ERROR: Failed to unpin map '" << full_path << "': " << strerror(errno) << std::endl;
+                error_count++;
+            }
+	}
+    }
+    closedir(dir);
+    std::cout<<"Failed to clean up "<<error_count<<" objects."<<std::endl;
+    return 0;
+}
+
+
+
+
+//priya -end
+    
 
 int main(int argc, char *argv[]) {
     bool recover = true;
@@ -1161,8 +1313,8 @@ int main(int argc, char *argv[]) {
     while ((opt = getopt (argc, argv, "hi:v:c:r:o:p:")) != -1) {
         switch (opt) {
             case 'h':
-                std::cout << "Sifter agent\n";
-                std::cout << "Options\n";
+                std::cout << "Sifter agent"<<std::endl;
+                std::cout << "Options"<<std::endl;
                 std::cout << "-c config   : agent configuration file [required]\n";
                 std::cout << "-o output   : maps logging output file [required except manual mode]\n";
                 std::cout << "-p program  : target programs to be traced (comm's seperated by \",\")\n";
@@ -1171,12 +1323,12 @@ int main(int argc, char *argv[]) {
                 std::cout << "-v verbose  : verbosity [default=0]\n";
                 std::cout << "-h          : helps\n";
                 return 0;
-            case 'i': log_interval = atoi(optarg); break;
-            case 'v': verbose = atoi(optarg); break;
-            case 'c': config_file = optarg; break;
-            case 'r': recover = atoi(optarg) > 0; break;
-            case 'o': log_file = optarg; break;
-            case 'p': target_prog = optarg; break;
+	    case 'i': if (optarg) log_interval = std::stoi(std::string(optarg)); break;
+	    case 'v': if (optarg) verbose = std::stoi(std::string(optarg)); break;
+            case 'c': if (optarg) config_file = optarg; break;
+	    case 'r': if (optarg) recover = std::stoi(std::string(optarg)) > 0; break;
+            case 'o': if (optarg) log_file = optarg; break;
+            case 'p': if (optarg) target_prog = optarg; break;
             case '?':
                 if (optopt == 'c')
                     fprintf(stderr, "Option -%c requires an argument.\n", optopt);
@@ -1215,10 +1367,11 @@ int main(int argc, char *argv[]) {
         i++;
     }
 
+    load_and_pin_bpf_object();
     sifter_tracer tracer(config_file, target_prog_list, verbose);
 
     if (!tracer) {
-        std::cout << "Failed to create tracer\n";
+        std::cout << "Failed to create tracer"<<std::endl;
         return 1;
     }
 
@@ -1257,5 +1410,9 @@ int main(int argc, char *argv[]) {
     tracer.stop_update_maps();
     tracer.stop_update_rbs();
     tracer.stop_update_args();
+
+    tracer.waitForThreads();
+    std::cout<<"Stopped"<<std::endl;
+    cleanup_bpf("bifrostTracer");
     return 0;
 }

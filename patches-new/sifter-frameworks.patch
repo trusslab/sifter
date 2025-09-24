@@ -1,0 +1,194 @@
+diff --git a/core/jni/Android.bp b/core/jni/Android.bp
+index 9eb985036088..ffff848da684 100644
+--- a/core/jni/Android.bp
++++ b/core/jni/Android.bp
+@@ -389,6 +389,7 @@ cc_library_shared_for_libandroid_runtime {
+                 "libperfetto_c",
+                 "libtracing_perfetto",
+                 "libperfetto_framework_jni",
++		"libbpf",
+             ],
+             export_shared_lib_headers: [
+                 // our headers include libnativewindow's public headers
+diff --git a/core/jni/com_android_internal_os_Zygote.cpp b/core/jni/com_android_internal_os_Zygote.cpp
+index 344cb44c26af..be90261d9045 100644
+--- a/core/jni/com_android_internal_os_Zygote.cpp
++++ b/core/jni/com_android_internal_os_Zygote.cpp
+@@ -92,6 +92,146 @@
+ extern "C" void android_reset_stack_guards();
+ #endif
+ 
++//sifter
++#include <bpf/bpf.h>
++
++#include <iostream>
++#include <string>
++#include <memory>
++#include <stdexcept>
++#include <vector>
++
++#include <sys/syscall.h>
++#include <linux/seccomp.h>
++#include <cstdarg>
++#include <cstdio>
++
++std::vector<int> prepareBpfFileDescriptors(const std::vector<std::string>& prog_names) {
++    std::vector<int> fds;
++
++    for (const auto& prog_name : prog_names) {
++	std::string pin_path_str = "/sys/fs/bpf/prog_" + prog_name;
++        const char* pin_path_prog = pin_path_str.c_str();
++        int prog_fd = bpf_obj_get(pin_path_prog);
++        if (prog_fd < 0) {
++                ALOGE("filterAttach: Failed to get program file descriptor for %s: %s", pin_path_prog, strerror(errno));
++                
++		for (int fd : fds) {
++                	close(fd);
++            	}
++
++		return {};
++        }
++	ALOGI("filterAttach: Successfully got FD %d for %s", prog_fd, pin_path_str.c_str());
++        fds.push_back(prog_fd);
++    }
++
++    return fds;
++}
++
++bool attachBpfFilters(const std::vector<int>& prog_fds) {
++    if (prog_fds.empty()) {
++        ALOGE("filterAttach failed: The provided file descriptor list is empty.");
++        return false;
++    }
++
++    bool all_successful = true;
++
++    for (int prog_fd : prog_fds) {
++	if (syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER_EXTENDED, 0, &prog_fd) != 0) {
++           	ALOGE("filterAttach: Failed to attach seccomp filter for FD %d: %s", prog_fd, strerror(errno));
++            	all_successful = false;
++        } else {
++            ALOGI("filterAttach:Successfully attached seccomp filter for FD %d", prog_fd);
++        }
++	close(prog_fd);
++    }
++
++    if (all_successful) {
++        ALOGI("filterAttach: All seccomp filters attached successfully!");
++    } else {
++        ALOGE("filterAttach: One or more seccomp filters failed to attach.");
++    }
++
++    return all_successful;
++}
++
++/**
++ * @brief attaches seccomp filter bpf program.
++ *
++ * @param prog_name The name of the program within the BPF object file to load.
++ * @return true if the program and maps were successfully loaded and pinned, false otherwise.
++ */
++bool attachBpfProgram(const std::string& prog_name) {
++	std::string pin_path_str = "/sys/fs/bpf/prog_" + prog_name;
++	const char* pin_path_prog = pin_path_str.c_str();
++	int prog_fd = bpf_obj_get(pin_path_prog);
++        if (prog_fd < 0) {
++		ALOGE("filterAttach: Failed to get program file descriptor for %s: %s", pin_path_prog, strerror(errno));
++		return false;
++        }
++	
++	ALOGI("filterAttach: Attaching seccomp filter...");
++        
++	if (syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER_EXTENDED, 0, &prog_fd) != 0) {
++		ALOGE("filterAttach: Failed to attach seccomp filter.");
++		return false;
++        }
++
++	ALOGI("filterAttach: Seccomp filter attached successfully!");
++	
++    return true; 
++}
++
++
++std::vector<int> prepareSifterBpfFileDescriptors() {
++
++    const std::vector<std::string> prog_names = {
++        "filter_seq",
++        "filter_fstat",
++	"filter_mmap_bifrost",
++	"filter_read",
++	"filter_ioctl_KBASE_IOCTL_CS_QUEUE_REGISTER",
++    	"filter_ioctl_KBASE_IOCTL_KCPU_QUEUE_ENQUEUE",
++    	"filter_ioctl_KBASE_IOCTL_READ_USER_PAGE",
++    	"filter_ioctl_KBASE_IOCTL_CS_QUEUE_TERMINATE",
++    	"filter_ioctl_KBASE_IOCTL_MEM_ALLOC_EX",
++    	"filter_ioctl_KBASE_IOCTL_SET_FLAGS",
++    	"filter_ioctl_KBASE_IOCTL_CONTEXT_PRIORITY_CHECK",
++    	"filter_ioctl_KBASE_IOCTL_CS_TILER_HEAP_INIT",
++    	"filter_ioctl_KBASE_IOCTL_MEM_COMMIT",
++    	"filter_ioctl_KBASE_IOCTL_STICKY_RESOURCE_MAP",
++    	"filter_ioctl_KBASE_IOCTL_CS_EVENT_SIGNAL",
++    	"filter_ioctl_KBASE_IOCTL_CS_TILER_HEAP_TERM",
++    	"filter_ioctl_KBASE_IOCTL_MEM_EXEC_INIT",
++    	"filter_ioctl_KBASE_IOCTL_STICKY_RESOURCE_UNMAP",
++    	"filter_ioctl_KBASE_IOCTL_CS_GET_GLB_IFACE",
++    	"filter_ioctl_KBASE_IOCTL_FENCE_VALIDATE",
++    	"filter_ioctl_KBASE_IOCTL_MEM_FREE",
++    	"filter_ioctl_KBASE_IOCTL_CS_QUEUE_BIND",
++    	"filter_ioctl_KBASE_IOCTL_GET_CONTEXT_ID",
++    	"filter_ioctl_KBASE_IOCTL_MEM_IMPORT",
++    	"filter_ioctl_KBASE_IOCTL_CS_QUEUE_GROUP_TERMINATE",
++    	"filter_ioctl_KBASE_IOCTL_KCPU_QUEUE_CREATE",
++    	"filter_ioctl_KBASE_IOCTL_MEM_JIT_INIT",
++    	"filter_ioctl_KBASE_IOCTL_CS_QUEUE_KICK",
++    	"filter_ioctl_KBASE_IOCTL_KCPU_QUEUE_DELETE",
++    	"filter_ioctl_KBASE_IOCTL_MEM_QUERY"
++    };
++
++    /*
++    unsigned long success_count = 0;
++    for (size_t i = 0; i < prog_names.size(); ++i) {
++        if (attachBpfProgram(prog_names[i])) {
++            success_count++;
++        }
++    }
++    */
++
++    return prepareBpfFileDescriptors(prog_names);
++}
++//sifter
++
+ namespace {
+ 
+ // TODO (chriswailes): Add a function to initialize native Zygote data.
+@@ -1910,6 +2050,14 @@ static void SpecializeCommon(JNIEnv* env, uid_t uid, gid_t gid, jintArray gids,
+ 
+     auto se_info = extract_fn(managed_se_info);
+     auto nice_name = extract_fn(managed_nice_name);
++
++    std::vector<int> prog_fds;
++
++    //if (nice_name && strcmp(nice_name->c_str(), "net.kishonti.gfxbench.v50000.corporate") == 0) {
++         ALOGI("filterAttach: Getting filter prog fds for %s", nice_name->c_str());
++	 prog_fds= prepareSifterBpfFileDescriptors();
++    //}
++
+     auto instruction_set = extract_fn(managed_instruction_set);
+     auto app_data_dir = extract_fn(managed_app_data_dir);
+ 
+@@ -2026,6 +2174,15 @@ static void SpecializeCommon(JNIEnv* env, uid_t uid, gid_t gid, jintArray gids,
+     // privileged syscalls used below still need to be accessible in app process.
+     SetUpSeccompFilter(uid, is_child_zygote);
+ 
++    //sifter 
++     
++    //if (nice_name && strcmp(nice_name->c_str(), "net.kishonti.gfxbench.v50000.corporate") == 0) {
++        ALOGI("filterAttach: starting attaching process for %s", nice_name->c_str());
++        attachBpfFilters(prog_fds);
++    //}
++    
++    //sifter -end
++
+     // Must be called before losing the permission to set scheduler policy.
+     SetSchedulerPolicy(fail_fn, is_top_app);
+ 

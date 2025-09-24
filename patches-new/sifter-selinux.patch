@@ -1,0 +1,132 @@
+diff --git a/private/app_zygote.te b/private/app_zygote.te
+index b51f633d9..b88510acd 100644
+--- a/private/app_zygote.te
++++ b/private/app_zygote.te
+@@ -1,4 +1,6 @@
+ typeattribute app_zygote coredomain;
++typeattribute app_zygote sifter_filter_user;
++typeattribute app_zygote bpfdomain;
+ 
+ ######
+ ###### Policy below is different from regular zygote-spawned apps
+@@ -180,3 +182,5 @@ neverallow app_zygote {
+   bluetooth_prop
+   exported_bluetooth_prop
+ }:file create_file_perms;
++
++allow app_zygote self:bpf prog_run;
+diff --git a/private/bpfloader.te b/private/bpfloader.te
+index da829a71b..9c186f490 100644
+--- a/private/bpfloader.te
++++ b/private/bpfloader.te
+@@ -3,6 +3,10 @@ type bpfloader_platform_exec, system_file_type, exec_type, file_type;
+ 
+ typeattribute bpfloader bpfdomain;
+ 
++
++# Type for sifter filter BPF programs pinned to bpffs.
++type fs_bpf_sifter_filter, bpffs_type, file_type;
++
+ # allow bpfloader to write to the kernel log (starts early)
+ allow bpfloader kmsg_device:chr_file w_file_perms;
+ 
+@@ -37,12 +41,13 @@ allow bpfloader bpfloader_platform_exec:file { execute execute_no_trans getattr
+ 
+ # Note: we don't care about getattr/mounton/search
+ neverallow { domain            } bpffs_type:dir ~{ add_name create getattr mounton open read remove_name search setattr write };
+-neverallow { domain -bpfloader } bpffs_type:dir { add_name create open read remove_name setattr write };
++neverallow { domain -bpfloader -sifter_filter_user} bpffs_type:dir { add_name create open read remove_name setattr write };
+ 
+ neverallow { domain            } bpffs_type:file ~{ create getattr map open read rename setattr write };
+-neverallow { domain -bpfloader } bpffs_type:file { create map open rename setattr };
++neverallow { domain -bpfloader -sifter_filter_user} bpffs_type:file { create map open rename setattr };
+ neverallow { domain -bpfloader -gpuservice -lmkd -mediaprovider_app -netd -netutils_wrapper                -system_server                             } fs_bpf:file                { getattr read };
+ neverallow { domain -bpfloader                                                                             -system_server -traced_probes              } fs_bpf_cputimeinstate:file { getattr read write };
++neverallow { domain -bpfloader -sifter_filter_user                                                                                                    } fs_bpf_sifter_filter:file { getattr read write };
+ neverallow { domain -bpfloader                                                                                                                        } fs_bpf_loader:file         { getattr read };
+ neverallow { domain -bpfloader                                                              -network_stack                                            } fs_bpf_net_private:file    { getattr read };
+ neverallow { domain -bpfloader                                                              -network_stack -system_server                             } fs_bpf_net_shared:file     { getattr read };
+@@ -50,7 +55,7 @@ neverallow { domain -bpfloader                                      -netd
+ neverallow { domain -bpfloader                                      -netd -netutils_wrapper -network_stack -system_server                             } fs_bpf_netd_shared:file    { getattr read };
+ neverallow { domain -bpfloader                                                              -network_stack                                            } fs_bpf_tethering:file      { getattr read };
+ neverallow { domain -bpfloader                                                                                                           -uprobestats } fs_bpf_uprobestats:file   { getattr read };
+-neverallow { domain -bpfloader -gpuservice -lmkd                    -netd -netutils_wrapper -network_stack -system_server -traced_probes -uprobestats } { bpffs_type -fs_bpf_vendor }:file write;
++neverallow { domain -bpfloader -gpuservice -lmkd -sifter_filter_user -netd -netutils_wrapper -network_stack -system_server -traced_probes -uprobestats } { bpffs_type -fs_bpf_vendor }:file write;
+ 
+ neverallow { domain -bpfloader } bpffs_type:lnk_file ~read;
+ neverallow { domain -bpfdomain } bpffs_type:lnk_file read;
+@@ -73,3 +78,13 @@ neverallow bpfloader *:{ tcp_socket udp_socket rawip_socket } *;
+ neverallow { domain userdebug_or_eng(`-llkd') } bpfloader:process ptrace;
+ 
+ neverallow { domain -bpfloader } proc_bpf:file write;
++
++allow bpfloader fs_bpf:dir { add_name write search remove_name };
++allow bpfloader fs_bpf:file { create read write open getattr setattr };
++allow bpfloader fs_bpf_sifter_filter:file { create write setattr };
++allow sifter_filter_user fs_bpf:dir search;
++allow sifter_filter_user fs_bpf_sifter_filter:dir { search open getattr };
++allow sifter_filter_user fs_bpf_sifter_filter:file { open read getattr write };
++allow sifter_filter_user self:capability2 { bpf };
++allow sifter_filter_user self:bpf prog_run;
++allow sifter_filter_user bpfloader:bpf prog_run;
+diff --git a/private/file_contexts b/private/file_contexts
+index 78c8f59fd..49d208d29 100644
+--- a/private/file_contexts
++++ b/private/file_contexts
+@@ -964,3 +964,7 @@
+ #############################
+ # For overlays
+ /second_stage_resources/overlay_remounter u:object_r:overlay_remounter_exec:s0
++
++############################
++#For sifter loader
++/system/bin/filterLoader   u:object_r:bpfloader_exec:s0
+diff --git a/private/genfs_contexts b/private/genfs_contexts
+index dd3b92b12..f658d114d 100644
+--- a/private/genfs_contexts
++++ b/private/genfs_contexts
+@@ -351,3 +351,5 @@ genfscon bpf /netd_shared u:object_r:fs_bpf_netd_shared:s0
+ genfscon bpf /tethering u:object_r:fs_bpf_tethering:s0
+ genfscon bpf /vendor u:object_r:fs_bpf_vendor:s0
+ genfscon bpf /uprobestats u:object_r:fs_bpf_uprobestats:s0
++genfscon bpf /prog_filter_ u:object_r:fs_bpf_sifter_filter:s0
++
+diff --git a/private/zygote.te b/private/zygote.te
+index 62312cc7c..6c3a8b436 100644
+--- a/private/zygote.te
++++ b/private/zygote.te
+@@ -1,6 +1,8 @@
+ # zygote
+ typeattribute zygote coredomain;
+ typeattribute zygote mlstrustedsubject;
++typeattribute zygote sifter_filter_user;
++typeattribute zygote bpfdomain;
+ 
+ init_daemon_domain(zygote)
+ tmpfs_domain(zygote)
+@@ -312,3 +314,5 @@ neverallow zygote {
+ 
+ # Zygote should not be able to access app private data.
+ neverallow zygote app_data_file_type:dir ~getattr;
++
++allow zygote self:bpf prog_run;
+diff --git a/public/attributes b/public/attributes
+index b1fdd79cd..dbbd3cdd0 100644
+--- a/public/attributes
++++ b/public/attributes
+@@ -485,3 +485,5 @@ attribute vulkan_sphal_domain;
+ expandattribute vulkan_sphal_domain false;
+ 
+ ') # starting_at_board_api(202604)
++
++attribute sifter_filter_user;
+diff --git a/public/bpfloader.te b/public/bpfloader.te
+index 4aae1cfdc..f06a454ae 100644
+--- a/public/bpfloader.te
++++ b/public/bpfloader.te
+@@ -1,4 +1,4 @@
+-type bpfloader, domain, coredomain;
++type bpfloader, domain, coredomain, sifter_filter_user;
+ 
+ # system/sepolicy/public is for vendor-facing type and attribute definitions.
+ # DO NOT ADD allow, neverallow, or dontaudit statements here.

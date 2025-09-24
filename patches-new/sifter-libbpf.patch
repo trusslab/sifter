@@ -1,0 +1,23 @@
+diff --git a/Android.bp b/Android.bp
+index 46954cf..fd15c12 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -95,6 +95,7 @@ cc_library {
+         "//external/rust/android-crates-io/crates/libbpf-rs",
+         "//external/rust/android-crates-io/crates/libbpf-sys",
+         "//external/stg",
++	"//external/agent",
+         "//hardware/interfaces/health/utils/libhealthloop", // For use in tests only.
+         // Because libbpf depends on the GPL-licensed libelf, its use should be restricted to the
+         // standalone bpf loader binary. This visibility must not be widened.
+diff --git a/src/bpf_helper_defs.h b/src/bpf_helper_defs.h
+index 6f13d1f..b7254f8 100644
+--- a/src/bpf_helper_defs.h
++++ b/src/bpf_helper_defs.h
+@@ -4763,4 +4763,5 @@ static void *(* const bpf_cgrp_storage_get)(void *map, struct cgroup *cgroup, vo
+  */
+ static long (* const bpf_cgrp_storage_delete)(void *map, struct cgroup *cgroup) = (void *) 211;
+ 
+-
++static int (*bpf_probe_read_sleepable)(void* dst, int size, void* unsafe_ptr) = (void*) 212;
++static int (*bpf_check_fd)(char* path, int fd) = (void*) 213;

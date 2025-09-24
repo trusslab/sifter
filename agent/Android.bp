@@ -3,11 +3,12 @@ cc_binary {
     srcs: [
         "agent.cpp"
     ],
-    defaults: ["bpf_defaults"],
+    defaults: ["libbpf_defaults"],
     shared_libs: [
         "libbpf_android",
         "libbpf",
         "libbase",
         "libnetdutils",
+	"libbpf_bcc",
     ],
 }
